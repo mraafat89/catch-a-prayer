@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Test Google Maps</title>
+    <style>
+        #map { height: 400px; width: 100%; }
+    </style>
+</head>
+<body>
+    <h1>Google Maps Test</h1>
+    <div id="map"></div>
+    
+    <script src="https://maps.googleapis.com/maps/api/js?key=AIzaSyCLQpiyfX9p0t5r5FQRh54yFil4H5UOZVk&libraries=places&loading=async" defer></script>
+    
+    <script>
+        function initMap() {
+            console.log('initMap called');
+            console.log('google object:', typeof window.google);
+            
+            if (typeof window.google === 'undefined') {
+                console.error('Google Maps not loaded');
+                return;
+            }
+            
+            const map = new google.maps.Map(document.getElementById('map'), {
+                center: { lat: 37.7749, lng: -122.4194 },
+                zoom: 10
+            });
+            
+            console.log('Map created successfully');
+        }
+        
+        // Try to initialize when DOM is ready
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', () => {
+                console.log('DOM loaded, checking for Google Maps...');
+                setTimeout(initMap, 1000);
+            });
+        } else {
+            setTimeout(initMap, 1000);
+        }
+    </script>
+</body>
+</html>

@@ -1,0 +1,33 @@
+version: '3.8'
+
+services:
+  # Backend API
+  api:
+    build:
+      context: ./server
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      - GOOGLE_MAPS_API_KEY=AIzaSyCLQpiyfX9p0t5r5FQRh54yFil4H5UOZVk
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Frontend Web App
+  web:
+    build:
+      context: ./client
+      dockerfile: Dockerfile
+      args:
+        - REACT_APP_GOOGLE_MAPS_API_KEY=AIzaSyCLQpiyfX9p0t5r5FQRh54yFil4H5UOZVk
+        - REACT_APP_API_URL=http://localhost:8000
+    ports:
+      - "3000:80"
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
