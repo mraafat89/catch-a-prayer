@@ -1,6 +1,7 @@
 from pydantic import BaseModel
 from typing import Optional, List
 from datetime import datetime, time
+from dataclasses import dataclass, field
 from enum import Enum
 
 class PrayerName(str, Enum):
@@ -16,10 +17,23 @@ class Location(BaseModel):
     longitude: float
     address: Optional[str] = None
 
+class JumaaSession(BaseModel):
+    session_time: str  # "12:30 PM"
+    imam_name: Optional[str] = None
+    imam_title: Optional[str] = None  # "Dr.", "Sheikh", "Imam"
+    khutba_topic: Optional[str] = None
+    language: Optional[str] = None  # "English", "Arabic", "Mixed"
+    duration_minutes: Optional[int] = None
+    capacity: Optional[int] = None
+    booking_required: bool = False
+    special_notes: Optional[str] = None
+    series_info: Optional[str] = None  # "Part 2 of 5"
+
 class Prayer(BaseModel):
     prayer_name: PrayerName
     adhan_time: str
     iqama_time: Optional[str] = None
+    jumaa_sessions: List[JumaaSession] = []
 
 class TravelInfo(BaseModel):
     distance_meters: int

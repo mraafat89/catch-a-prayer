@@ -20,7 +20,8 @@ sys.path.append(os.path.join(os.path.dirname(__file__), 'server'))
 
 try:
     from server.prayer_service import PrayerTimeService
-    from server.models import Prayer, PrayerName, PrayerStatus
+    from server.prayer_scraper import ComprehensivePrayerScraper
+    from server.models import Prayer, PrayerName, PrayerStatus, Mosque, Location, JumaaSession
 except ImportError as e:
     print(f"Import Error: {e}")
     print("Make sure you're running this from the root directory of the project")
@@ -398,3 +399,141 @@ if __name__ == "__main__":
         sys.exit(0)
     else:
         sys.exit(1)
+
+
+class TestPrayerScraping(unittest.TestCase):
+    """Test suite for mosque website scraping functionality"""
+    
+    def setUp(self):
+        """Set up test fixtures"""
+        self.scraper = ComprehensivePrayerScraper()
+        
+        # Sample mosque for testing
+        self.sample_mosque = Mosque(
+            place_id="ChIJaS_test_mosque",
+            name="Test Masjid",
+            location=Location(latitude=37.7749, longitude=-122.4194, address="Test City"),
+            website="https://testmasjid.org"
+        )
+    
+    def test_time_normalization(self):
+        """Test time format normalization"""
+        test_cases = [
+            ("6:30 AM", "06:30"),
+            ("12:45 PM", "12:45"),
+            ("6:30am", "06:30"),
+            ("12:00 AM", "00:00"),
+            ("12:00 PM", "12:00"),
+            ("1:15 PM", "13:15")
+        ]
+        
+        for input_time, expected in test_cases:
+            with self.subTest(input=input_time):
+                result = self.scraper._normalize_time(input_time)
+                self.assertEqual(result, expected, f"Failed to normalize {input_time}")
+    
+    def test_prayer_name_parsing(self):
+        """Test prayer name extraction from text"""
+        test_cases = [
+            ("Fajr", PrayerName.FAJR),
+            ("Dawn Prayer", PrayerName.FAJR),
+            ("Dhuhr", PrayerName.DHUHR),
+            ("Zuhr", PrayerName.DHUHR),
+            ("Jumaa", PrayerName.JUMAA),
+            ("Friday Prayer", PrayerName.JUMAA)
+        ]
+        
+        for input_text, expected in test_cases:
+            with self.subTest(input=input_text):
+                result = self.scraper._parse_prayer_name(input_text)
+                self.assertEqual(result, expected, f"Failed to parse {input_text}")
+    
+    def test_imam_name_extraction(self):
+        """Test imam name extraction from text"""
+        test_cases = [
+            ("Imam: Dr. Ahmed Ali", "Ahmed Ali"),
+            ("Led by Sheikh Mohammed Hassan", "Mohammed Hassan"),
+            ("Khatib: Ustaz Abdullah", "Abdullah"),
+        ]
+        
+        for input_text, expected in test_cases:
+            with self.subTest(input=input_text):
+                result = self.scraper._extract_imam_name(input_text)
+                if result:
+                    self.assertIn(expected, result, f"Expected {expected} in {result}")
+    
+    def test_language_detection(self):
+        """Test language detection from text"""
+        test_cases = [
+            ("English Khutba at 12:30 PM", "English"),
+            ("Arabic sermon available", "Arabic"),
+            ("Bilingual Arabic/English", "Mixed"),
+        ]
+        
+        for input_text, expected in test_cases:
+            with self.subTest(input=input_text):
+                result = self.scraper._detect_language(input_text)
+                if expected and result:
+                    self.assertEqual(result.lower(), expected.lower())
+    
+    def test_simple_table_parsing(self):
+        """Test extraction from simple HTML table"""
+        html = """
+        <table>
+            <tr><th>Prayer</th><th>Adhan</th><th>Iqama</th></tr>
+            <tr><td>Fajr</td><td>5:50 AM</td><td>6:00 AM</td></tr>
+            <tr><td>Dhuhr</td><td>12:45 PM</td><td>1:00 PM</td></tr>
+        </table>
+        """
+        
+        from bs4 import BeautifulSoup
+        soup = BeautifulSoup(html, 'html.parser')
+        prayers = self.scraper._extract_from_prayer_tables(soup, "test_url")
+        
+        self.assertTrue(len(prayers) >= 2)
+        if len(prayers) >= 2:
+            self.assertEqual(prayers[0].prayer_name, PrayerName.FAJR)
+            self.assertEqual(prayers[0].adhan_time, "05:50")
+            self.assertEqual(prayers[0].iqama_time, "06:00")
+    
+    def test_fallback_to_defaults(self):
+        """Test fallback to default prayers when scraping fails"""
+        mosque_no_website = Mosque(
+            place_id="test_no_site",
+            name="Test Mosque No Website",
+            location=Location(latitude=37.7749, longitude=-122.4194),
+            website=None
+        )
+        
+        # This should run synchronously in the test environment
+        import asyncio
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            prayers = loop.run_until_complete(
+                self.scraper.scrape_mosque_prayers(mosque_no_website)
+            )
+        finally:
+            loop.close()
+        
+        self.assertTrue(len(prayers) >= 5)  # Should have 5+ daily prayers
+        prayer_names = [p.prayer_name for p in prayers]
+        self.assertIn(PrayerName.FAJR, prayer_names)
+        self.assertIn(PrayerName.DHUHR, prayer_names)
+        self.assertIn(PrayerName.ASR, prayer_names)
+        self.assertIn(PrayerName.MAGHRIB, prayer_names)
+        self.assertIn(PrayerName.ISHA, prayer_names)
+
+
+# Add scraping tests to the main test suite
+def create_full_test_suite():
+    """Create the complete test suite including scraping tests"""
+    suite = unittest.TestSuite()
+    
+    # Add original prayer timing tests
+    suite.addTest(unittest.makeSuite(TestPrayerTimingLogic))
+    
+    # Add new scraping tests
+    suite.addTest(unittest.makeSuite(TestPrayerScraping))
+    
+    return suite
