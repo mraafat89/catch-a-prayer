@@ -45,7 +45,8 @@ async def health_check():
 async def find_nearby_mosques(request: LocationRequest):
     print("="*50)
     print(f"CLIENT TIME DEBUG: {request.client_current_time}")
-    print(f"CLIENT TIMEZONE DEBUG: {request.client_timezone}")  
+    print(f"CLIENT TIMEZONE DEBUG: {request.client_timezone}")
+    print(f"CURRENT SERVER TIME: {datetime.now()}")
     print("="*50)
     """Find mosques near the given location"""
     if not maps_service:
@@ -120,7 +121,15 @@ async def get_next_prayer(place_id: str, user_lat: float, user_lng: float):
         )
         
         travel_minutes = travel_info.duration_seconds // 60 if travel_info else 15
-        next_prayer = prayer_service.get_next_prayer(prayers, travel_minutes)
+        # Fix: Use new method signature with timezone support
+        # Note: This endpoint lacks proper timezone info - recommend using /api/mosques/nearby instead
+        next_prayer = prayer_service.get_next_prayer(
+            prayers=prayers,
+            user_travel_minutes=travel_minutes,
+            client_current_time=None,  # Will use server time - not ideal
+            mosque_coordinates=None,   # Would need actual mosque coordinates
+            client_timezone=None       # Would need client timezone
+        )
         
         return next_prayer
         

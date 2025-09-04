@@ -213,6 +213,8 @@ class PrayerTimeService:
             print("WARNING: Could not determine mosque timezone, using user timezone")
             mosque_timezone = user_current_dt.tzinfo
         
+        print(f"DEBUG: Raw client_current_time: {client_current_time}")
+        print(f"DEBUG: Raw client_timezone: {client_timezone}")
         print(f"DEBUG: User time: {user_current_dt} ({user_current_dt.tzinfo})")
         print(f"DEBUG: Mosque timezone: {mosque_timezone}")
         print(f"DEBUG: Travel time: {user_travel_minutes} minutes")
