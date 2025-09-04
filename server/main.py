@@ -1,6 +1,7 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 import os
+from datetime import datetime
 from dotenv import load_dotenv
 
 from models import LocationRequest, MosqueResponse, UserSettings, Mosque, Location

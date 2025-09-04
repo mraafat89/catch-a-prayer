@@ -1,0 +1,42 @@
+version: '3.8'
+
+services:
+  # Backend API with hot reload
+  api:
+    build:
+      context: ./server
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./server:/app
+      - /app/__pycache__  # Prevent overwriting Python cache
+    env_file:
+      - ./server/.env
+    command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Frontend with hot reload
+  web:
+    build:
+      context: ./client
+      dockerfile: Dockerfile.dev
+      args:
+        REACT_APP_GOOGLE_MAPS_API_KEY: ${REACT_APP_GOOGLE_MAPS_API_KEY:-}
+        REACT_APP_API_URL: ${REACT_APP_API_URL:-http://localhost:8000}
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./client:/app
+      - /app/node_modules  # Prevent overwriting node_modules
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+    environment:
+      - CHOKIDAR_USEPOLLING=true  # Better file watching in Docker
