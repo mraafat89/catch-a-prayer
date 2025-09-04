@@ -369,7 +369,11 @@ class PrayerTimeService:
                     status = PrayerStatus.CANNOT_CATCH
                     message = f"Cannot catch {prayer.prayer_name.value} - congregation will end before arrival"
                 
-                minutes_remaining = int((datetime.combine(user_current_mosque_tz.date(), iqama_end_time) - user_current_mosque_tz).total_seconds() / 60)
+                # Ensure both datetimes have same timezone info for calculation
+                iqama_end_datetime_tz = datetime.combine(user_current_mosque_tz.date(), iqama_end_time)
+                if user_current_mosque_tz.tzinfo:
+                    iqama_end_datetime_tz = iqama_end_datetime_tz.replace(tzinfo=user_current_mosque_tz.tzinfo)
+                minutes_remaining = int((iqama_end_datetime_tz - user_current_mosque_tz).total_seconds() / 60)
                 
                 return NextPrayer(
                     prayer=prayer.prayer_name,
@@ -407,7 +411,9 @@ class PrayerTimeService:
             tomorrow_fajr_dt = datetime.combine(tomorrow, time.fromisoformat(fajr_prayer.iqama_time or fajr_prayer.adhan_time))
             
             # Calculate travel time to tomorrow's prayer
-            time_until_fajr = (tomorrow_fajr_dt - user_current_mosque_tz).total_seconds() / 60
+            # Ensure both datetimes have same timezone info
+            tomorrow_fajr_dt_tz = tomorrow_fajr_dt.replace(tzinfo=user_current_mosque_tz.tzinfo) if user_current_mosque_tz.tzinfo and not tomorrow_fajr_dt.tzinfo else tomorrow_fajr_dt
+            time_until_fajr = (tomorrow_fajr_dt_tz - user_current_mosque_tz).total_seconds() / 60
             
             # For tomorrow's prayers, assume user will travel closer to prayer time
             can_catch = True  # Tomorrow's prayers are generally catchable
