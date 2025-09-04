@@ -65,10 +65,17 @@ async def find_nearby_mosques(request: LocationRequest):
                 prayers = await prayer_service.get_mosque_prayers(mosque)
                 mosque.prayers = prayers
                 
-                # Calculate next prayer info with enhanced status
+                # Calculate next prayer info with enhanced status and timezone support
                 if mosque.travel_info and prayers:
                     travel_minutes = mosque.travel_info.duration_seconds // 60
-                    next_prayer = prayer_service.get_next_prayer(prayers, travel_minutes, request.client_current_time)
+                    mosque_coordinates = (mosque.location.latitude, mosque.location.longitude)
+                    next_prayer = prayer_service.get_next_prayer(
+                        prayers=prayers, 
+                        user_travel_minutes=travel_minutes, 
+                        client_current_time=request.client_current_time,
+                        mosque_coordinates=mosque_coordinates,
+                        client_timezone=request.client_timezone
+                    )
                     mosque.next_prayer = next_prayer
                     
             except Exception as e:
