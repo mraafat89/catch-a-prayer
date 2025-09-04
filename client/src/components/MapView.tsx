@@ -8,16 +8,23 @@ interface MapViewProps {
   onMosqueClick?: (mosque: Mosque) => void;
 }
 
-const GOOGLE_MAPS_API_KEY = process.env.REACT_APP_GOOGLE_MAPS_API_KEY || 'AIzaSyCLQpiyfX9p0t5r5FQRh54yFil4H5UOZVk';
+const GOOGLE_MAPS_API_KEY = process.env.REACT_APP_GOOGLE_MAPS_API_KEY;
 
 const MapView: React.FC<MapViewProps> = ({ mosques, userLocation, onMosqueClick }) => {
   const mapRef = useRef<HTMLDivElement>(null);
   const mapInstanceRef = useRef<google.maps.Map | null>(null);
   const markersRef = useRef<google.maps.Marker[]>([]);
   const [isLoaded, setIsLoaded] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     const initMap = async () => {
+      if (!GOOGLE_MAPS_API_KEY) {
+        console.error('Google Maps API key is not configured. Please set REACT_APP_GOOGLE_MAPS_API_KEY in .env file');
+        setError('Google Maps API key is not configured');
+        return;
+      }
+
       try {
         const loader = new Loader({
           apiKey: GOOGLE_MAPS_API_KEY,
@@ -46,6 +53,7 @@ const MapView: React.FC<MapViewProps> = ({ mosques, userLocation, onMosqueClick 
         }
       } catch (error) {
         console.error('Error loading Google Maps:', error);
+        setError('Failed to load Google Maps');
       }
     };
 
@@ -162,7 +170,16 @@ const MapView: React.FC<MapViewProps> = ({ mosques, userLocation, onMosqueClick 
   return (
     <div className="w-full h-full relative">
       <div ref={mapRef} className="w-full h-full rounded-lg" />
-      {!isLoaded && (
+      {error && (
+        <div className="absolute inset-0 flex items-center justify-center bg-red-50 rounded-lg border border-red-200">
+          <div className="text-center">
+            <div className="text-red-500 mb-2">❌</div>
+            <p className="text-red-700 font-medium">{error}</p>
+            <p className="text-red-600 text-sm mt-1">Check your environment configuration</p>
+          </div>
+        </div>
+      )}
+      {!isLoaded && !error && (
         <div className="absolute inset-0 flex items-center justify-center bg-gray-100 rounded-lg">
           <div className="text-center">
             <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500 mx-auto mb-2"></div>

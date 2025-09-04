@@ -43,6 +43,10 @@ async def health_check():
 
 @app.post("/api/mosques/nearby", response_model=MosqueResponse)
 async def find_nearby_mosques(request: LocationRequest):
+    print("="*50)
+    print(f"CLIENT TIME DEBUG: {request.client_current_time}")
+    print(f"CLIENT TIMEZONE DEBUG: {request.client_timezone}")  
+    print("="*50)
     """Find mosques near the given location"""
     if not maps_service:
         raise HTTPException(status_code=503, detail="Google Maps service not available")
@@ -61,14 +65,16 @@ async def find_nearby_mosques(request: LocationRequest):
                 prayers = await prayer_service.get_mosque_prayers(mosque)
                 mosque.prayers = prayers
                 
-                # Calculate next prayer info
+                # Calculate next prayer info with enhanced status
                 if mosque.travel_info and prayers:
                     travel_minutes = mosque.travel_info.duration_seconds // 60
-                    next_prayer = prayer_service.get_next_prayer(prayers, travel_minutes)
+                    next_prayer = prayer_service.get_next_prayer(prayers, travel_minutes, request.client_current_time)
                     mosque.next_prayer = next_prayer
                     
             except Exception as e:
+                import traceback
                 print(f"Error getting prayers for {mosque.name}: {e}")
+                print(f"Full traceback: {traceback.format_exc()}")
                 # Continue without prayer times
         
         return MosqueResponse(

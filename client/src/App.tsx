@@ -45,7 +45,9 @@ function App() {
       const response = await apiService.findNearbyMosques({
         latitude: location.latitude,
         longitude: location.longitude,
-        radius_km: 5
+        radius_km: 5,
+        client_timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+        client_current_time: new Date().toISOString()
       });
       
       setMosques(response.mosques);
@@ -80,10 +82,18 @@ function App() {
   };
 
   const formatTime = (timeStr: string) => {
-    const [hours, minutes] = timeStr.split(':').map(Number);
-    const date = new Date();
-    date.setHours(hours, minutes);
-    return date.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+    if (!timeStr || typeof timeStr !== 'string') return 'Invalid time';
+    
+    try {
+      const [hours, minutes] = timeStr.split(':').map(Number);
+      if (isNaN(hours) || isNaN(minutes)) return 'Invalid time';
+      
+      const date = new Date();
+      date.setHours(hours, minutes, 0, 0);
+      return date.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+    } catch (error) {
+      return 'Invalid time';
+    }
   };
 
   return (
@@ -260,25 +270,48 @@ function App() {
             )}
 
             {/* Actions */}
-            <div className="flex space-x-3">
+            <div className="grid grid-cols-2 gap-3">
               {selectedMosque.website && (
                 <a
                   href={selectedMosque.website}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="flex-1 bg-blue-600 text-white py-2 px-4 rounded-lg text-center font-medium hover:bg-blue-700 transition-colors"
+                  className="bg-blue-600 text-white py-2 px-4 rounded-lg text-center font-medium hover:bg-blue-700 transition-colors"
                 >
-                  Visit Website
+                  📅 Monthly Times
                 </a>
               )}
               <a
                 href={`https://www.google.com/maps/dir/?api=1&destination=${selectedMosque.location.latitude},${selectedMosque.location.longitude}`}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="flex-1 bg-green-600 text-white py-2 px-4 rounded-lg text-center font-medium hover:bg-green-700 transition-colors"
+                className="bg-green-600 text-white py-2 px-4 rounded-lg text-center font-medium hover:bg-green-700 transition-colors"
               >
-                Get Directions
+                🧭 Directions
               </a>
+              {selectedMosque.phone_number && (
+                <a
+                  href={`tel:${selectedMosque.phone_number}`}
+                  className="bg-gray-600 text-white py-2 px-4 rounded-lg text-center font-medium hover:bg-gray-700 transition-colors"
+                >
+                  📞 Call
+                </a>
+              )}
+              <button
+                onClick={() => {
+                  const text = `Check out ${selectedMosque.name} - Next prayer: ${selectedMosque.next_prayer?.prayer || 'TBD'} ${selectedMosque.next_prayer?.can_catch ? '✅ Catchable' : '❌ Not catchable'}`;
+                  const url = `https://www.google.com/maps/search/?api=1&query=${selectedMosque.location.latitude},${selectedMosque.location.longitude}`;
+                  if (navigator.share) {
+                    navigator.share({ title: selectedMosque.name, text, url });
+                  } else {
+                    navigator.clipboard?.writeText(`${text}\n${url}`);
+                    alert('Mosque info copied to clipboard!');
+                  }
+                }}
+                className="bg-purple-600 text-white py-2 px-4 rounded-lg text-center font-medium hover:bg-purple-700 transition-colors"
+              >
+                🔗 Share
+              </button>
             </div>
           </div>
         </div>

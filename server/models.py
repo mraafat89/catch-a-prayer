@@ -26,12 +26,24 @@ class TravelInfo(BaseModel):
     duration_seconds: int
     duration_text: str
 
+class PrayerStatus(str, Enum):
+    CAN_CATCH_WITH_IMAM = "can_catch_with_imam"
+    CAN_CATCH_AFTER_IMAM = "can_catch_after_imam"  
+    CAN_CATCH_DELAYED = "can_catch_delayed"  # For Fajr after sunrise
+    CANNOT_CATCH = "cannot_catch"
+    MISSED = "missed"
+
 class NextPrayer(BaseModel):
     prayer: PrayerName
-    can_catch: bool
+    status: PrayerStatus
+    can_catch: bool  # For backward compatibility
     travel_time_minutes: int
     time_remaining_minutes: int
     arrival_time: datetime
+    prayer_time: str  # Actual prayer time (Iqama or Adhan)
+    message: str  # User-friendly message
+    is_delayed: bool = False  # True for Fajr after sunrise
+    time_until_next_prayer: Optional[int] = None  # Minutes until next prayer
 
 class Mosque(BaseModel):
     place_id: str
@@ -49,6 +61,8 @@ class LocationRequest(BaseModel):
     latitude: float
     longitude: float
     radius_km: Optional[int] = 5
+    client_timezone: Optional[str] = None  # e.g., "America/Los_Angeles"
+    client_current_time: Optional[str] = None  # ISO format from client
 
 class MosqueResponse(BaseModel):
     mosques: List[Mosque]

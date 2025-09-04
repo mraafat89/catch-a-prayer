@@ -19,8 +19,8 @@ ARG REACT_APP_API_URL=http://localhost:8000
 ENV REACT_APP_GOOGLE_MAPS_API_KEY=$REACT_APP_GOOGLE_MAPS_API_KEY
 ENV REACT_APP_API_URL=$REACT_APP_API_URL
 
-# Build the app
-RUN npm run build
+# Clear any existing build directory and build the app
+RUN rm -rf build node_modules/.cache && npm run build
 
 # Production stage
 FROM nginx:alpine

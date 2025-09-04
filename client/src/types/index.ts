@@ -25,12 +25,25 @@ export interface TravelInfo {
   duration_text: string;
 }
 
+export enum PrayerStatus {
+  CAN_CATCH_WITH_IMAM = "can_catch_with_imam",
+  CAN_CATCH_AFTER_IMAM = "can_catch_after_imam",
+  CAN_CATCH_DELAYED = "can_catch_delayed",
+  CANNOT_CATCH = "cannot_catch",
+  MISSED = "missed"
+}
+
 export interface NextPrayer {
   prayer: PrayerName;
+  status: PrayerStatus;
   can_catch: boolean;
   travel_time_minutes: number;
   time_remaining_minutes: number;
   arrival_time: string;
+  prayer_time: string;
+  message: string;
+  is_delayed?: boolean;
+  time_until_next_prayer?: number;
 }
 
 export interface Mosque {
@@ -50,6 +63,8 @@ export interface LocationRequest {
   latitude: number;
   longitude: number;
   radius_km?: number;
+  client_timezone?: string;
+  client_current_time?: string;
 }
 
 export interface MosqueResponse {

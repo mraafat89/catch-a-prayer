@@ -8,8 +8,8 @@ services:
       dockerfile: Dockerfile
     ports:
       - "8000:8000"
-    environment:
-      - GOOGLE_MAPS_API_KEY=AIzaSyCLQpiyfX9p0t5r5FQRh54yFil4H5UOZVk
+    env_file:
+      - ./server/.env
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
@@ -23,8 +23,8 @@ services:
       context: ./client
       dockerfile: Dockerfile
       args:
-        - REACT_APP_GOOGLE_MAPS_API_KEY=AIzaSyCLQpiyfX9p0t5r5FQRh54yFil4H5UOZVk
-        - REACT_APP_API_URL=http://localhost:8000
+        REACT_APP_GOOGLE_MAPS_API_KEY: ${REACT_APP_GOOGLE_MAPS_API_KEY:-}
+        REACT_APP_API_URL: ${REACT_APP_API_URL:-http://localhost:8000}
     ports:
       - "3000:80"
     depends_on:
