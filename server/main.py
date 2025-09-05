@@ -148,6 +148,52 @@ async def update_user_settings(settings: UserSettings):
     """Update user settings (simplified - just returns the input)"""
     return settings
 
+@app.get("/api/mosque/{place_id}/monthly-prayers")
+async def get_monthly_prayers(place_id: str, year: int = None, month: int = None):
+    """Get monthly prayer schedule for a specific mosque"""
+    if not maps_service or not prayer_service:
+        raise HTTPException(status_code=503, detail="Services not available")
+    
+    from datetime import datetime
+    
+    # Use current year/month if not provided
+    now = datetime.now()
+    year = year or now.year
+    month = month or now.month
+    
+    try:
+        # Create a temporary mosque object to get the website
+        # In a real implementation, you'd get mosque details from place_id
+        temp_mosque = Mosque(
+            place_id=place_id,
+            name="",
+            location=Location(latitude=0, longitude=0),
+            website="https://islamsf.org/"  # This would be looked up from place_id
+        )
+        
+        # Get monthly prayers using the scraper
+        monthly_data = await prayer_service.get_monthly_prayers(temp_mosque, year, month)
+        
+        if monthly_data:
+            # Convert to API response format
+            monthly_prayers = []
+            for date_key, day_data in monthly_data.items():
+                monthly_prayers.append(day_data)
+            
+            return {
+                "mosque_id": place_id,
+                "year": year,
+                "month": month,
+                "monthly_schedule": monthly_prayers
+            }
+        else:
+            # Fallback to default schedule
+            raise HTTPException(status_code=404, detail="Monthly schedule not available")
+        
+    except Exception as e:
+        print(f"Error getting monthly prayers: {e}")
+        raise HTTPException(status_code=500, detail="Failed to get monthly prayers")
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)

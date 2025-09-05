@@ -1,20 +1,69 @@
 import httpx
 import asyncio
+import logging
 from bs4 import BeautifulSoup
 from typing import List, Optional, Dict, Any
 from datetime import datetime, time, timedelta
 from models import Prayer, PrayerName, NextPrayer, Mosque
-from prayer_scraper import ComprehensivePrayerScraper
+from mosque_scraper import MosqueScraper
+
+logger = logging.getLogger(__name__)
 
 class PrayerTimeService:
     def __init__(self):
         self.cache = {}  # Simple in-memory cache
         self.cache_expiry = timedelta(hours=24)
-        self.scraper = ComprehensivePrayerScraper()
+        self.scraper = MosqueScraper()
     
     async def get_mosque_prayers(self, mosque: Mosque) -> List[Prayer]:
-        """Get today's prayer times for a mosque using comprehensive scraping"""
-        return await self.scraper.scrape_mosque_prayers(mosque)
+        """Get today's prayer times for a mosque using the comprehensive scraper"""
+        print(f"DEBUG: get_mosque_prayers called for {mosque.name} with website: {mosque.website}")
+        
+        if not mosque.website:
+            print(f"DEBUG: No website for {mosque.name}, using defaults")
+            return self._get_default_prayers()
+        
+        # Use the single comprehensive scraper
+        print(f"DEBUG: About to call scraper for {mosque.website}")
+        prayers = await self.scraper.scrape_mosque_prayers(mosque.website)
+        print(f"DEBUG: Scraper returned {len(prayers) if prayers else 0} prayers")
+        
+        if prayers and len(prayers) >= 4:  # Must have at least 4 prayers (5 daily prayers, but Jumaa only on Friday)
+            print(f"DEBUG: Successfully scraped {len(prayers)} prayers from {mosque.website}")
+            logger.info(f"Successfully scraped {len(prayers)} prayers from {mosque.website}")
+            return prayers
+        
+        print(f"DEBUG: Scraping failed for {mosque.website}, using defaults")
+        logger.warning(f"Scraping failed for {mosque.website}, using defaults")
+        return self._get_default_prayers()
+    
+    async def get_monthly_prayers(self, mosque: Mosque, year: int, month: int) -> Optional[Dict]:
+        """Get monthly prayer schedule for a mosque"""
+        if not mosque.website:
+            return None
+        
+        monthly_data = await self.scraper.scrape_monthly_prayers(mosque.website, year, month)
+        return monthly_data
+    
+    def _get_default_prayers(self) -> List[Prayer]:
+        """Return default prayer times when scraping fails"""
+        prayers = [
+            Prayer(prayer_name=PrayerName.FAJR, adhan_time="05:50", iqama_time="06:00"),
+            Prayer(prayer_name=PrayerName.DHUHR, adhan_time="12:45", iqama_time="13:00"),
+            Prayer(prayer_name=PrayerName.ASR, adhan_time="16:15", iqama_time="16:30"),
+            Prayer(prayer_name=PrayerName.MAGHRIB, adhan_time="19:10", iqama_time="19:20"),
+            Prayer(prayer_name=PrayerName.ISHA, adhan_time="20:30", iqama_time="20:45")
+        ]
+        
+        # Only include Jumaa on Fridays
+        if datetime.now().weekday() == 4:  # Friday is day 4 (Monday=0)
+            prayers.append(Prayer(
+                prayer_name=PrayerName.JUMAA,
+                adhan_time="12:30",
+                iqama_time="12:30"
+            ))
+        
+        return prayers
     
     # Old scraping methods removed - now using ComprehensivePrayerScraper
     
