@@ -15,13 +15,10 @@ import unittest
 from datetime import datetime, time, timedelta
 import pytz
 
-# Add server directory to path
-sys.path.append(os.path.join(os.path.dirname(__file__), 'server'))
-
 try:
-    from server.prayer_service import PrayerTimeService
-    from server.mosque_scraper import MosqueScraper
-    from server.models import Prayer, PrayerName, PrayerStatus, Mosque, Location, JumaaSession
+    from prayer_service import PrayerTimeService
+    from mosque_scraper import MosqueScraper
+    from models import Prayer, PrayerName, PrayerStatus, Mosque, Location, JumaaSession
 except ImportError as e:
     print(f"Import Error: {e}")
     print("Make sure you're running this from the root directory of the project")

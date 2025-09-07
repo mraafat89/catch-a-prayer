@@ -11,8 +11,8 @@ from typing import List
 import json
 
 # Import our modules
-from server.mosque_scraper import MosqueScraper
-from server.models import Mosque, Location, Prayer, PrayerName, JumaaSession
+from mosque_scraper import MosqueScraper
+from models import Mosque, Location, Prayer, PrayerName, JumaaSession
 
 
 class TestPrayerScrapingComprehensive(unittest.TestCase):

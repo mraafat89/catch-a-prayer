@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Geolocation Debug Test</title>
+</head>
+<body>
+    <h1>Geolocation Debug Test</h1>
+    <div id="log"></div>
+    
+    <script>
+        const log = document.getElementById('log');
+        
+        function addLog(message) {
+            log.innerHTML += '<p>' + new Date().toLocaleTimeString() + ': ' + message + '</p>';
+            console.log(message);
+        }
+        
+        addLog('Starting geolocation test...');
+        
+        if ("geolocation" in navigator) {
+            addLog('✅ Geolocation API available');
+            
+            navigator.geolocation.getCurrentPosition(
+                function(position) {
+                    const lat = position.coords.latitude;
+                    const lng = position.coords.longitude;
+                    addLog(`✅ Location obtained: ${lat}, ${lng}`);
+                    
+                    // Now test API call
+                    const requestData = {
+                        latitude: lat,
+                        longitude: lng,
+                        radius_km: 5,
+                        client_timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+                        client_current_time: new Date().toISOString()
+                    };
+                    
+                    addLog('🔍 Making API call...');
+                    
+                    fetch('http://localhost:8000/api/mosques/nearby', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                        },
+                        body: JSON.stringify(requestData)
+                    })
+                    .then(response => {
+                        addLog(`📥 API Response: ${response.status}`);
+                        return response.json();
+                    })
+                    .then(data => {
+                        const mosques = data.mosques || [];
+                        addLog(`✅ Found ${mosques.length} mosques`);
+                        if (mosques.length > 0) {
+                            addLog(`First mosque: ${mosques[0].name}`);
+                        }
+                    })
+                    .catch(error => {
+                        addLog(`❌ API Error: ${error.message}`);
+                    });
+                },
+                function(error) {
+                    addLog(`❌ Geolocation error: ${error.message} (Code: ${error.code})`);
+                    
+                    // Fallback to San Francisco coordinates
+                    addLog('Using fallback coordinates for San Francisco...');
+                    const requestData = {
+                        latitude: 37.7749,
+                        longitude: -122.4194,
+                        radius_km: 5,
+                        client_timezone: 'America/Los_Angeles',
+                        client_current_time: new Date().toISOString()
+                    };
+                    
+                    fetch('http://localhost:8000/api/mosques/nearby', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                        },
+                        body: JSON.stringify(requestData)
+                    })
+                    .then(response => response.json())
+                    .then(data => {
+                        const mosques = data.mosques || [];
+                        addLog(`✅ Fallback: Found ${mosques.length} mosques`);
+                    })
+                    .catch(error => {
+                        addLog(`❌ Fallback API Error: ${error.message}`);
+                    });
+                },
+                {
+                    enableHighAccuracy: true,
+                    timeout: 10000,
+                    maximumAge: 300000
+                }
+            );
+        } else {
+            addLog('❌ Geolocation not supported');
+        }
+    </script>
+</body>
+</html>

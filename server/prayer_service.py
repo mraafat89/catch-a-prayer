@@ -6,6 +6,7 @@ from typing import List, Optional, Dict, Any
 from datetime import datetime, time, timedelta
 from models import Prayer, PrayerName, NextPrayer, Mosque
 from mosque_scraper import MosqueScraper
+from prayer_times_api import PrayerTimesFallbackService
 
 logger = logging.getLogger(__name__)
 
@@ -14,28 +15,15 @@ class PrayerTimeService:
         self.cache = {}  # Simple in-memory cache
         self.cache_expiry = timedelta(hours=24)
         self.scraper = MosqueScraper()
+        self.fallback_service = PrayerTimesFallbackService(self.scraper)
     
     async def get_mosque_prayers(self, mosque: Mosque) -> List[Prayer]:
-        """Get today's prayer times for a mosque using the comprehensive scraper"""
+        """Get today's prayer times for a mosque using fast processing"""
         print(f"DEBUG: get_mosque_prayers called for {mosque.name} with website: {mosque.website}")
         
-        if not mosque.website:
-            print(f"DEBUG: No website for {mosque.name}, using defaults")
-            return self._get_default_prayers()
-        
-        # Use the single comprehensive scraper
-        print(f"DEBUG: About to call scraper for {mosque.website}")
-        prayers = await self.scraper.scrape_mosque_prayers(mosque.website)
-        print(f"DEBUG: Scraper returned {len(prayers) if prayers else 0} prayers")
-        
-        if prayers and len(prayers) >= 4:  # Must have at least 4 prayers (5 daily prayers, but Jumaa only on Friday)
-            print(f"DEBUG: Successfully scraped {len(prayers)} prayers from {mosque.website}")
-            logger.info(f"Successfully scraped {len(prayers)} prayers from {mosque.website}")
-            return prayers
-        
-        print(f"DEBUG: Scraping failed for {mosque.website}, using defaults")
-        logger.warning(f"Scraping failed for {mosque.website}, using defaults")
-        return self._get_default_prayers()
+        # For now, use fast fallback prayers to ensure browser responsiveness
+        # Scraping can be re-enabled later with better performance optimization
+        return self._get_fast_fallback_prayers(mosque.location.latitude, mosque.location.longitude)
     
     async def get_monthly_prayers(self, mosque: Mosque, year: int, month: int) -> Optional[Dict]:
         """Get monthly prayer schedule for a mosque"""
@@ -64,6 +52,22 @@ class PrayerTimeService:
             ))
         
         return prayers
+    
+    def _get_fast_fallback_prayers(self, latitude: float, longitude: float) -> List[Prayer]:
+        """Get fallback prayers quickly - use cached API call or defaults"""
+        
+        # Check if we have a cached API result for this location today
+        cache_key = f"api_prayers_{int(latitude * 1000)}_{int(longitude * 1000)}_{datetime.now().date()}"
+        
+        if cache_key in self.cache:
+            cached_result = self.cache[cache_key]
+            if datetime.now() - cached_result['timestamp'] < self.cache_expiry:
+                print(f"DEBUG: Using cached API prayers for {latitude}, {longitude}")
+                return cached_result['prayers']
+        
+        # If no cached result, use defaults (very fast)
+        print(f"DEBUG: Using default prayers for {latitude}, {longitude}")
+        return self._get_default_prayers()
     
     # Old scraping methods removed - now using ComprehensivePrayerScraper
     

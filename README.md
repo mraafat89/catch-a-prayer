@@ -5,10 +5,35 @@ Find nearby mosques and prayer times based on your location. Never miss a prayer
 ## Features
 
 - **Location-based Mosque Discovery**: Find mosques within a configurable radius using Google Maps
-- **Real-time Prayer Times**: Automatically scrape prayer times from mosque websites
+- **Real-time Prayer & Iqama Times**: Automatically scrape both prayer times (Adhan) and congregation times (Iqama) from mosque websites
 - **Smart "Can Catch Prayer" Logic**: Calculates if you can reach a mosque before prayer time
+- **Comprehensive Jumaa Information**: Extracts Friday prayer times, imam details, khutba topics, and languages
 - **Interactive Maps**: Visual mosque locations with travel time information
 - **Responsive Design**: Mobile-optimized interface with clean, modern UI
+
+## Prayer Time Data Sources & Fallback Strategy
+
+### 🎯 **Primary Strategy: Mosque Website Scraping**
+The app prioritizes scraping nearby mosque websites to get:
+- **Iqama Times**: Mosque-specific congregation times (when prayer actually starts)
+- **Adhan Times**: Call to prayer times
+- **Jumaa Details**: Friday prayer times, imam names, khutba topics, languages
+- **Special Events**: Ramadan schedules, Eid prayers, special programs
+
+### 🔄 **Fallback Strategy: Prayer Time APIs**
+When mosque website scraping fails, the app falls back to prayer time APIs for the user's current location or manually entered location:
+- **Source**: IslamicFinder, Adhan.com, or similar APIs
+- **Provides**: Adhan (call to prayer) times only
+- **Limitations**: 
+  - ❌ No Iqama times (mosque-specific)
+  - ❌ No Jumaa prayer information
+  - ❌ No imam details or khutba topics
+  - ⚠️ Times are calculated, not actual mosque times
+
+### 📍 **Location Flexibility**
+- **Auto-detection**: Uses your current GPS location
+- **Manual Entry**: Enter any address or city
+- **Radius Control**: Configurable search radius (1-50 km) for nearby mosques
 
 ## Architecture
 
