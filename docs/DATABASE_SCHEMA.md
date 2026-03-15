@@ -1,0 +1,360 @@
+# Database Schema
+
+PostgreSQL 15 + PostGIS. All timestamps are `TIMESTAMPTZ` (UTC stored, converted at display time).
+
+---
+
+## Source Enum
+
+Used in every field that tracks where data came from. Always stored alongside the data itself.
+
+```
+mosque_website_html     Scraped from mosque's HTML page (static, httpx + BeautifulSoup)
+mosque_website_js       Scraped from mosque's JS-rendered page (Playwright)
+mosque_website_image    Extracted from image on mosque website (Vision AI)
+mosque_website_pdf      Extracted from PDF on mosque website (pdfplumber)
+islamicfinder           Retrieved from IslamicFinder database
+aladhan_mosque_db       Retrieved from Aladhan.com mosque database
+user_submitted          Submitted or corrected by a community user
+calculated              Astronomically calculated from mosque coordinates (adhan-python)
+estimated               Estimated from typical adhan+offset (absolute last resort)
+```
+
+## Confidence Enum
+```
+high    5 prayers found, both adhan and iqama, times pass sanity checks
+medium  Times found but incomplete (missing some iqama, or only 4 prayers)
+low     Partial data, estimated values, or source is unreliable
+```
+
+---
+
+## Tables
+
+### `mosques`
+
+```sql
+CREATE TABLE mosques (
+    id                    UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+
+    -- Identity
+    name                  TEXT NOT NULL,
+    name_arabic           TEXT,
+
+    -- Location
+    lat                   DOUBLE PRECISION NOT NULL,
+    lng                   DOUBLE PRECISION NOT NULL,
+    geom                  GEOMETRY(Point, 4326) GENERATED ALWAYS AS
+                              (ST_SetSRID(ST_MakePoint(lng, lat), 4326)) STORED,
+    address               TEXT,
+    city                  TEXT,
+    state                 TEXT,
+    zip                   TEXT,
+    country               CHAR(2) NOT NULL DEFAULT 'US',  -- ISO 3166-1 alpha-2
+    timezone              TEXT NOT NULL,                   -- IANA: "America/New_York"
+
+    -- Contact
+    phone                 TEXT,
+    website               TEXT,
+    email                 TEXT,
+
+    -- External IDs (for re-enrichment and deduplication)
+    osm_id                TEXT UNIQUE,
+    google_place_id       TEXT UNIQUE,
+    islamicfinder_id      TEXT,
+
+    -- Mosque characteristics
+    denomination          TEXT,                  -- Sunni / Shia / etc. if determinable
+    languages_spoken      TEXT[],                -- e.g. ["English", "Arabic", "Urdu"]
+    has_womens_section    BOOLEAN,
+    has_parking           BOOLEAN,
+    wheelchair_accessible BOOLEAN,
+    capacity              INTEGER,
+
+    -- Status
+    is_active             BOOLEAN NOT NULL DEFAULT TRUE,
+    verified              BOOLEAN NOT NULL DEFAULT FALSE,  -- manually verified data
+
+    -- Metadata
+    created_at            TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at            TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX mosques_geom_idx ON mosques USING GIST (geom);
+CREATE INDEX mosques_city_state_idx ON mosques (city, state);
+CREATE INDEX mosques_active_idx ON mosques (is_active) WHERE is_active = TRUE;
+```
+
+---
+
+### `prayer_schedules`
+
+One row per mosque per date. Stores both adhan and iqama times with full source tracking for every individual field.
+
+```sql
+CREATE TABLE prayer_schedules (
+    id                        UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    mosque_id                 UUID NOT NULL REFERENCES mosques(id) ON DELETE CASCADE,
+    date                      DATE NOT NULL,
+
+    -- Fajr
+    fajr_adhan                TIME,
+    fajr_iqama                TIME,
+    fajr_adhan_source         TEXT,
+    fajr_iqama_source         TEXT,
+    fajr_adhan_confidence     TEXT,
+    fajr_iqama_confidence     TEXT,
+
+    -- Sunrise (required for Fajr period-end calculation)
+    sunrise                   TIME,
+    sunrise_source            TEXT,    -- always 'calculated' (astronomical)
+
+    -- Dhuhr
+    dhuhr_adhan               TIME,
+    dhuhr_iqama               TIME,
+    dhuhr_adhan_source        TEXT,
+    dhuhr_iqama_source        TEXT,
+    dhuhr_adhan_confidence    TEXT,
+    dhuhr_iqama_confidence    TEXT,
+
+    -- Asr
+    asr_adhan                 TIME,
+    asr_iqama                 TIME,
+    asr_adhan_source          TEXT,
+    asr_iqama_source          TEXT,
+    asr_adhan_confidence      TEXT,
+    asr_iqama_confidence      TEXT,
+
+    -- Maghrib
+    maghrib_adhan             TIME,
+    maghrib_iqama             TIME,
+    maghrib_adhan_source      TEXT,
+    maghrib_iqama_source      TEXT,
+    maghrib_adhan_confidence  TEXT,
+    maghrib_iqama_confidence  TEXT,
+
+    -- Isha
+    isha_adhan                TIME,
+    isha_iqama                TIME,
+    isha_adhan_source         TEXT,
+    isha_iqama_source         TEXT,
+    isha_adhan_confidence     TEXT,
+    isha_iqama_confidence     TEXT,
+
+    -- Audit
+    scraped_at                TIMESTAMPTZ,
+    created_at                TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at                TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+    CONSTRAINT prayer_schedules_mosque_date_unique UNIQUE (mosque_id, date)
+);
+
+CREATE INDEX prayer_schedules_mosque_date_idx ON prayer_schedules (mosque_id, date);
+CREATE INDEX prayer_schedules_date_idx ON prayer_schedules (date);
+```
+
+**Note on date storage**: The pipeline pre-computes schedules for the next 30 days. For mosques where only a single "current" schedule was scraped (no date-specific data), that schedule is duplicated across dates until a new scrape updates it. The `updated_at` field allows the app to show freshness to users.
+
+---
+
+### `jumuah_sessions`
+
+Separate table because a single mosque can have multiple Jumuah sessions per Friday, and details (imam, topic) change weekly.
+
+```sql
+CREATE TABLE jumuah_sessions (
+    id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    mosque_id         UUID NOT NULL REFERENCES mosques(id) ON DELETE CASCADE,
+    valid_date        DATE NOT NULL,           -- the specific Friday this applies to
+    session_number    INTEGER NOT NULL DEFAULT 1,  -- 1st, 2nd, 3rd session
+
+    -- Timing
+    khutba_start      TIME,
+    prayer_start      TIME,
+
+    -- Imam details
+    imam_name         TEXT,
+    imam_title        TEXT,                    -- Sheikh / Dr. / Hafiz / Imam / Ustaz
+    imam_is_guest     BOOLEAN DEFAULT FALSE,
+
+    -- Sermon details
+    language          TEXT,                    -- English / Arabic / Urdu / Mixed
+    khutba_topic      TEXT,
+    khutba_series     TEXT,                    -- e.g. "Stories of the Prophets – Part 3"
+
+    -- Logistics
+    capacity          INTEGER,
+    booking_required  BOOLEAN DEFAULT FALSE,
+    booking_url       TEXT,
+    special_notes     TEXT,
+
+    -- Source tracking
+    source            TEXT,
+    confidence        TEXT,
+    scraped_at        TIMESTAMPTZ,
+    created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+    CONSTRAINT jumuah_sessions_unique UNIQUE (mosque_id, valid_date, session_number)
+);
+
+CREATE INDEX jumuah_sessions_mosque_date_idx ON jumuah_sessions (mosque_id, valid_date);
+CREATE INDEX jumuah_sessions_date_idx ON jumuah_sessions (valid_date);
+```
+
+---
+
+### `scraping_jobs`
+
+The pipeline queue and full audit log. One row per mosque — upserted on each run.
+
+```sql
+CREATE TABLE scraping_jobs (
+    id                    UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    mosque_id             UUID NOT NULL REFERENCES mosques(id) ON DELETE CASCADE UNIQUE,
+
+    -- Queue state
+    status                TEXT NOT NULL DEFAULT 'pending',
+                          -- pending / running / success / failed / no_website / skipped
+    priority              INTEGER NOT NULL DEFAULT 5,
+                          -- 1=highest (new mosque), 10=lowest (recently scraped success)
+    next_attempt_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+    -- History
+    last_attempted_at     TIMESTAMPTZ,
+    last_success_at       TIMESTAMPTZ,
+    attempts_count        INTEGER NOT NULL DEFAULT 0,
+    consecutive_failures  INTEGER NOT NULL DEFAULT 0,
+
+    -- Result metadata
+    tier_reached          INTEGER,             -- 1-5: which tier produced the data
+    error_message         TEXT,
+
+    -- Raw evidence (kept for debugging and manual review)
+    raw_html_url          TEXT,                -- URL that yielded data
+    raw_extracted_json    JSONB,               -- normalized result before DB write
+    image_urls_found      TEXT[],              -- images detected as potential schedules
+
+    -- Coverage
+    dates_covered_from    DATE,
+    dates_covered_until   DATE,
+    scraped_at            TIMESTAMPTZ,
+
+    created_at            TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at            TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX scraping_jobs_next_attempt_idx ON scraping_jobs (next_attempt_at)
+    WHERE status IN ('pending', 'failed');
+CREATE INDEX scraping_jobs_priority_idx ON scraping_jobs (priority, next_attempt_at);
+```
+
+---
+
+### `push_subscriptions`
+
+User notification registrations. No PII — location stored at grid cell granularity only.
+
+```sql
+CREATE TABLE push_subscriptions (
+    id                      UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+
+    -- Push endpoint (FCM token or Web Push subscription)
+    push_token              TEXT NOT NULL UNIQUE,
+    push_platform           TEXT NOT NULL,    -- fcm / webpush
+    vapid_endpoint          TEXT,             -- for Web Push
+    vapid_p256dh            TEXT,
+    vapid_auth              TEXT,
+
+    -- User location context (grid cell, not exact GPS)
+    location_lat            DOUBLE PRECISION, -- rounded to 0.01 degrees (~1km)
+    location_lng            DOUBLE PRECISION,
+    timezone                TEXT NOT NULL,    -- IANA timezone
+
+    -- Preferred mosque (optional)
+    favorite_mosque_id      UUID REFERENCES mosques(id),
+
+    -- Per-prayer notification preferences (stored as JSONB for flexibility)
+    preferences             JSONB NOT NULL DEFAULT '{
+        "fajr":    {"enabled": true,  "before_adhan_min": 30, "before_iqama_min": 15},
+        "dhuhr":   {"enabled": true,  "before_adhan_min": 15, "before_iqama_min": 10},
+        "asr":     {"enabled": true,  "before_adhan_min": 15, "before_iqama_min": 10},
+        "maghrib": {"enabled": true,  "before_adhan_min": 15, "before_iqama_min": 5},
+        "isha":    {"enabled": true,  "before_adhan_min": 15, "before_iqama_min": 10},
+        "jumuah":  {"enabled": true,  "before_khutba_min": 60},
+        "quiet_hours_start": "23:00",
+        "quiet_hours_end":   "04:30",
+        "fajr_override_quiet": true,
+        "travel_buffer_min": 5
+    }',
+
+    -- Status
+    is_active               BOOLEAN NOT NULL DEFAULT TRUE,
+    last_delivered_at       TIMESTAMPTZ,
+    failed_count            INTEGER NOT NULL DEFAULT 0,
+
+    created_at              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at              TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX push_subscriptions_active_idx ON push_subscriptions (is_active)
+    WHERE is_active = TRUE;
+CREATE INDEX push_subscriptions_timezone_idx ON push_subscriptions (timezone);
+```
+
+---
+
+## Spatial Query Pattern (mosque search)
+
+```sql
+-- Find all active mosques within radius_km of user, with today's prayer schedule
+SELECT
+    m.id,
+    m.name,
+    m.lat,
+    m.lng,
+    m.address,
+    m.timezone,
+    m.website,
+    m.phone,
+    m.has_womens_section,
+    m.wheelchair_accessible,
+    ST_Distance(
+        m.geom::geography,
+        ST_SetSRID(ST_MakePoint(:user_lng, :user_lat), 4326)::geography
+    ) AS distance_meters,
+    ps.fajr_adhan,    ps.fajr_iqama,    ps.fajr_iqama_source,
+    ps.dhuhr_adhan,   ps.dhuhr_iqama,   ps.dhuhr_iqama_source,
+    ps.asr_adhan,     ps.asr_iqama,     ps.asr_iqama_source,
+    ps.maghrib_adhan, ps.maghrib_iqama, ps.maghrib_iqama_source,
+    ps.isha_adhan,    ps.isha_iqama,    ps.isha_iqama_source,
+    ps.sunrise
+FROM mosques m
+LEFT JOIN prayer_schedules ps
+    ON ps.mosque_id = m.id AND ps.date = :today
+WHERE
+    m.is_active = TRUE
+    AND ST_DWithin(
+        m.geom::geography,
+        ST_SetSRID(ST_MakePoint(:user_lng, :user_lat), 4326)::geography,
+        :radius_meters
+    )
+ORDER BY distance_meters ASC
+LIMIT 20;
+```
+
+---
+
+## Migrations
+
+Managed by Alembic. All schema changes go through versioned migration files. Never edit the schema directly in production.
+
+```
+server/
+  alembic/
+    versions/
+      001_initial_schema.py
+      002_add_push_subscriptions.py
+      ...
+    env.py
+  alembic.ini
+```
