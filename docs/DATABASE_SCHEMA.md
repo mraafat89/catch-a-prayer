@@ -344,6 +344,130 @@ LIMIT 20;
 
 ---
 
+### `prayer_spots`
+
+Community-contributed non-mosque locations where a Muslim can pray — prayer rooms in public buildings, campus prayer rooms, halal restaurants with a prayer area, rest areas, etc.
+
+All spots are user-submitted. A spot starts in `pending` status and becomes `active` once it accumulates enough independent verifications.
+
+```sql
+CREATE TABLE prayer_spots (
+    id                    UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+
+    -- Identity
+    name                  TEXT NOT NULL,
+    spot_type             TEXT NOT NULL,
+                          -- 'prayer_room'       dedicated prayer room (airport, mall, hospital, etc.)
+                          -- 'community_hall'    community center or Islamic cultural center (non-mosque)
+                          -- 'halal_restaurant'  restaurant with a verified prayer space
+                          -- 'campus'            university / school prayer room
+                          -- 'rest_area'         highway rest area or gas station
+                          -- 'library'           public library quiet room
+                          -- 'other'             anything else user-identified
+
+    -- Location
+    lat                   DOUBLE PRECISION NOT NULL,
+    lng                   DOUBLE PRECISION NOT NULL,
+    geom                  GEOMETRY(Point, 4326),
+    address               TEXT,
+    city                  TEXT,
+    state                 TEXT,
+    zip                   TEXT,
+    country               CHAR(2) NOT NULL DEFAULT 'US',
+    timezone              TEXT,
+    google_place_id       TEXT,                   -- filled in by enrichment pipeline if matched
+
+    -- Facilities (set initially by submitter, updated by community verifications)
+    has_wudu_facilities   BOOLEAN,               -- running water for wudu available
+    gender_access         TEXT DEFAULT 'unknown',
+                          -- 'all'              mixed or open to everyone
+                          -- 'men_only'         only suitable for men
+                          -- 'women_only'       only suitable for women
+                          -- 'separate_spaces'  separate areas for men and women
+                          -- 'unknown'
+    is_indoor             BOOLEAN,               -- indoor vs outdoor spot
+    operating_hours       TEXT,                  -- free text: "24/7", "Mon-Fri 9am-5pm", etc.
+    notes                 TEXT,                  -- submitter description
+
+    -- Submission tracking (anonymous)
+    submitted_by_session  TEXT,                  -- anonymous session/device ID
+    submitted_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+    -- Community verification state
+    status                TEXT NOT NULL DEFAULT 'pending',
+                          -- 'pending'   submitted, not yet verified
+                          -- 'active'    verified by community (≥3 net positive verifications)
+                          -- 'rejected'  reported invalid by community (≥3 net negative)
+    verification_count    INTEGER NOT NULL DEFAULT 0,  -- total positive verifications
+    rejection_count       INTEGER NOT NULL DEFAULT 0,  -- total negative reports
+    last_verified_at      TIMESTAMPTZ,
+
+    created_at            TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at            TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX prayer_spots_geom_idx ON prayer_spots USING GIST (geom);
+CREATE INDEX prayer_spots_status_idx ON prayer_spots (status) WHERE status = 'active';
+CREATE INDEX prayer_spots_city_state_idx ON prayer_spots (city, state);
+```
+
+---
+
+### `prayer_spot_verifications`
+
+One row per user verification event. Records both confirmations ("yes, this spot works") and rejections ("this is wrong / gone").
+
+Aggregate counts are denormalized into `prayer_spots` (verification_count, rejection_count) for fast queries.
+
+```sql
+CREATE TABLE prayer_spot_verifications (
+    id                    UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    spot_id               UUID NOT NULL REFERENCES prayer_spots(id) ON DELETE CASCADE,
+
+    -- Anonymous user identity
+    session_id            TEXT NOT NULL,          -- device/session fingerprint (no PII)
+
+    -- Vote
+    is_positive           BOOLEAN NOT NULL,       -- true = confirms spot is valid
+                                                  -- false = reports spot as gone/invalid
+
+    -- Checklist (what this user confirmed — all fields optional)
+    attributes            JSONB NOT NULL DEFAULT '{}',
+    -- Example:
+    -- {
+    --   "has_prayer_space": true,
+    --   "has_wudu": true,
+    --   "gender_access": "all",
+    --   "is_indoor": true,
+    --   "operating_hours": "9am-5pm"
+    -- }
+
+    created_at            TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+    -- One verification per session per spot (prevents ballot stuffing)
+    CONSTRAINT uq_spot_verification UNIQUE (spot_id, session_id)
+);
+
+CREATE INDEX spot_verifications_spot_idx ON prayer_spot_verifications (spot_id);
+```
+
+---
+
+### Verification Confidence Logic
+
+Status transitions driven by net score (verification_count − rejection_count):
+
+| Net score | Status | Display label |
+|---|---|---|
+| 0–2 | `pending` | "Reported by community — not yet verified" |
+| ≥ 3 | `active` | "Verified by N users" |
+| ≥ 10 | `active` | "Highly verified" |
+| net ≤ −3 | `rejected` | Hidden from results |
+
+A spot with `pending` status is shown in results with a clear "unverified" disclaimer. Users are never shown rejected spots.
+
+---
+
 ## Migrations
 
 Managed by Alembic. All schema changes go through versioned migration files. Never edit the schema directly in production.

@@ -1,0 +1,112 @@
+from __future__ import annotations
+
+from datetime import datetime, timezone
+from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select, text
+import logging
+
+from app.database import get_db
+from app.models import Mosque
+from app.schemas import NearbyRequest, NearbyResponse
+from app.services.mosque_search import find_nearby_mosques
+
+logger = logging.getLogger(__name__)
+router = APIRouter(tags=["mosques"])
+
+
+# NOTE: fixed-path routes must come before path-param routes
+
+@router.get("/mosques/stats")
+async def get_mosque_stats(db: AsyncSession = Depends(get_db)):
+    """Coverage statistics for the mosque database."""
+    result = await db.execute(text("""
+        SELECT
+            COUNT(*) as total,
+            COUNT(*) FILTER (WHERE website IS NOT NULL) as with_website,
+            COUNT(*) FILTER (WHERE phone IS NOT NULL) as with_phone,
+            COUNT(*) FILTER (WHERE timezone IS NOT NULL) as with_timezone,
+            COUNT(*) FILTER (WHERE country = 'US') as in_us,
+            COUNT(*) FILTER (WHERE country = 'CA') as in_canada,
+            COUNT(*) FILTER (WHERE places_enriched = true) as places_enriched
+        FROM mosques
+        WHERE is_active = true
+    """))
+    row = result.mappings().first()
+    return dict(row)
+
+
+@router.post("/mosques/nearby", response_model=NearbyResponse)
+async def get_nearby_mosques(
+    request: NearbyRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """Find mosques near a location and return prayer catching status for each."""
+    try:
+        current_time = datetime.fromisoformat(
+            request.client_current_time.replace("Z", "+00:00")
+        )
+    except Exception:
+        current_time = datetime.now(timezone.utc)
+
+    mosques = await find_nearby_mosques(
+        db=db,
+        lat=request.latitude,
+        lng=request.longitude,
+        radius_km=request.radius_km,
+        client_timezone=request.client_timezone,
+        current_time=current_time,
+        travel_mode=request.travel_mode,
+    )
+
+    if not mosques:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "error": "no_mosques_found",
+                "message": f"No mosques found within {request.radius_km} km",
+                "status_code": 404,
+            },
+        )
+
+    return {
+        "mosques": mosques,
+        "user_location": {"latitude": request.latitude, "longitude": request.longitude},
+        "request_time": current_time.isoformat(),
+    }
+
+
+@router.get("/mosques/{mosque_id}")
+async def get_mosque_detail(
+    mosque_id: str,
+    client_timezone: str = Query(...),
+    client_current_time: str = Query(...),
+    db: AsyncSession = Depends(get_db),
+):
+    """Full mosque detail including today's prayer schedule."""
+    result = await db.execute(select(Mosque).where(Mosque.id == mosque_id))
+    mosque = result.scalar_one_or_none()
+
+    if not mosque:
+        raise HTTPException(
+            status_code=404,
+            detail={"error": "mosque_not_found", "message": f"No mosque found with ID: {mosque_id}"},
+        )
+
+    return {
+        "id": mosque.id,
+        "name": mosque.name,
+        "location": {
+            "latitude": mosque.lat,
+            "longitude": mosque.lng,
+            "address": mosque.address,
+            "city": mosque.city,
+            "state": mosque.state,
+        },
+        "timezone": mosque.timezone,
+        "phone": mosque.phone,
+        "website": mosque.website,
+        "has_womens_section": mosque.has_womens_section,
+        "wheelchair_accessible": mosque.wheelchair_accessible,
+        "denomination": mosque.denomination,
+    }

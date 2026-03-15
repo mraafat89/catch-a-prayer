@@ -20,9 +20,136 @@ Background:    scrape → normalize → store in DB  (slow, offline, doesn't aff
 | Full mosque scrape | Nightly 2 AM (staggered by timezone) | Update prayer/iqama times for all mosques |
 | Jumuah scrape | Thursday 9 PM local | Re-scrape Friday-specific details for upcoming week |
 | Mosque DB seed | Weekly Sunday | Pull new/updated mosques from OSM |
+| **Deduplication** | **After every seed run** | **Merge duplicate mosque entries** |
 | Places enrichment | On new mosque insert | Get website/phone from Google Places (one-time per mosque) |
+| Mosque info enrichment | On new insert + monthly | Scrape denomination, languages, facilities from mosque website |
 | Failed retry | Every 6 hours | Retry recently-failed scraping jobs |
 | Notification send | At each prayer time | FCM push for registered users |
+
+---
+
+## Mosque Deduplication
+
+### Why Duplicates Occur
+
+OpenStreetMap allows the same physical mosque to be tagged multiple times:
+- As a **node** (a single point) AND a **way** (the building outline) — most common
+- Once in the `religion=muslim` query and again in the `name~masjid` query (caught by OSM ID deduplication during seeding)
+- Rarely: two different contributors adding the same mosque under slightly different names
+
+### Detection Algorithm
+
+Two mosques are considered duplicates if **both** conditions are met:
+
+1. **Spatial proximity** — within 50 meters of each other (PostGIS `ST_DWithin`)
+2. **Name match** — one of:
+   - Names are identical (exact match)
+   - One name is "Unknown Mosque" (always defer to the named entry)
+   - pg_trgm similarity score ≥ 0.6 (catches abbreviations, typos, word order differences)
+
+Pairs between 50–200m with high name similarity (≥ 0.85) are also flagged for manual review but not auto-merged.
+
+### Merge Strategy
+
+When a duplicate pair is detected, keep the **winner** and delete the **loser**:
+
+**Winner selection** (first rule that applies):
+1. Named mosque beats "Unknown Mosque"
+2. Mosque with more non-null fields (name, website, phone, address, city, state)
+3. Mosque with a website beats one without
+4. Older record (lower `created_at`) wins as tiebreaker
+
+**Field merge before deletion** — before deleting the loser, copy any non-null fields the winner is missing:
+```
+winner.website   = winner.website   OR loser.website
+winner.phone     = winner.phone     OR loser.phone
+winner.address   = winner.address   OR loser.address
+winner.city      = winner.city      OR loser.city
+winner.state     = winner.state     OR loser.state
+winner.email     = winner.email     OR loser.email
+```
+
+The winner's scraping job is kept. The loser's scraping job is deleted (CASCADE).
+
+### Implementation
+
+Script: `pipeline/deduplicate_mosques.py`
+
+```
+Usage:
+  python -m pipeline.deduplicate_mosques           # auto-merge confirmed duplicates
+  python -m pipeline.deduplicate_mosques --dry-run  # preview only, no changes
+  python -m pipeline.deduplicate_mosques --review   # also show borderline pairs
+```
+
+Called automatically at the end of `seed_mosques.py`.
+
+### Thresholds (tuned from data)
+
+| Distance | Name match | Action |
+|---|---|---|
+| ≤ 50m | Identical or one is "Unknown Mosque" | Auto-merge |
+| ≤ 50m | pg_trgm similarity ≥ 0.6 | Auto-merge |
+| 50–200m | pg_trgm similarity ≥ 0.85 | Log as borderline (manual review) |
+| > 200m | Any | Keep both — different mosques |
+
+These thresholds were validated against 45 near-pairs found in the initial US+Canada seed of 1,500 mosques: 36 pairs within 50m, all confirmed duplicates upon inspection.
+
+---
+
+## Mosque Info Enrichment
+
+This section covers scraping mosque metadata (denomination, facilities, languages) from the mosque website — separate from prayer time scraping, runs once after initial seeding and on a monthly refresh.
+
+### What to Extract
+
+- `denomination`: sunni / shia / ismaili / ahmadiyya / sufi / other (stored lowercase)
+- `languages_spoken`: list of languages mentioned (English, Arabic, Urdu, Turkish, French, Somali, Bengali, etc.)
+- `has_womens_section`: boolean — detected from mentions of "sisters", "women's section", "musalla for sisters"
+- `has_parking`: boolean — detected from parking mentions
+
+### Where to Look
+
+1. Homepage — About section, footer, mission statement
+2. `/about`, `/about-us` page
+3. Homepage meta description and page title
+
+### Detection Method — Keyword Scoring
+
+Denomination keywords (check full page text, case-insensitive):
+
+```
+sunni:      sunni, ahl al-sunnah, ahlus sunnah, hanafi, shafi, maliki, hanbali,
+            deobandi, barelvi, salafi, wahhabi
+shia:       shia, shi'a, shi'ite, shite, imami, ithna ashari, 12ver,
+            ja'fari, jafari, hussainiyya, hussainia
+ismaili:    ismaili, isma'ili, jamatkhana, imamat
+ahmadiyya:  ahmadiyya, ahmadi, qadiani
+sufi:       sufi, tariqa, naqshbandi, qadiri, chishti, zawiya
+```
+
+Rules:
+- If ≥1 shia keyword found → denomination = "shia"
+- If ≥1 ismaili keyword found → denomination = "ismaili"
+- If ≥1 ahmadiyya keyword found → denomination = "ahmadiyya"
+- If ≥1 sunni keyword found (AND no shia/ismaili) → denomination = "sunni"
+- If no keywords found → denomination = NULL (not "sunni" by default — never assume)
+- If conflicting signals → denomination = NULL (don't guess)
+
+**Why not default to "sunni"**: The majority of mosques are Sunni but we never assume — showing wrong denomination is worse than showing none. Users who care will see NULL as "unconfirmed" rather than incorrect.
+
+### Language Detection
+
+Scan About page and homepage for language mentions. Also check if site has language switcher or Arabic/Urdu content sections.
+
+### Storage
+
+- Updates `mosques.denomination`, `mosques.languages_spoken`, `mosques.has_womens_section`
+- Recorded in `scraping_jobs.raw_extracted_json` under key `"info_enrichment"`
+- `denomination_source`: `"website_scraped"` | `"osm"` | `"user_submitted"` | null
+- Only overwrites OSM denomination if website scrape produces a confident result (≥2 keyword hits or Ismaili/Shia/Ahmadiyya with ≥1 hit since those are distinctive)
+
+**Schedule:** Runs once on new mosque insert (after prayer time scraping). Monthly refresh to catch newly-added About pages. Script: `pipeline/enrich_mosque_info.py`
 
 ---
 

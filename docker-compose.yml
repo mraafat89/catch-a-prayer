@@ -1,7 +1,22 @@
 version: '3.8'
 
 services:
-  # Backend API
+  db:
+    image: postgis/postgis:15-3.4
+    environment:
+      POSTGRES_DB: catchaprayer
+      POSTGRES_USER: cap
+      POSTGRES_PASSWORD: cap
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cap -d catchaprayer"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
   api:
     build:
       context: ./server
@@ -10,6 +25,11 @@ services:
       - "8000:8000"
     env_file:
       - ./server/.env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://cap:cap@db:5432/catchaprayer
+    depends_on:
+      db:
+        condition: service_healthy
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
@@ -17,17 +37,18 @@ services:
       timeout: 10s
       retries: 3
 
-  # Frontend Web App
   web:
     build:
       context: ./client
       dockerfile: Dockerfile
       args:
-        REACT_APP_GOOGLE_MAPS_API_KEY: ${REACT_APP_GOOGLE_MAPS_API_KEY:-}
-        REACT_APP_API_URL: ${REACT_APP_API_URL:-http://localhost:8000}
+        VITE_API_URL: ${VITE_API_URL:-http://localhost:8000}
     ports:
       - "3000:80"
     depends_on:
       api:
         condition: service_healthy
     restart: unless-stopped
+
+volumes:
+  postgres_data:

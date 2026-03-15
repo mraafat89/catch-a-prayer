@@ -32,6 +32,14 @@ This app is used on a mobile phone, often while standing outside or in a car. Th
 │  ┌─────────────────────────┐│
 │  │ Mosque card             ││
 │  └─────────────────────────┘│
+│  ─── Other Prayer Spots ───  │  section divider (only shown if spots exist)
+│  ┌─────────────────────────┐│
+│  │ Prayer spot card   🔶   ││
+│  └─────────────────────────┘│
+│  ─── Last Resort ──────────  │  only if no spot reachable before prayer ends
+│  ┌─────────────────────────┐│
+│  │ Pray anywhere card 🟠   ││
+│  └─────────────────────────┘│
 │  ...                        │
 └─────────────────────────────┘
 ```
@@ -62,18 +70,25 @@ The card must communicate everything needed to decide whether to go — without 
 
 ┌──────────────────────────────────────────────────────┐
 │ 🔵  Al-Farooq Masjid                    8 min away  │
-│     Asr: Adhan 4:15 PM · Iqama 4:20 PM              │
+│     Asr: Adhan 4:15 PM · Iqama 4:20 PM   [Ismaili] │  ← denomination badge
 │     🤲 Can pray solo — period active until 6:47 PM   │
 │     📍 From mosque website                           │
 └──────────────────────────────────────────────────────┘
 
 ┌──────────────────────────────────────────────────────┐
 │ ⚪  Masjid Al-Rahman                   35 min away  │
-│     Asr: Adhan 4:15 PM · Iqama ~4:25 PM             │
+│     Asr: Adhan 4:15 PM · Iqama ~4:25 PM   [Shia]   │  ← denomination badge
 │     ❌ Cannot reach before Asr ends                  │
 │     📍 Estimated — congregation time not confirmed   │  ← distinct visual style
 └──────────────────────────────────────────────────────┘
 ```
+
+### Denomination Badge
+
+- Shown as a small badge inline on the card (grey text on light background — not prominent, informational only)
+- Possible values: `Sunni` / `Shia` / `Ismaili` / `Ahmadiyya`
+- Only shown when denomination is confirmed — never shown as blank or "Unknown"
+- Sunni badge is shown when confirmed; omitted when unconfirmed (the majority of mosques are Sunni, so absence is not misleading)
 
 ### Card Status Colors
 
@@ -84,6 +99,147 @@ The card must communicate everything needed to decide whether to go — without 
 | 🔵 Blue | Can pray solo | Congregation ended, prayer period active |
 | 🟠 Orange | Pray nearby | Can't reach mosque, pray where you are |
 | ⚪ Grey | Cannot catch | Prayer period ends before arrival |
+
+---
+
+## Prayer Spots (Non-Mosque Prayer Locations)
+
+When a mosque isn't reachable in time, or simply isn't nearby, the app shows community-verified non-mosque prayer spots. These are shown below the mosque list section.
+
+### What counts as a prayer spot
+
+- Dedicated prayer rooms (airports, malls, hospitals, universities)
+- Halal restaurants with a prayer area (community-verified first)
+- Community halls or Islamic cultural centers (not mosques)
+- Highway rest areas
+- Library quiet rooms / study rooms
+- Any other location the community has verified as suitable
+
+Users can submit new spots directly from the app using the "+ Add Spot" button on the map.
+
+### Prayer Spot Cards
+
+Prayer spot cards look similar to mosque cards but with a distinct icon and verification badge:
+
+```
+┌──────────────────────────────────────────────────────┐
+│ 🔶  Sunnyvale Library — Quiet Room       0.4 km away │
+│     Prayer room · Indoor · Wudu ✓                    │
+│     ✅ Verified by 7 users                           │
+│     Mon-Sat 10am–9pm                                 │
+└──────────────────────────────────────────────────────┘
+
+┌──────────────────────────────────────────────────────┐
+│ 🔶  Yahoo Campus Building D              1.2 km away │
+│     Campus prayer room · Wudu ✓ · Men & Women        │
+│     ⚠️ Reported by 1 user — not yet verified          │
+└──────────────────────────────────────────────────────┘
+```
+
+**Icons:**
+- 🔶 Orange diamond = prayer spot (vs 🟢🟡🔵 circles for mosques)
+- Wudu ✓ = bathroom with running water confirmed
+- Wudu ? = wudu facilities unknown
+
+**Verification badge styles:**
+| Verifications | Badge |
+|---|---|
+| 0 (pending) | "Reported — not yet verified" (grey, italic) |
+| 1–2 | "Reported by N users" (grey) |
+| 3–9 | "Verified by N users" (green check) |
+| ≥10 | "Highly verified" (green bold) |
+
+Pending/unverified spots are shown with a muted style and a disclaimer. Rejected spots are never shown.
+
+### Last Resort — "Pray Anywhere" Card
+
+If the prayer period is still active but no mosque AND no prayer spot is reachable in time, the app shows a "Pray anywhere" card at the bottom of the list:
+
+```
+┌──────────────────────────────────────────────────────┐
+│ 🟠  Pray where you are               Asr — 47 min    │
+│     No mosque or prayer spot reachable in time.      │
+│     Find a quiet spot: parking lot, gas station,     │
+│     or any private corner.                           │
+│                                                      │
+│     [  🧭 Qibla Direction: 58° NE  ]                 │
+│     [ + Add a prayer spot you know ]                 │
+└──────────────────────────────────────────────────────┘
+```
+
+The Qibla direction is calculated offline from the user's GPS coordinates (no API needed). The "+ Add a prayer spot" deeplinks directly to the spot submission form.
+
+### Spot Submission Form
+
+Accessible from: map "+" button, prayer spot cards "Suggest edit", or "Pray anywhere" card CTA.
+
+```
+┌──────────────────────────────────────────────────────┐
+│  Add a Prayer Spot                              ✕    │
+│                                                      │
+│  Location                                            │
+│  [ Use my current location  ▼ ] or tap the map       │
+│                                                      │
+│  Name  ___________________________________           │
+│        "e.g. Safeway quiet corner, Library Room 2B"  │
+│                                                      │
+│  Type  ☐ Prayer room    ☐ Halal restaurant           │
+│        ☐ Campus         ☐ Rest area / gas station    │
+│        ☐ Library        ☐ Other                      │
+│                                                      │
+│  Facilities (check what you know)                    │
+│  ☐ Bathroom / running water available for wudu       │
+│  ☐ Indoor                                            │
+│  ☐ Open to everyone (men & women)                    │
+│  ☐ Men only    ☐ Women only   ☐ Separate spaces      │
+│                                                      │
+│  Hours (optional)  _______________________________   │
+│                                                      │
+│  Notes (optional)  _______________________________   │
+│  "Tip: mention if manager is accommodating, etc."    │
+│                                                      │
+│  [ Submit Spot ]                                     │
+│                                                      │
+│  Anonymous — we don't collect your name or email.    │
+└──────────────────────────────────────────────────────┘
+```
+
+### Spot Verification Flow
+
+When a user taps a prayer spot card, the detail sheet shows a "Verify this spot" section:
+
+```
+┌──────────────────────────────────────────────────────┐
+│  ━━━━━━  (drag handle)                               │
+│                                                      │
+│  🔶  Yahoo Campus Building D                         │
+│  1.2 km away · Campus prayer room                    │
+│                                                      │
+│  ⚠️ Reported by 1 user — help verify this spot        │
+│                                                      │
+│  Have you prayed here?  [ ✅ Yes, it works ]  [ ❌ No, it's gone/wrong ]
+│                                                      │
+│  If yes, confirm what you found:                     │
+│  ☐ There is a space to pray                          │
+│  ☐ Bathroom / wudu facilities available              │
+│  ☐ Open to everyone (men & women)                    │
+│  ☐ It's indoors                                      │
+│                                                      │
+│  Hours you observed: _____________________           │
+│                                                      │
+│  [ Submit Verification ]                             │
+│                                                      │
+│  Verified by 1 person so far.                        │
+│  After 3 verifications it will be fully shown.       │
+└──────────────────────────────────────────────────────┘
+```
+
+### Map Integration
+
+Prayer spots appear on the map with a different marker style:
+- Orange diamond marker (vs circular mosque markers)
+- Color intensity reflects verification level: light = pending, bold = verified
+- Tapping a spot opens the same bottom sheet as tapping a spot card
 
 ---
 
@@ -224,11 +380,18 @@ interface AppStore {
   isLoading: boolean;
   error: string | null;
 
+  // Prayer spots (non-mosque)
+  prayerSpots: PrayerSpot[];
+  selectedSpot: PrayerSpot | null;
+  spotsLoading: boolean;
+
   // Settings
   searchRadiusKm: number;
   travelBufferMinutes: number;
   travelModeEnabled: boolean;
   travelDestination: LatLng | null;
+  denominationFilter: 'all' | 'sunni' | 'shia' | 'ismaili' | null;
+  showPrayerSpots: boolean;           // user can toggle spots off in settings
 
   // Notifications
   notificationsEnabled: boolean;
@@ -236,7 +399,15 @@ interface AppStore {
 
   // UI
   mapCollapsed: boolean;
-  activeBottomSheet: 'mosque_detail' | 'navigate' | 'settings' | 'notifications' | null;
+  activeBottomSheet:
+    | 'mosque_detail'
+    | 'spot_detail'
+    | 'spot_submit'
+    | 'spot_verify'
+    | 'navigate'
+    | 'settings'
+    | 'notifications'
+    | null;
 }
 ```
 
@@ -252,9 +423,21 @@ Search Settings
   Travel buffer: [ 5 min ▼ ] (0, 5, 10, 15 min)
     "Added to travel time for parking, walking to entrance"
 
+Denomination Filter
+  ☑ All mosques (default)
+  ☐ Sunni only
+  ☐ Shia only
+  ☐ Ismaili only
+  Note: mosques with unconfirmed denomination are always shown
+  "We never hide a mosque just because we don't have denomination data"
+
 Travel Mode
   ☐ I am traveling (enables prayer combination options)
   Destination: [ Enter destination... ]
+
+Prayer Spots
+  ☑ Show community prayer spots
+    "Non-mosque locations verified by other users"
 
 Display
   ☑ Show adhan times

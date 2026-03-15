@@ -252,6 +252,124 @@ Unsubscribe from all notifications.
 
 ---
 
+### `POST /api/spots/nearby`
+
+Find community prayer spots near a location. Returns active spots first, pending spots (with disclaimer) second.
+
+**Request**:
+```json
+{
+  "latitude": 37.368,
+  "longitude": -122.036,
+  "radius_km": 10
+}
+```
+
+**Response**:
+```json
+{
+  "spots": [
+    {
+      "id": "uuid",
+      "name": "Sunnyvale Public Library — Quiet Room",
+      "spot_type": "library",
+      "location": {
+        "latitude": 37.371,
+        "longitude": -122.040,
+        "address": "665 W Olive Ave, Sunnyvale, CA 94086"
+      },
+      "distance_meters": 380,
+      "has_wudu_facilities": true,
+      "gender_access": "all",
+      "is_indoor": true,
+      "operating_hours": "Mon-Sat 10am-9pm, Sun 12pm-5pm",
+      "notes": "Quiet study room on second floor, usually empty",
+      "status": "active",
+      "verification_count": 7,
+      "rejection_count": 0,
+      "verification_label": "Verified by 7 users",
+      "last_verified_at": "2024-09-01T18:30:00Z"
+    },
+    {
+      "id": "uuid",
+      "name": "Yahoo Campus Building D — Prayer Room",
+      "spot_type": "campus",
+      "status": "pending",
+      "verification_count": 1,
+      "verification_label": "Reported by 1 user — not yet verified",
+      ...
+    }
+  ]
+}
+```
+
+---
+
+### `POST /api/spots`
+
+Submit a new prayer spot.
+
+**Request**:
+```json
+{
+  "name": "Safeway Sunnyvale — Corner Deli",
+  "spot_type": "other",
+  "latitude": 37.365,
+  "longitude": -122.033,
+  "address": "819 E El Camino Real, Sunnyvale, CA 94087",
+  "has_wudu_facilities": false,
+  "gender_access": "all",
+  "is_indoor": true,
+  "operating_hours": "6am-midnight",
+  "notes": "Quiet corner near deli section, manager is accommodating",
+  "session_id": "anon-device-hash"
+}
+```
+
+**Response 201**:
+```json
+{
+  "spot_id": "uuid",
+  "status": "pending",
+  "message": "Thank you! Your spot has been submitted. It will appear once verified by the community."
+}
+```
+
+---
+
+### `POST /api/spots/{spot_id}/verify`
+
+Submit a verification or rejection for a prayer spot.
+
+**Request**:
+```json
+{
+  "session_id": "anon-device-hash",
+  "is_positive": true,
+  "attributes": {
+    "has_prayer_space": true,
+    "has_wudu": false,
+    "gender_access": "all",
+    "is_indoor": true
+  }
+}
+```
+
+**Response 200**:
+```json
+{
+  "spot_id": "uuid",
+  "verification_count": 4,
+  "rejection_count": 0,
+  "status": "active",
+  "verification_label": "Verified by 4 users"
+}
+```
+
+Returns `409 Conflict` if this `session_id` has already verified this spot.
+
+---
+
 ### `GET /api/settings`
 
 Get default user settings.
