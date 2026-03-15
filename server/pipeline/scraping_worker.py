@@ -529,7 +529,7 @@ def update_job_status(session: Session, mosque_id: str, success: bool,
             tier_reached         = :tier,
             error_message        = :error,
             raw_html_url         = COALESCE(:url, raw_html_url),
-            raw_extracted_json   = COALESCE(:raw_json::jsonb, raw_extracted_json),
+            raw_extracted_json   = COALESCE(CAST(:raw_json AS jsonb), raw_extracted_json),
             updated_at           = :now
         WHERE mosque_id = CAST(:mid AS uuid)
     """), {
@@ -1061,10 +1061,19 @@ async def scrape_mosque(mosque: MosqueRecord, target_date: date,
     if not result:
         return False, tier_reached, "All tiers failed"
 
-    # Validate
+    # Validate — on failure always fall back to a clean Tier 5 calculation
+    # (avoids mixed-source corruption where scraped iqama < scraped adhan)
     is_valid, reason = validate_prayer_times(result)
     if not is_valid:
-        return False, tier_reached, f"Validation failed: {reason}"
+        logger.warning(f"  Validation failed ({reason}), falling back to clean Tier 5")
+        try:
+            result = tier5_calculated(mosque, target_date)
+            tier_reached = 5
+            is_valid, reason = validate_prayer_times(result)
+        except Exception as e:
+            return False, tier_reached, f"Tier 5 fallback failed: {e}"
+        if not is_valid:
+            return False, tier_reached, f"Validation failed even after Tier 5: {reason}"
 
     # Persist
     engine = get_sync_engine()

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import traceback
 from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, text
 import logging
@@ -49,15 +51,23 @@ async def get_nearby_mosques(
     except Exception:
         current_time = datetime.now(timezone.utc)
 
-    mosques = await find_nearby_mosques(
-        db=db,
-        lat=request.latitude,
-        lng=request.longitude,
-        radius_km=request.radius_km,
-        client_timezone=request.client_timezone,
-        current_time=current_time,
-        travel_mode=request.travel_mode,
-    )
+    try:
+        mosques = await find_nearby_mosques(
+            db=db,
+            lat=request.latitude,
+            lng=request.longitude,
+            radius_km=request.radius_km,
+            client_timezone=request.client_timezone,
+            current_time=current_time,
+            travel_mode=request.travel_mode,
+        )
+    except Exception as exc:
+        logger.error(
+            "find_nearby_mosques failed for (%.4f, %.4f):\n%s",
+            request.latitude, request.longitude,
+            traceback.format_exc(),
+        )
+        raise HTTPException(status_code=500, detail=f"Internal error: {type(exc).__name__}: {exc}")
 
     if not mosques:
         raise HTTPException(

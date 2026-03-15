@@ -1,81 +1,140 @@
-export enum PrayerName {
-  FAJR = "fajr",
-  DHUHR = "dhuhr", 
-  ASR = "asr",
-  MAGHRIB = "maghrib",
-  ISHA = "isha",
-  JUMAA = "jumaa"
-}
+// v2 API types — aligned with the FastAPI backend schemas
 
-export interface Location {
+export interface LatLng {
   latitude: number;
   longitude: number;
-  address?: string;
 }
 
-export interface Prayer {
-  prayer_name: PrayerName;
-  adhan_time: string;
-  iqama_time?: string;
+export interface PrayerTime {
+  prayer: string;
+  adhan_time: string | null;
+  iqama_time: string | null;
+  adhan_source: string | null;
+  iqama_source: string | null;
+  adhan_confidence: string | null;
+  iqama_confidence: string | null;
+  data_freshness: string | null;
 }
 
-export interface TravelInfo {
-  distance_meters: number;
-  duration_seconds: number;
-  duration_text: string;
-}
-
-export enum PrayerStatus {
-  CAN_CATCH_WITH_IMAM = "can_catch_with_imam",
-  CAN_CATCH_AFTER_IMAM = "can_catch_after_imam",
-  CAN_CATCH_DELAYED = "can_catch_delayed",
-  CANNOT_CATCH = "cannot_catch",
-  MISSED = "missed"
-}
-
-export interface NextPrayer {
-  prayer: PrayerName;
-  status: PrayerStatus;
-  can_catch: boolean;
-  travel_time_minutes: number;
-  time_remaining_minutes: number;
-  arrival_time: string;
-  prayer_time: string;
+export interface NextCatchable {
+  prayer: string;
+  status: string;
+  status_label: string;
   message: string;
-  is_delayed?: boolean;
-  time_until_next_prayer?: number;
+  urgency: 'high' | 'normal' | 'low';
+  iqama_time: string | null;
+  adhan_time: string | null;
+  arrival_time: string | null;
+  minutes_until_iqama: number | null;
+  leave_by: string | null;
+  period_ends_at: string | null;
+}
+
+export interface MosqueLocation {
+  latitude: number;
+  longitude: number;
+  address: string | null;
+  city?: string | null;
+  state?: string | null;
 }
 
 export interface Mosque {
-  place_id: string;
+  id: string;
   name: string;
-  location: Location;
-  phone_number?: string;
-  website?: string;
-  rating?: number;
-  user_ratings_total?: number;
-  travel_info?: TravelInfo;
-  next_prayer?: NextPrayer;
-  prayers: Prayer[];
+  location: MosqueLocation;
+  timezone: string | null;
+  distance_meters: number;
+  travel_time_minutes: number | null;
+  travel_time_source: string;
+  phone: string | null;
+  website: string | null;
+  has_womens_section: boolean | null;
+  wheelchair_accessible: boolean | null;
+  denomination: string | null;
+  next_catchable: NextCatchable | null;
+  catchable_prayers: NextCatchable[];
+  travel_combinations: unknown[];
+  prayers: PrayerTime[];
+  sunrise: string | null;
+  jumuah_sessions: unknown[];
 }
 
-export interface LocationRequest {
+export interface NearbyResponse {
+  mosques: Mosque[];
+  user_location: LatLng;
+  request_time: string;
+}
+
+// Prayer spot types
+export interface SpotLocation {
   latitude: number;
   longitude: number;
-  radius_km?: number;
-  client_timezone?: string;
-  client_current_time?: string;
+  address: string | null;
+  city?: string | null;
+  state?: string | null;
 }
 
-export interface MosqueResponse {
-  mosques: Mosque[];
-  user_location: Location;
+export interface PrayerSpot {
+  id: string;
+  name: string;
+  spot_type: string;
+  location: SpotLocation;
+  distance_meters: number;
+  has_wudu_facilities: boolean | null;
+  gender_access: string | null;
+  is_indoor: boolean | null;
+  operating_hours: string | null;
+  notes: string | null;
+  status: 'pending' | 'active' | 'rejected';
+  verification_count: number;
+  rejection_count: number;
+  verification_label: string;
+  last_verified_at: string | null;
 }
 
-export interface UserSettings {
-  max_search_radius: number;
-  distance_unit: string;
-  prayer_buffer_minutes: number;
-  show_iqama_times: boolean;
-  show_adhan_times: boolean;
+export interface SpotNearbyResponse {
+  spots: PrayerSpot[];
+  user_location: LatLng;
 }
+
+export interface SpotSubmitRequest {
+  name: string;
+  spot_type: string;
+  latitude: number;
+  longitude: number;
+  address?: string;
+  city?: string;
+  state?: string;
+  has_wudu_facilities?: boolean | null;
+  gender_access?: string;
+  is_indoor?: boolean | null;
+  operating_hours?: string;
+  notes?: string;
+  session_id: string;
+}
+
+export interface SpotVerifyRequest {
+  session_id: string;
+  is_positive: boolean;
+  attributes: Record<string, unknown>;
+}
+
+// Status → display mapping
+export const STATUS_CONFIG: Record<string, { dot: string; bg: string; text: string; border: string }> = {
+  can_catch_with_imam:          { dot: '🟢', bg: 'bg-green-50',  text: 'text-green-800',  border: 'border-green-200' },
+  can_catch_with_imam_in_progress: { dot: '🟡', bg: 'bg-yellow-50', text: 'text-yellow-800', border: 'border-yellow-200' },
+  can_pray_solo_at_mosque:      { dot: '🔵', bg: 'bg-blue-50',   text: 'text-blue-800',   border: 'border-blue-200' },
+  pray_at_nearby_location:      { dot: '🟠', bg: 'bg-orange-50', text: 'text-orange-800', border: 'border-orange-200' },
+  missed_make_up:               { dot: '⚪', bg: 'bg-gray-50',   text: 'text-gray-600',   border: 'border-gray-200' },
+  upcoming:                     { dot: '⚪', bg: 'bg-gray-50',   text: 'text-gray-600',   border: 'border-gray-200' },
+};
+
+export const SPOT_TYPE_LABELS: Record<string, string> = {
+  prayer_room:      'Prayer room',
+  community_hall:   'Community hall',
+  halal_restaurant: 'Halal restaurant',
+  campus:           'Campus prayer room',
+  rest_area:        'Rest area',
+  library:          'Library',
+  other:            'Other',
+};

@@ -83,6 +83,62 @@ The card must communicate everything needed to decide whether to go — without 
 └──────────────────────────────────────────────────────┘
 ```
 
+### Multiple Prayer Statuses per Card
+
+Each mosque card shows **all currently relevant prayers**, not just one. A prayer is relevant if its period is still active (`can_catch_with_imam`, `can_catch_with_imam_in_progress`, `can_pray_solo_at_mosque`, `pray_at_nearby_location`) or its adhan is within 2 hours (`upcoming`).
+
+```
+┌──────────────────────────────────────────────────────┐
+│ 🟢  Masjid Al-Noor                      12 min away │
+│                                                      │
+│  🔵 Congregation ended for Dhuhr — can pray solo    │
+│  🟢 Can catch Asr with Imam — leave by 4:13 PM      │
+│                                                      │
+│  ✓ From mosque website · today                       │
+└──────────────────────────────────────────────────────┘
+```
+
+**"I already prayed [Prayer]" global banner**: Shown as a floating chip at the top of the list (not per mosque card). Only appears for the **current active prayer** (i.e. the one whose adhan has already passed and the period is still open — `can_catch_with_imam`, `in_progress`, or `can_pray_solo`). NOT shown for upcoming prayers (adhan hasn't happened yet — the user can't have prayed it).
+
+```
+┌──────────────────────────────────────────────────────┐
+│  ✓ I already prayed Dhuhr today    [Undo]            │  ← global chip, not per card
+└──────────────────────────────────────────────────────┘
+```
+
+When the user marks a prayer as prayed:
+- That prayer row is hidden from ALL mosque cards (it's done — no need to show it)
+- Only upcoming prayers remain visible on cards
+- Stored in localStorage keyed by date — resets at midnight
+- "Undo" chip stays visible so the user can reverse a mistake
+
+This is a **client-side only** feature — no API call needed.
+
+### Data Source Indicator
+
+Every mosque card and detail sheet shows a one-line data source badge below the status message. It tells the user how trustworthy the times are.
+
+**Source classification** (from `adhan_source` / `iqama_source` fields):
+
+| Source value(s) | Indicator | Style |
+|---|---|---|
+| `mosque_website_html`, `mosque_website_js` | `✓ From mosque website` | green text, small |
+| `islamicfinder` | `From IslamicFinder` | grey text |
+| `calculated`, `tier5_calculated`, or any unrecognized | `~ Estimated times` | amber text + tooltip on tap: "Congregation time not confirmed — based on calculated prayer window" |
+| Mixed (adhan from website, iqama estimated) | `~ Iqama estimated` | amber text |
+
+**Freshness suffix** (from `data_freshness` field): append `· updated today` / `· 3 days ago` etc. when source is not estimated.
+
+Examples:
+- `✓ From mosque website · updated today`
+- `✓ From mosque website · 3 days ago`
+- `~ Estimated times` (no freshness suffix — not applicable)
+- `~ Iqama estimated` (adhan verified but iqama is calculated)
+
+The indicator is shown:
+- On the **mosque card** (compact, 1 line, below status message)
+- In the **mosque detail bottom sheet** below the prayer times table (slightly more detailed)
+
 ### Denomination Badge
 
 - Shown as a small badge inline on the card (grey text on light background — not prominent, informational only)

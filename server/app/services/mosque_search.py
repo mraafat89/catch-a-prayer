@@ -204,16 +204,27 @@ def calculate_catching_status(
 
     # Prayer period hasn't started yet
     if current_minutes < adhan_min:
-        minutes_until = adhan_min - current_minutes
+        minutes_until_adhan = adhan_min - current_minutes
+        minutes_until_iqama = iqama_min - current_minutes
+        # Determine what the user can still achieve when they arrive
+        if arrival_min <= iqama_min:
+            leave_by_fmt = minutes_to_hhmm(leave_by_min)
+            action_msg = f"leave by {leave_by_fmt} to catch with Imam"
+        elif arrival_min <= period_end_min:
+            leave_by_solo = period_end_min - travel_minutes
+            action_msg = f"leave by {minutes_to_hhmm(leave_by_solo)} to pray solo at mosque"
+        else:
+            action_msg = "too far to reach before prayer ends"
         return {
             "prayer": prayer,
             "status": "upcoming",
             "status_label": STATUS_LABELS["upcoming"],
-            "message": f"{prayer.title()} in {minutes_until} min",
-            "urgency": "low",
+            "message": f"{prayer.title()} in {minutes_until_adhan} min — {action_msg}",
+            "urgency": "high" if minutes_until_adhan <= 15 else "normal" if minutes_until_adhan <= 45 else "low",
             "adhan_time": adhan,
             "iqama_time": iqama,
-            "minutes_until_iqama": iqama_min - current_minutes,
+            "minutes_until_iqama": minutes_until_iqama,
+            "leave_by": minutes_to_hhmm(leave_by_min),
             "period_ends_at": period_end,
         }
 
@@ -266,7 +277,7 @@ def calculate_catching_status(
                 "prayer": prayer,
                 "status": "can_pray_solo_at_mosque",
                 "status_label": STATUS_LABELS["can_pray_solo_at_mosque"],
-                "message": f"Congregation ended — can pray solo, period active until {period_end}",
+                "message": f"Congregation ended for {prayer.title()} — can pray solo until {period_end}",
                 "urgency": "low",
                 "adhan_time": adhan,
                 "iqama_time": iqama,
@@ -293,35 +304,91 @@ def get_next_catchable(
     travel_minutes: int,
     congregation_window: int = CONGREGATION_WINDOW_MINUTES,
 ) -> Optional[dict]:
-    """Find the most relevant prayer status to show on the mosque card."""
-    # Check in-progress or upcoming prayers first
-    priority_order = ["fajr", "dhuhr", "asr", "maghrib", "isha"]
+    """Find the most relevant prayer status to show on the mosque card.
 
-    best = None
+    Priority (per design doc):
+    1. can_catch_with_imam / can_catch_with_imam_in_progress
+    2. upcoming within 2 hours (beats a prior prayer's solo period)
+    3. can_pray_solo_at_mosque
+    4. pray_at_nearby_location
+    5. missed_make_up (only if nothing else)
+    """
+    priority_order = ["fajr", "dhuhr", "asr", "maghrib", "isha"]
+    UPCOMING_WINDOW_MINUTES = 120  # show upcoming if adhan within 2 hours
+
+    STATUS_RANK = {
+        "can_catch_with_imam": 0,
+        "can_catch_with_imam_in_progress": 0,
+        "upcoming": 1,
+        "can_pray_solo_at_mosque": 2,
+        "pray_at_nearby_location": 3,
+        "missed_make_up": 4,
+    }
+
+    candidates = []
     for prayer in priority_order:
         status = calculate_catching_status(
             prayer, schedule, current_minutes, travel_minutes, congregation_window
         )
         if status is None:
             continue
-        if status["status"] in ("missed_make_up",):
-            continue  # Skip missed ones for the "next catchable" display
-        best = status
-        # Stop at the first non-missed prayer
-        if status["status"] != "missed_make_up":
-            break
+        # Filter out upcoming prayers that are more than 2 hours away
+        if status["status"] == "upcoming":
+            minutes_until = status.get("minutes_until_iqama", 9999)
+            if minutes_until > UPCOMING_WINDOW_MINUTES:
+                continue
+        candidates.append(status)
 
-    # If all are missed, return the last one
-    if best is None:
+    if not candidates:
+        # Fall back: return the most recent missed prayer
         for prayer in reversed(priority_order):
             status = calculate_catching_status(
                 prayer, schedule, current_minutes, travel_minutes, congregation_window
             )
             if status:
-                best = status
-                break
+                return status
+        return None
 
-    return best
+    # Return highest-priority candidate; among ties keep the chronologically first
+    candidates.sort(key=lambda s: STATUS_RANK.get(s["status"], 99))
+    return candidates[0]
+
+
+def get_catchable_prayers(
+    schedule: dict,
+    current_minutes: int,
+    travel_minutes: int,
+    congregation_window: int = CONGREGATION_WINDOW_MINUTES,
+) -> list[dict]:
+    """Return all prayers with an actionable status (for the multi-prayer card UI)."""
+    priority_order = ["fajr", "dhuhr", "asr", "maghrib", "isha"]
+    UPCOMING_WINDOW_MINUTES = 120
+
+    results = []
+    for prayer in priority_order:
+        status = calculate_catching_status(
+            prayer, schedule, current_minutes, travel_minutes, congregation_window
+        )
+        if status is None:
+            continue
+        if status["status"] == "missed_make_up":
+            continue
+        if status["status"] == "upcoming":
+            minutes_until = status.get("minutes_until_iqama", 9999)
+            if minutes_until > UPCOMING_WINDOW_MINUTES:
+                continue
+        results.append(status)
+
+    # If nothing actionable, return the most recent missed prayer as a fallback
+    if not results:
+        for prayer in reversed(priority_order):
+            status = calculate_catching_status(
+                prayer, schedule, current_minutes, travel_minutes, congregation_window
+            )
+            if status:
+                return [status]
+
+    return results
 
 
 # ---------------------------------------------------------------------------
@@ -418,7 +485,7 @@ async def find_nearby_mosques(
         if sched_row:
             schedule = dict(sched_row)
             if sched_row.get("scraped_at"):
-                delta = current_time - sched_row["scraped_at"].replace(tzinfo=None)
+                delta = current_time.replace(tzinfo=None) - sched_row["scraped_at"].replace(tzinfo=None)
                 days = delta.days
                 data_freshness = "today" if days == 0 else f"{days} day{'s' if days != 1 else ''} ago"
         else:
@@ -455,8 +522,11 @@ async def find_nearby_mosques(
                 "data_freshness": data_freshness,
             })
 
-        # Get next catchable prayer
+        # Get next catchable prayer (single) and all catchable prayers (list)
         next_catchable = get_next_catchable(
+            schedule, current_min_mosque, travel_min, congregation_window
+        )
+        catchable_prayers = get_catchable_prayers(
             schedule, current_min_mosque, travel_min, congregation_window
         )
 
@@ -479,6 +549,7 @@ async def find_nearby_mosques(
             "has_womens_section": row["has_womens_section"],
             "wheelchair_accessible": row["wheelchair_accessible"],
             "next_catchable": next_catchable,
+            "catchable_prayers": catchable_prayers,
             "travel_combinations": [],
             "prayers": prayers_out,
             "sunrise": schedule.get("sunrise"),

@@ -53,6 +53,7 @@ class MosqueResponse(BaseModel):
     has_womens_section: Optional[bool]
     wheelchair_accessible: Optional[bool]
     next_catchable: Optional[NextCatchable]
+    catchable_prayers: list[NextCatchable] = []
     travel_combinations: list
     prayers: list[PrayerTime]
     sunrise: Optional[str]

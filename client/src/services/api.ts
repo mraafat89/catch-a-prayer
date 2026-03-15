@@ -1,40 +1,56 @@
 import axios from 'axios';
-import { LocationRequest, MosqueResponse, UserSettings } from '../types';
+import {
+  NearbyResponse, SpotNearbyResponse,
+  SpotSubmitRequest, SpotVerifyRequest,
+} from '../types';
 
-const API_BASE_URL = process.env.REACT_APP_API_URL || 'http://localhost:8000';
+const API_BASE_URL = process.env.REACT_APP_API_URL || '';
 
 const api = axios.create({
   baseURL: API_BASE_URL,
   timeout: 30000,
-  headers: {
-    'Content-Type': 'application/json',
-  },
+  headers: { 'Content-Type': 'application/json' },
 });
 
 export const apiService = {
-  // Find nearby mosques
-  findNearbyMosques: async (request: LocationRequest): Promise<MosqueResponse> => {
-    const response = await api.post('/api/mosques/nearby', request);
-    return response.data;
+  findNearbyMosques: async (
+    lat: number, lng: number, radiusKm: number
+  ): Promise<NearbyResponse> => {
+    const res = await api.post('/api/mosques/nearby', {
+      latitude: lat,
+      longitude: lng,
+      radius_km: radiusKm,
+      client_timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+      client_current_time: new Date().toISOString(),
+    });
+    return res.data;
   },
 
-  // Get user settings
-  getUserSettings: async (): Promise<UserSettings> => {
-    const response = await api.get('/api/settings');
-    return response.data;
+  findNearbySpots: async (
+    lat: number, lng: number, radiusKm: number
+  ): Promise<SpotNearbyResponse> => {
+    const res = await api.post('/api/spots/nearby', {
+      latitude: lat,
+      longitude: lng,
+      radius_km: radiusKm,
+    });
+    return res.data;
   },
 
-  // Update user settings
-  updateUserSettings: async (settings: UserSettings): Promise<UserSettings> => {
-    const response = await api.put('/api/settings', settings);
-    return response.data;
+  submitSpot: async (req: SpotSubmitRequest) => {
+    const res = await api.post('/api/spots', req);
+    return res.data;
   },
 
-  // Health check
-  healthCheck: async (): Promise<any> => {
-    const response = await api.get('/health');
-    return response.data;
-  }
+  verifySpot: async (spotId: string, req: SpotVerifyRequest) => {
+    const res = await api.post(`/api/spots/${spotId}/verify`, req);
+    return res.data;
+  },
+
+  healthCheck: async () => {
+    const res = await api.get('/health');
+    return res.data;
+  },
 };
 
 export default api;

@@ -139,6 +139,33 @@ Find mosques near a location and return prayer catching status for each.
 | `missed_make_up` | Prayer period has ended |
 | `upcoming` | Prayer period has not started yet |
 
+**`next_catchable` (deprecated — kept for backwards compat)**:
+
+Single most urgent prayer. Replaced by `catchable_prayers` for UI use.
+
+**`catchable_prayers` array**:
+
+All prayers with an actionable or imminent status, ordered by prayer time. Returned alongside `next_catchable`. Each entry has the same shape as `next_catchable`.
+
+Inclusion rules:
+- Include `can_catch_with_imam`, `can_catch_with_imam_in_progress` always
+- Include `can_pray_solo_at_mosque` and `pray_at_nearby_location` always (prayer period still active)
+- Include `upcoming` only if adhan is within 2 hours
+- Exclude `missed_make_up` (prayer period over — nothing actionable)
+- If every prayer has passed, return one `missed_make_up` entry for the most recent prayer
+
+**Message formats per status** (all include prayer name and actionable timing):
+
+| Status | Message format |
+|---|---|
+| `upcoming` — can reach before iqama | `"Asr in 10 min — leave by 4:13 PM to catch with Imam"` |
+| `upcoming` — can't reach iqama but can pray solo | `"Asr in 10 min — leave by 4:40 PM to pray solo at mosque"` |
+| `can_catch_with_imam` | `"Can catch Asr with Imam — leave by 4:13 PM"` |
+| `can_catch_with_imam_in_progress` | `"Congregation started 5 min ago — leave now to join"` |
+| `can_pray_solo_at_mosque` | `"Congregation ended for Dhuhr — can pray solo until 4:40 PM"` |
+| `pray_at_nearby_location` | `"Cannot reach mosque before Asr ends — pray where you are"` |
+| `missed_make_up` | `"Dhuhr has ended — make it up"` |
+
 **Urgency values**:
 
 | `urgency` | Meaning |
