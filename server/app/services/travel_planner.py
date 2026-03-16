@@ -533,7 +533,7 @@ def build_combination_plan(
             "label": "Pray Both Before Leaving",
             "description": f"Both {prayer1.title()} and {prayer2.title()} are currently active — pray before you depart.",
             "prayers": [prayer1, prayer2],
-            "combination_label": "Jam' Taqdeem or Ta'kheer (both active now)",
+            "combination_label": "Jam' Taqdeem or Ta'kheer (both active now)" if allow_combining else None,
             "stops": [],
             "feasible": True,
             "note": "Most convenient — no stop needed on the road.",
@@ -659,7 +659,7 @@ def build_combination_plan(
                     f"{'are' if len(prayers_at_dest) > 1 else 'is'} still active when you arrive."
                 ),
                 "prayers": prayers_at_dest,
-                "combination_label": "Jam' Taqdeem" if len(prayers_at_dest) > 1 and s1_dest else None,
+                "combination_label": "Jam' Taqdeem" if (allow_combining and len(prayers_at_dest) > 1 and s1_dest) else None,
                 "stops": [],
                 "feasible": True,
                 "note": "No stop needed — find a mosque near your destination.",
@@ -794,17 +794,22 @@ def _itinerary_summary(pair_choices: list[dict]) -> str:
     return " → ".join(parts)
 
 
-def build_itineraries(prayer_pairs: list[dict]) -> list[dict]:
+def build_itineraries(prayer_pairs: list[dict], allow_combining: bool = True) -> list[dict]:
     """
     Build 3-5 complete trip itineraries from the per-pair option sets.
     Each itinerary is one cohesive plan covering ALL prayers for the whole trip.
 
-    Templates tried (in order):
+    Musafir (allow_combining=True) templates:
       1. All early  — pray before leaving or Taqdeem for every pair
       2. Early then late — Taqdeem for first pair, Ta'kheer/destination for last
       3. All late   — Ta'kheer or at-destination for every pair
       4. All at destination
       5. Separate stops (no combining)
+
+    Muqeem (allow_combining=False) templates:
+      1. Separate stops for every pair (primary)
+      2. Pray before leaving where possible, separate otherwise
+      3. All at destination
     Duplicate combos are skipped.
     """
     if not prayer_pairs:
@@ -826,24 +831,36 @@ def build_itineraries(prayer_pairs: list[dict]) -> list[dict]:
                 return (pm, pm["omap"][t])
         return None
 
-    FALLBACK = ["at_destination", "combine_late", "combine_early", "separate", "no_option"]
-
     n = len(pair_maps)
-    templates: list[list[list[str]]] = [
-        # 1. All early
-        [["pray_before", "combine_early"] + FALLBACK] * n,
-        # 2. Early first pair, late rest (only meaningful if ≥2 pairs)
-        (
-            [["pray_before", "combine_early"] + FALLBACK] +
-            [["combine_late", "at_destination"] + FALLBACK] * (n - 1)
-        ) if n >= 2 else [],
-        # 3. All late
-        [["combine_late", "at_destination", "separate"] + FALLBACK] * n,
-        # 4. All at destination
-        [["at_destination", "combine_late"] + FALLBACK] * n,
-        # 5. Separate stops
-        [["separate", "combine_early", "combine_late", "at_destination"] + FALLBACK] * n,
-    ]
+
+    if not allow_combining:
+        # Muqeem mode: no combining, prefer separate stops
+        MUQEEM_FALLBACK = ["separate", "pray_before", "at_destination", "no_option"]
+        templates: list[list[list[str]]] = [
+            # 1. Separate stops for all pairs (primary plan)
+            [["separate"] + MUQEEM_FALLBACK] * n,
+            # 2. Pray before where possible, else separate
+            [["pray_before", "separate"] + MUQEEM_FALLBACK] * n,
+            # 3. All at destination (fallback if no route stops found)
+            [["at_destination", "separate"] + MUQEEM_FALLBACK] * n,
+        ]
+    else:
+        FALLBACK = ["at_destination", "combine_late", "combine_early", "separate", "no_option"]
+        templates = [
+            # 1. All early
+            [["pray_before", "combine_early"] + FALLBACK] * n,
+            # 2. Early first pair, late rest (only meaningful if ≥2 pairs)
+            (
+                [["pray_before", "combine_early"] + FALLBACK] +
+                [["combine_late", "at_destination"] + FALLBACK] * (n - 1)
+            ) if n >= 2 else [],
+            # 3. All late
+            [["combine_late", "at_destination", "separate"] + FALLBACK] * n,
+            # 4. All at destination
+            [["at_destination", "combine_late"] + FALLBACK] * n,
+            # 5. Separate stops
+            [["separate", "combine_early", "combine_late", "at_destination"] + FALLBACK] * n,
+        ]
 
     seen: set[tuple] = set()
     itineraries: list[dict] = []
@@ -1040,7 +1057,7 @@ async def build_travel_plan(
             "options": fajr_options,
         })
 
-    itineraries = build_itineraries(prayer_pairs)
+    itineraries = build_itineraries(prayer_pairs, allow_combining=(trip_mode == "travel"))
 
     return {
         "route": {
