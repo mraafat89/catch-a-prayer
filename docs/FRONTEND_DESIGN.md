@@ -877,45 +877,57 @@ For each potential pair (Fajr standalone, Dhuhr+Asr, Maghrib+Isha), it is only i
 
 Pairs where **neither prayer's window touches the trip** are completely omitted from the response — not shown as empty or "no options", just absent.
 
-### Plan Output
+### Plan Output — Complete Itineraries
+
+The plan shows **3–5 complete trip itineraries**, each covering ALL prayers for the whole journey. The backend generates these by combining one strategy per prayer pair across all relevant pairs (Fajr, Dhuhr+Asr, Maghrib+Isha).
 
 ```
 ┌──────────────────────────────────────────────────────┐
-│  Route: 5h 48min · 381 mi                            │  white card, gray border
+│  Route: 5h 48min · 381 mi                            │
 └──────────────────────────────────────────────────────┘
 
-[Only pairs relevant to the trip window appear below]
+  3 complete prayer plans
 
-🕌 Dhuhr + Asr              ← shown only if trip spans Dhuhr or Asr time
 ┌──────────────────────────────────────────────────────┐
-│  ✅ Pray Both Before Leaving          [both active]  │  teal-50
-│  Both Dhuhr and Asr are currently active...          │
-└──────────────────────────────────────────────────────┘
-┌──────────────────────────────────────────────────────┐
-│  🟢 Combine Early — Jam' Taqdeem      [Jam' Taqdeem] │  green-50  (Traveling only)
-│  Stop at Masjid Al-Noor (12 min detour) — pray both  │
-│  Dhuhr + Asr together during Dhuhr time.             │
+│  OPTION 1                              +27 min  ▲    │  teal label + collapse toggle
+│  🕌 Dhuhr+Asr early (Taqdeem) · 🌙 Maghrib+Isha late │
+│  ────────────────────────────────────────────────    │
+│  🕌 Dhuhr + Asr         [Jam' Taqdeem]               │
+│  ⏩ Stop at Masjid Al-Noor (12 min detour) —          │
+│     pray both Dhuhr + Asr during Dhuhr time          │
 │  ┌──────────────────────────────────────────────┐    │
-│  │ Masjid Al-Noor · Bakersfield, CA             │    │
-│  │ Iqama 1:00 PM · +12 min detour               │    │
+│  │ Masjid Al-Noor · Bakersfield, CA             │    │  tappable → map focus
+│  │ Iqama 1:00 PM · +12 min detour 📍            │    │
 │  └──────────────────────────────────────────────┘    │
+│                                                      │
+│  🌙 Maghrib + Isha       [Jam' Ta'kheer]              │
+│  ⏪ Stop at Islamic Center (15 min detour) —          │
+│     pray both Maghrib + Isha during Isha time        │
+│  ┌──────────────────────────────────────────────┐    │
+│  │ Islamic Center · Fresno, CA                  │    │
+│  │ Iqama 9:45 PM · +15 min detour 📍            │    │
+│  └──────────────────────────────────────────────┘    │
+│  ────────────────────────────────────────────────    │
+│  [ 🗺 Google Maps ]  [ 📤 ]                          │  share row
 └──────────────────────────────────────────────────────┘
-┌──────────────────────────────────────────────────────┐
-│  🔵 Combine Late — Jam' Ta'kheer      [Jam' Ta'kheer] │  blue-50  (Traveling only)
-└──────────────────────────────────────────────────────┘
-
-🌙 Maghrib + Isha            ← shown only if trip spans Maghrib or Isha time
-...
-
-🌅 Fajr                      ← shown only if Fajr adhan falls within trip window
-...
 ```
 
-**Driving mode**: `combine_early` and `combine_late` options are omitted. Only `separate`, `pray_before`, `at_destination`, and `stop_for_fajr` appear.
+**Itinerary templates** (backend generates, deduplicates):
+1. **All early** — pray_before or Taqdeem for every pair
+2. **Early then late** — Taqdeem for first pair, Ta'kheer/destination for last *(classic Musafir road trip)*
+3. **All late** — Ta'kheer / at-destination for every pair
+4. **All at destination** — no route stops
+5. **Separate stops** — one mosque per prayer, no combining
 
-**`at_destination` redundancy rule**: The `at_destination` option is only shown when there are **no route-stop options** (no `combine_early`, `combine_late`, or `separate`) covering the prayers in that pair. If a mosque stop along the route already handles those prayers, `at_destination` is omitted to avoid the confusing "third card" for the same prayer.
+**Musafir mode** (`trip_mode=travel`): all five templates attempted; combining options included.
+**Muqeem mode** (`trip_mode=driving`): combining options excluded; only separate/pray_before/at_destination templates survive deduplication.
 
-**Travel option card — map zoom**: Tapping a mosque stop card inside a `TravelOptionCard` sets that mosque as the selected mosque in the store, un-collapses the map, and fits the map view to show both the user's current location and the mosque. This uses the same `selectedMosqueId` mechanism as tapping a mosque card in the list.
+**`at_destination` redundancy rule**: shown only when there are no route-stop options covering those prayers, to avoid a redundant third card.
+
+**Itinerary card behavior**:
+- Tap header to expand / collapse
+- Tap a mosque stop → selects mosque in store, focuses map, un-collapses map
+- "Open in Maps" row (see Share Route section above) is shown at the bottom of every expanded card
 
 ### Mosque Search Along Route
 
@@ -927,21 +939,27 @@ The backend uses:
 
 For each mosque: estimated arrival time = departure time + cumulative step duration to nearest checkpoint + drive to mosque. Prayer schedule lookup uses the mosque's **local date at that estimated arrival time** (handles timezone crossings and overnight trips).
 
-### Option Card Design
+### Itinerary Card Design (`TravelItineraryCard`)
 
-Each option card (`TravelOptionCard`) has:
-- **Color**: determined by `option_type`
-  - `pray_before` → teal-50 / teal border
-  - `combine_early` → green-50 / green border *(Traveling mode only)*
-  - `combine_late` → blue-50 / blue border *(Traveling mode only)*
-  - `separate` → purple-50 / purple border
-  - `at_destination` → orange-50 / orange border
-  - `stop_for_fajr` → yellow-50 / yellow border
-  - `no_option` → gray-50 / gray border, opacity-60
-- **Header row**: icon + label (bold) + optional combination_label badge (pill)
-- **Description**: one-line summary of what to do
-- **Stop cards** (if any): mosque name · address · iqama time · detour in minutes
-- **Note** (italic, light gray): context hint like "~90 min into your trip"
+Each itinerary card has:
+- **Header** (always visible): "OPTION N" label (teal, uppercase) + combined label showing each pair's strategy + total detour minutes + ▲/▼ collapse toggle
+- **Body** (expanded): one section per `pair_choice` in trip order:
+  - Prayer pair emoji + label + optional Jam' badge
+  - Strategy icon + description text
+  - Tappable mosque stop rows (name · address · iqama · detour minutes 📍)
+  - Optional italic note
+- **Share row** (bottom of body): `🗺 Google Maps` button · `🍎 Apple Maps` (iOS only) · `📤` share/copy button
+
+Strategy icons used in descriptions:
+| option_type | Icon |
+|---|---|
+| pray_before | 📍 |
+| combine_early | ⏩ |
+| combine_late | ⏪ |
+| at_destination | 🏁 |
+| separate | 🔀 |
+| stop_for_fajr | 🌅 |
+| no_option | ⚠️ |
 
 ### Timezone Crossing
 
