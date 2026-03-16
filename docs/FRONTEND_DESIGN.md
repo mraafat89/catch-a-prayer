@@ -16,33 +16,47 @@ This app is used on a mobile phone, often while standing outside or in a car. Th
 ### Mobile (primary — single column)
 
 ```
-┌─────────────────────────────┐
-│  Header: app name           │  sticky, minimal height
-│  Next prayer countdown      │  "Asr in 23 min"
-├─────────────────────────────┤
-│                             │
-│   Leaflet Map               │  ~40% viewport height
-│   (mosque pins, user dot)   │  collapsible on scroll
-│                             │
-├─────────────────────────────┤
-│  Mosque list (scrollable)   │
-│  ┌─────────────────────────┐│
-│  │ Mosque card             ││  see card design below
-│  └─────────────────────────┘│
-│  ┌─────────────────────────┐│
-│  │ Mosque card             ││
-│  └─────────────────────────┘│
-│  ─── Other Prayer Spots ───  │  section divider (only shown if spots exist)
-│  ┌─────────────────────────┐│
-│  │ Prayer spot card   🔶   ││
-│  └─────────────────────────┘│
-│  ─── Last Resort ──────────  │  only if no spot reachable before prayer ends
-│  ┌─────────────────────────┐│
-│  │ Pray anywhere card 🟠   ││
-│  └─────────────────────────┘│
-│  ...                        │
-└─────────────────────────────┘
+┌─────────────────────────────────────────┐
+│ [pin] Catch a Prayer  [🚗 Travel] [⚙️]  │  teal gradient header, white text
+│       "Can catch Asr at Al-Noor"        │  subtitle: top mosque status
+├─────────────────────────────────────────┤
+│                                         │
+│   Leaflet Map (CartoDB Positron tiles)  │  ~40% viewport height
+│   — status-colored teardrop pins        │  collapsible
+│   — teal user dot + pulse ring          │
+│                                         │
+├─────────────────────────────────────────┤
+│  ▼ Hide map                             │  subtle text toggle
+├─────────────────────────────────────────┤
+│  Nearby Mosques [5]                     │  pill count badge
+│  ┌─────────────────────────────────────┐│
+│  │ Mosque card (rounded-2xl, shadow)  ││  see card design below
+│  └─────────────────────────────────────┘│
+│  Prayer Spots [2]         [+ Add spot]  │
+│  ┌─────────────────────────────────────┐│
+│  │ Prayer spot card                   ││
+│  └─────────────────────────────────────┘│
+│  ┌─────────────────────────────────────┐│
+│  │ Last resort card (gray)            ││
+│  └─────────────────────────────────────┘│
+└─────────────────────────────────────────┘
 ```
+
+### Header
+
+The header uses a teal gradient (`from-teal-700 to-teal-600`) with a drop shadow. All text and icons are white.
+
+```
+┌──────────────────────────────────────────────────────┐
+│  [pin icon]  Catch a Prayer          [🚗 Travel] [⚙]  │
+│              Can catch Asr at Al-Noor                 │
+└──────────────────────────────────────────────────────┘
+```
+
+- **Left**: `logo_pin.png` (teal pin, white-inverted) + app name bold + one-line subtitle (top mosque status or mosque count)
+- **Right**: Travel mode quick-toggle pill + settings icon button
+- **Travel toggle**: Pill button in header — grey outline when off, solid white with teal text when active. Toggling immediately re-fetches mosques with `travel_mode: true`.
+- **Settings icon**: `icon_settings.png` with `brightness-0 invert` CSS to render white on the teal background
 
 ### Desktop (secondary — two column)
 Map takes 60% width on the left, mosque list 40% on the right. Same cards.
@@ -71,7 +85,15 @@ The card must communicate everything needed to decide whether to go — without 
 ┌──────────────────────────────────────────────────────┐
 │ 🔵  Al-Farooq Masjid                    8 min away  │
 │     Asr: Adhan 4:15 PM · Iqama 4:20 PM   [Ismaili] │  ← denomination badge
-│     🤲 Can pray solo — period active until 6:47 PM   │
+│     🤲 Congregation ended — can pray solo until 6:47 PM  │
+│     📍 From mosque website                           │
+└──────────────────────────────────────────────────────┘
+
+┌──────────────────────────────────────────────────────┐
+│ 🔵  Al-Farooq Masjid                    8 min away  │
+│     Fajr: Adhan 5:32 AM · Iqama 6:20 AM             │
+│     🤲 Congregation will be over by the time you arrive  │
+│        — can still pray solo until 7:15 AM           │
 │     📍 From mosque website                           │
 └──────────────────────────────────────────────────────┘
 
@@ -85,34 +107,100 @@ The card must communicate everything needed to decide whether to go — without 
 
 ### Multiple Prayer Statuses per Card
 
-Each mosque card shows **all currently relevant prayers**, not just one. A prayer is relevant if its period is still active (`can_catch_with_imam`, `can_catch_with_imam_in_progress`, `can_pray_solo_at_mosque`, `pray_at_nearby_location`) or its adhan is within 2 hours (`upcoming`).
+Each mosque card shows **up to two prayer status rows**: the **current** prayer (whose window is active) and the **next** prayer (upcoming). The order of these two rows is time-sensitive — whichever prayer is **more immediately actionable** is shown first (the **primary row**) and receives stronger visual treatment.
 
+#### Prayer Row Ordering
+
+Two states drive which row appears first:
+
+| Phase | Primary row (top, bold) | Secondary row (bottom, muted) |
+|---|---|---|
+| **Early in current period** | Current prayer | Next prayer (informational) |
+| **Late in current period** | Next prayer (act soon) | Current prayer + "mark as prayed" |
+| **Dead time** (between Fajr end and Dhuhr start) | Upcoming prayer (Dhuhr) | — |
+
+The **switch point** (early → late) is computed **dynamically from today's actual prayer times at the user's location** — it is never a fixed clock time. Prayer intervals vary significantly by season and latitude (e.g., in summer at high latitudes Asr can be only 1 hour after Dhuhr, while in winter it may be 4+ hours), so any hardcoded threshold would be wrong.
+
+Formula:
+
+```
+switch_point(prayer) = adhan_time(prayer) + (period_end_time(prayer) − adhan_time(prayer)) / 2
+```
+
+| Current prayer | period_end_time used | Notes |
+|---|---|---|
+| Fajr | `sunrise` | Window varies from ~45 min (high lat summer) to ~2 h (winter) |
+| Dhuhr | `asr_adhan` | Interval narrows dramatically in summer |
+| Asr | `maghrib_adhan` | Interval narrows in summer, lengthens in winter |
+| Maghrib | `isha_adhan` | Relatively stable but still varies |
+| Isha | `fajr_adhan` (next day) | **Override: use midnight (00:00) instead of midpoint** — Isha's window can span 6–10 h depending on season; midnight is the natural UX divide regardless |
+
+In **dead time** (after Fajr ends at sunrise, before Dhuhr starts — roughly 7 AM to 12:30 PM), there is no active current prayer. The card shows only the upcoming Dhuhr row as primary with no secondary row.
+
+**Example at 12:46 AM** (after Isha adhan ~9 PM, past midnight switch point):
 ```
 ┌──────────────────────────────────────────────────────┐
 │ 🟢  Masjid Al-Noor                      12 min away │
 │                                                      │
-│  🔵 Congregation ended for Dhuhr — can pray solo    │
-│  🟢 Can catch Asr with Imam — leave by 4:13 PM      │
+│  ── PRIMARY ──────────────────────────────────────── │
+│  🌅 Fajr at 5:32 AM · Iqama ~5:52 AM               │  ← next prayer, bold, teal bg
+│                                                      │
+│  ── secondary ────────────────────────────────────── │
+│  🌙 Isha — can pray solo until 5:32 AM    [✓ Prayed] │  ← current, muted, inline button
 │                                                      │
 │  ✓ From mosque website · today                       │
 └──────────────────────────────────────────────────────┘
 ```
 
-**"I already prayed [Prayer]" global banner**: Shown as a floating chip at the top of the list (not per mosque card). Only appears for prayers with **ACTIVE status** — i.e. the congregation is in progress, the user can still catch it, or they can pray solo (`can_catch_with_imam`, `can_catch_with_imam_in_progress`, `can_pray_solo_at_mosque`). NOT shown for upcoming prayers whose adhan has not yet occurred — the user cannot have already prayed a prayer before its adhan.
-
+**Example at 1:15 PM** (Dhuhr started at 12:58 PM, switch point not yet reached at ~2:30 PM):
 ```
 ┌──────────────────────────────────────────────────────┐
-│  ✓ I already prayed Dhuhr today    [Undo]            │  ← global chip, not per card
+│ 🟢  Masjid Al-Noor                      12 min away │
+│                                                      │
+│  ── PRIMARY ──────────────────────────────────────── │
+│  🕌 Dhuhr · Iqama 1:05 PM — catch with Imam now     │  ← current, bold, teal bg
+│  Leave by 1:03 PM                    [✓ Prayed]     │
+│                                                      │
+│  ── secondary ────────────────────────────────────── │
+│  🕌 Asr at 4:28 PM                                  │  ← next, muted, small
+│                                                      │
+│  ✓ From mosque website · today                       │
 └──────────────────────────────────────────────────────┘
 ```
 
-When the user marks a prayer as prayed:
-- That prayer row is hidden from ALL mosque cards (it's done — no need to show it)
-- Only upcoming prayers remain visible on cards
-- Stored in localStorage keyed by date — resets at midnight
-- "Undo" chip stays visible so the user can reverse a mistake
+#### Visual Distinction Between Primary and Secondary Rows
 
-This is a **client-side only** feature — no API call needed.
+| Property | Primary row | Secondary row |
+|---|---|---|
+| Background | Colored per status (teal-50, green-50, amber-50…) | `slate-50` / neutral |
+| Text weight | `font-semibold` on prayer name | `font-normal`, slate-500 |
+| Font size | `text-sm` | `text-xs` |
+| Left border accent | 3px solid, matches status color | none |
+| "✓ Prayed" button | Shown inline on the **current prayer row** (whether primary or secondary) | — |
+| Status icon | Full-size icon (w-8 h-8) | Small dot only |
+
+The primary row should feel like a **call to action card** — immediately scannable. The secondary row is a quiet note.
+
+#### "Mark as Prayed" — Inline + Global
+
+**Inline button** on the current prayer row (small pill, grey-outlined):
+```
+  🌙 Isha — can pray solo until 5:32 AM    [✓ Prayed]
+```
+
+**Global chip** at the top of the mosque list (appears after marking):
+```
+┌──────────────────────────────────────────────────────┐
+│  ✓ I already prayed Isha today    [Undo]             │  ← global chip, floats above list
+└──────────────────────────────────────────────────────┘
+```
+
+Both the inline button and the global "I already prayed X" chip trigger the same state update. Rules:
+- The "✓ Prayed" button is only shown when the prayer's adhan has already occurred (cannot pre-mark future prayers)
+- Marking hides the prayer row from **all** mosque cards and from the global chip target
+- `prayedToday` is stored in `localStorage` keyed by `prayer + date` — resets at midnight
+- "Undo" in the global chip restores the row on all cards
+- This is **client-side only** — no API call needed
 
 ### Data Source Indicator
 
@@ -146,15 +234,19 @@ The indicator is shown:
 - Only shown when denomination is confirmed — never shown as blank or "Unknown"
 - Sunni badge is shown when confirmed; omitted when unconfirmed (the majority of mosques are Sunni, so absence is not misleading)
 
-### Card Status Colors
+### Card Status Colors and Icons
 
-| Dot | Status | Meaning |
-|---|---|---|
-| 🟢 Green | Can catch with Imam | Leave now/soon, will make congregation |
-| 🟡 Yellow | Congregation in progress | Hurry, minutes left |
-| 🔵 Blue | Can pray solo | Congregation ended, prayer period active |
-| 🟠 Orange | Pray nearby | Can't reach mosque, pray where you are |
-| ⚪ Grey | Cannot catch | Prayer period ends before arrival |
+Each status has a background color, border, text color, and a **custom PNG icon** (top-right of card):
+
+| Color | Icon file | Status | Meaning |
+|---|---|---|---|
+| Green | `icon_pray_imam.png` | Can catch with Imam | Leave now/soon |
+| Amber | `icon_pray_imam.png` | Congregation in progress | Hurry, minutes left |
+| Blue | `icon_pray_solo.png` | Can pray solo | Congregation ended (or will be over before you arrive), period still active |
+| Orange | `icon_pray_nearby.png` | Pray nearby | Can't reach mosque in time |
+| Grey | `icon_mosque_nav.png` | Cannot catch / Upcoming | Period ends before arrival |
+
+The status icon is displayed at `w-10 h-10` in the top-right corner of every mosque card and inside the status badge in the detail sheet. Dot emojis (🟢🟡🔵🟠⚪) are retained in `STATUS_CONFIG` as a fallback but the icon takes visual precedence.
 
 ---
 
@@ -233,32 +325,36 @@ Accessible from: map "+" button, prayer spot cards "Suggest edit", or "Pray anyw
 ┌──────────────────────────────────────────────────────┐
 │  Add a Prayer Spot                              ✕    │
 │                                                      │
-│  Location                                            │
-│  [ Use my current location  ▼ ] or tap the map       │
+│  Location *                                          │
+│  ┌──────────────────────────────────────── ⌖ GPS ┐  │  ← green chip: resolved address + GPS refresh btn
+│  │ 📍 123 Main St, Sunnyvale, CA                 │  │
+│  └───────────────────────────────────────────────┘  │
+│  [ Search for an address…              ]             │  ← geocode lookup (same as trip planner)
+│    📍 Apple Park, Cupertino, CA                      │  ← dropdown suggestions
+│    📍 123 Main St, San Jose, CA                      │
 │                                                      │
-│  Name  ___________________________________           │
-│        "e.g. Safeway quiet corner, Library Room 2B"  │
+│  Name *  _________________________________           │
+│          "e.g. Safeway quiet corner, Room 2B"        │
 │                                                      │
-│  Type  ☐ Prayer room    ☐ Halal restaurant           │
-│        ☐ Campus         ☐ Rest area / gas station    │
-│        ☐ Library        ☐ Other                      │
+│  Type    [ Prayer room ▼ ]                           │
 │                                                      │
-│  Facilities (check what you know)                    │
-│  ☐ Bathroom / running water available for wudu       │
-│  ☐ Indoor                                            │
-│  ☐ Open to everyone (men & women)                    │
-│  ☐ Men only    ☐ Women only   ☐ Separate spaces      │
+│  Wudu?   [ Unknown ▼ ]   Indoor?  [ Yes ▼ ]   Access [ All ▼ ]
 │                                                      │
 │  Hours (optional)  _______________________________   │
 │                                                      │
+│  Website (optional)  _____________________________   │
+│                                                      │
 │  Notes (optional)  _______________________________   │
-│  "Tip: mention if manager is accommodating, etc."    │
 │                                                      │
 │  [ Submit Spot ]                                     │
 │                                                      │
 │  Anonymous — we don't collect your name or email.    │
 └──────────────────────────────────────────────────────┘
 ```
+
+**Location entry**: The location defaults to the user's current GPS position (reverse-geocoded to a readable label). The user can override it by typing in the address search box, which uses the same Nominatim geocode lookup as the trip planner — no extra API needed. A `⌖ GPS` button resets back to the current GPS location.
+
+**Trip planner "From" field**: A `⌖` icon button sits to the right of the "From" input. Tapping it re-fetches the current GPS coordinates and reverse-geocodes them to update the origin — useful when the user has moved since the app loaded.
 
 ### Spot Verification Flow
 
@@ -296,6 +392,45 @@ Prayer spots appear on the map with a different marker style:
 - Orange diamond marker (vs circular mosque markers)
 - Color intensity reflects verification level: light = pending, bold = verified
 - Tapping a spot opens the same bottom sheet as tapping a spot card
+
+---
+
+### Abuse Protection
+
+The spot system is community-driven, so it must guard against spam, ballot-stuffing, and fake entries without requiring accounts.
+
+#### Submit endpoint (`POST /api/spots`)
+
+| Check | Rule | Error |
+|---|---|---|
+| **Geographic bounds** | Lat 24–72 / Lng −168 to −52 (US + Canada) | 422 |
+| **Content filter** | No URLs in name/notes; no 5+ consecutive all-caps words | 422 |
+| **Rate limit** | Max 3 submissions per `session_id` per 24 h | 429 |
+| **Deduplication** | Reject if a non-rejected spot exists within 50 m | 409 (with existing spot name shown) |
+
+All spots start as `status = pending` — they are visible but clearly labeled "not yet verified" until they accumulate community verification.
+
+#### Verify endpoint (`POST /api/spots/{id}/verify`)
+
+| Check | Rule | Error |
+|---|---|---|
+| **Self-vote prevention** | Session that submitted the spot cannot verify it | 403 |
+| **Duplicate vote** | Same session cannot vote twice on the same spot | 409 |
+| **Rate limit** | Max 30 verify actions per `session_id` per 24 h | 429 |
+
+#### Status transitions
+
+| Net score (verifications − rejections) | Status |
+|---|---|
+| Newly submitted | `pending` |
+| ≥ +3 | `active` (shown normally) |
+| ≤ −3 | `rejected` (hidden from all users) |
+
+A spot needs at least 3 net positive votes to become active, so a single bad actor with one session cannot promote their own fake spot. Rejection requires −3 net, so a single user cannot remove a good spot alone.
+
+#### What is NOT collected
+
+The system is deliberately anonymous. No IP addresses, device fingerprints, names, or emails are stored. The `session_id` is a random UUID generated per browser/device install (stored in localStorage), used only to prevent duplicate submissions within a session.
 
 ---
 
@@ -391,123 +526,394 @@ const isAndroid = /Android/.test(navigator.userAgent);
 
 ---
 
-## Map — Leaflet + OpenStreetMap
+## Map — Leaflet + CartoDB Positron
 
-```typescript
-// Map initialization
-const map = L.map('map').setView([userLat, userLng], 14);
+### Tile provider
 
-L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-  attribution: '© OpenStreetMap contributors',
-  maxZoom: 19,
-}).addTo(map);
+CartoDB Positron tiles (`https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png`) replace the default OpenStreetMap raster tiles. Positron is a clean, minimal white/grey basemap that reduces visual noise and lets the status-colored mosque pins stand out clearly.
 
-// User location dot (blue pulsing dot)
-const userMarker = L.circleMarker([userLat, userLng], {
-  radius: 8,
-  fillColor: '#3B82F6',
-  color: '#FFFFFF',
-  weight: 2,
-  fillOpacity: 1,
-}).addTo(map);
+### User location marker
 
-// Mosque pins — color-coded by catching status
-function getMosqueMarkerColor(status: CatchingStatus): string {
-  switch (status) {
-    case 'can_catch_with_imam':      return '#22C55E';  // green
-    case 'can_catch_in_progress':    return '#EAB308';  // yellow
-    case 'can_pray_solo':            return '#3B82F6';  // blue
-    case 'pray_nearby':              return '#F97316';  // orange
-    case 'cannot_catch':             return '#9CA3AF';  // grey
-    default:                         return '#9CA3AF';
-  }
-}
-```
+Two overlapping `CircleMarker`s create a teal dot with a subtle pulse ring:
+- Outer ring: `radius=14`, `fillOpacity=0.12`, teal (`#0d9488`) — the "pulse" halo
+- Inner dot: `radius=5`, solid teal, white stroke
 
-Tapping a mosque pin opens the same bottom sheet as tapping the mosque card.
+### Mosque markers — custom SVG teardrop pins
+
+Mosque markers use `L.divIcon` with an inline SVG teardrop pin shape (not plain circles). The pin color matches the `next_catchable.status`:
+
+| Color | Hex | Status |
+|---|---|---|
+| Green | `#16a34a` | Can catch with Imam |
+| Amber | `#ca8a04` | Congregation in progress |
+| Blue | `#2563eb` | Can pray solo |
+| Orange | `#ea580c` | Pray nearby |
+| Grey | `#9ca3af` | Cannot catch / Upcoming |
+
+**Normal pin**: 22×30 px. **Selected pin** (mosque chosen from list): 30×40 px, elevated `zIndexOffset: 1000`.
+
+Each pin has a white inner circle and a white stroke border, giving it visual separation from the map tiles.
+
+### Fit-bounds on mosque selection
+
+When the user taps a mosque card in the list:
+1. `selectedMosqueId` is set in the store
+2. The map is uncollapsed (if hidden)
+3. `FitBoundsController` (a `useMap()` child component) detects the change and calls `map.fitBounds()` with a bounding box that includes **both the user's location and the selected mosque**, padded by 52px on all sides, max zoom 15 — so both points are always visible
+
+Clicking a mosque **pin** on the map also sets `selectedMosqueId` and opens the detail sheet.
+
+### Prayer spot markers
+
+Prayer spots use a dashed `CircleMarker` (orange stroke, light orange fill) to visually distinguish them from mosque pins. Tooltips appear on hover for both mosque pins and spot markers.
+
+### Map collapse toggle
+
+A minimal text button below the map ("▼ Hide map" / "▲ Show map") collapses the map to `height: 0` with a CSS transition. The map is automatically un-collapsed when a mosque card is tapped.
 
 ---
 
 ## State Management (Zustand)
 
-**5-minute auto-refresh**: The app automatically re-fetches mosque data every 5 minutes when the user has a location. This is implemented via `setInterval` inside a `useEffect` that depends on `userLocation` and `radiusKm`. This ensures prayer status banners (e.g. "Asr time — leave by 4:13 PM") update automatically as time passes without requiring a manual refresh.
+**5-minute auto-refresh**: The app automatically re-fetches mosque data every 5 minutes when the user has a location. The `useEffect` depends on `userLocation`, `radiusKm`, and `travelMode` — so toggling travel mode also triggers an immediate re-fetch.
 
 ```typescript
 interface AppStore {
   // Location
   userLocation: LatLng | null;
-  userTimezone: string;
+  setUserLocation: (loc: LatLng) => void;
 
   // Mosques
   mosques: Mosque[];
-  selectedMosque: Mosque | null;
-  isLoading: boolean;
-  error: string | null;
+  setMosques: (m: Mosque[]) => void;
+  mosquesLoading: boolean;
+  mosquesError: string | null;
 
-  // Prayer spots (non-mosque)
-  prayerSpots: PrayerSpot[];
-  selectedSpot: PrayerSpot | null;
+  // Prayer spots
+  spots: PrayerSpot[];
   spotsLoading: boolean;
 
   // Settings
-  searchRadiusKm: number;
-  travelBufferMinutes: number;
-  travelModeEnabled: boolean;
-  travelDestination: LatLng | null;
-  denominationFilter: 'all' | 'sunni' | 'shia' | 'ismaili' | null;
-  showPrayerSpots: boolean;           // user can toggle spots off in settings
+  radiusKm: number;               // 1–50 km, default 10
+  denominationFilter: 'all' | 'sunni' | 'shia' | 'ismaili';
+  showSpots: boolean;             // toggle prayer spots section
+  travelMode: boolean;            // enables route-based travel planning
 
-  // Notifications
-  notificationsEnabled: boolean;
-  notificationPreferences: NotificationPreferences;
+  // Prayed tracker (client-only, localStorage, resets at midnight)
+  prayedToday: Set<string>;       // prayer names prayed today
+  togglePrayed: (prayer: string) => void;
 
   // UI
   mapCollapsed: boolean;
-  activeBottomSheet:
-    | 'mosque_detail'
-    | 'spot_detail'
-    | 'spot_submit'
-    | 'spot_verify'
-    | 'navigate'
-    | 'settings'
-    | 'notifications'
+  selectedMosqueId: string | null;  // drives FitBoundsController
+  bottomSheet:
+    | { type: 'mosque_detail'; mosque: Mosque }
+    | { type: 'spot_detail'; spot: PrayerSpot }
+    | { type: 'spot_submit' }
+    | { type: 'settings' }
     | null;
 }
 ```
+
+All state lives in a single Zustand store (`store.ts`). Persisted values (prayed tracker, session ID) use `localStorage` directly.
 
 ---
 
 ## Settings Screen
 
-Accessible from header icon. Bottom sheet or full-page on mobile.
+Accessible from the ⚙ icon in the header. Opens as a bottom sheet.
 
 ```
-Search Settings
-  Radius: [  5 km  ▼ ]  (1, 2, 5, 10, 20, 50 km)
-  Travel buffer: [ 5 min ▼ ] (0, 5, 10, 15 min)
-    "Added to travel time for parking, walking to entrance"
-
-Denomination Filter
-  ☑ All mosques (default)
-  ☐ Sunni only
-  ☐ Shia only
-  ☐ Ismaili only
-  Note: mosques with unconfirmed denomination are always shown
-  "We never hide a mosque just because we don't have denomination data"
-
-Travel Mode
-  ☐ I am traveling (enables prayer combination options)
-  Destination: [ Enter destination... ]
-
-Prayer Spots
-  ☑ Show community prayer spots
-    "Non-mosque locations verified by other users"
-
-Display
-  ☑ Show adhan times
-  ☑ Show iqama times
-  ☑ Show data source on each mosque
+┌──────────────────────────────────────────────────────┐
+│  Settings                                       ✕    │
+│                                                      │
+│  Search radius: 10 km                                │
+│  ├───────────●────────────────────────┤              │
+│  1 km                              50 km             │
+│                                                      │
+│  Denomination                                        │
+│  [ All ] [ Sunni ] [ Shia ] [ Ismaili ]              │
+│                                                      │
+│  🚗 Travel mode                        ● ON          │
+│  Shows prayer combining options when traveling       │
+│  (Dhuhr+Asr, Maghrib+Isha)                          │
+│                                                      │
+│  Show prayer spots                     ● ON          │
+│  Community-added non-mosque locations                │
+└──────────────────────────────────────────────────────┘
 ```
+
+**Travel mode** also has a quick-access pill toggle in the header (🚗 Travel / 🚗 Traveling) so the user can toggle it without opening Settings. Both toggles share the same `travelMode` store state.
+
+When travel mode is enabled without a destination, the API receives `travel_mode: true` and may return `travel_combinations` on each mosque — pairs of prayers that can be combined (Dhuhr+Asr, Maghrib+Isha) with a shared window.
+
+When a destination is set, the app switches to Route Mode (see Travel Mode section below).
+
+---
+
+## Travel Mode — Three Modes
+
+The app has three distinct travel modes driven by two inputs: the global ✈️ Musafir toggle and whether a destination is set.
+
+| Mode | Musafir toggle | Destination | Prayer combining | Use case |
+|---|---|---|---|---|
+| **Musafir (Traveling, no route)** | ✈️ ON | Not set | Yes — show combination options per mosque | Away from home, not currently driving (e.g. at a hotel, airport, visiting a city) |
+| **Driving** | ✈️ OFF | Set | No | Local driving or commute — route-based, single prayers only |
+| **Traveling + Driving** | ✈️ ON | Set | Yes — combination options along route | Long-distance road trip (safar while driving) |
+
+### Mode 1: Musafir (Traveling, No Route)
+
+When the ✈️ Musafir toggle is ON but **no destination is set**, the app behaves like the normal mosque list but with combination options visible on each mosque card. This covers the Quranic allowance for Musafir (traveler) to shorten and combine prayers.
+
+Each mosque card shows combination option chips below the standard status rows:
+
+```
+┌──────────────────────────────────────────────────────┐
+│ 🟢  Masjid Al-Noor                      12 min away │
+│     Dhuhr — Iqama 1:05 PM — catch with Imam now     │
+│     ────────────────────────────────────────────     │
+│     ✈️ Combination options:                          │
+│     🟢 Combine Dhuhr+Asr now (Jam' Taqdeem)         │  ← only if before Asr
+│     🔵 Wait for Asr, pray both then (Jam' Ta'kheer) │  ← only if before Asr ends
+└──────────────────────────────────────────────────────┘
+```
+
+Combination options are computed from the mosque's today schedule and the current time:
+- **Taqdeem**: Both prayers prayed early, during the first prayer's window — only feasible before the second prayer's adhan
+- **Ta'kheer**: Both prayers delayed to the second prayer's window — only feasible before the second prayer's period ends
+
+The combination chips are **informational only** — no separate API call. They use the `travel_combinations` field returned by `/api/nearby` when `travel_mode=true`.
+
+### Mode 2: Driving (Route, No Combining)
+
+When the ✈️ toggle is **OFF** and a destination is set, the app shows route-based mosque results with **no combination options** (`trip_mode = "driving"`).
+
+### Mode 3: Traveling + Driving (Route + Combining)
+
+When the ✈️ toggle is **ON** and a destination is set, the app shows route-based mosque results **with** combination options along the route (`trip_mode = "travel"`).
+
+### Trip Planner Form
+
+When Travel Mode is ON OR a destination has been set, a trip planning card appears at the top of the scrollable content area. The form **inherits the global travel toggle** — there is no separate Driving/Traveling toggle inside the form. The trip_mode sent to the backend is derived from the global ✈️ Musafir toggle state.
+
+```
+┌──────────────────────────────────────────────────────┐
+│  PLAN YOUR TRIP                                      │  teal-700 uppercase label
+│                                                      │
+│  ℹ️ Musafir mode: combining Dhuhr+Asr and Maghrib+  │  shown only when ✈️ toggle ON
+│     Isha (Jam' Taqdeem / Ta'kheer) allowed.          │
+│                                                      │
+│  📍  From: Current location                   [⌖]   │  optional — geocode search
+│  🏁  To: Destination *                               │  required — geocode search
+│                                                      │
+│  🕐  Departs: Mon Mar 16, 3:30 PM                    │  datetime-local, default=now
+│                                                      │
+│  [ Plan My Prayers ]                                 │  disabled until dest selected
+└──────────────────────────────────────────────────────┘
+```
+
+- Typing 3+ characters in either field triggers a debounced geocode query (400ms) via `GET /api/geocode?q=...`
+- Results appear as a dropdown list below the input, each prefixed with 📍
+- Selecting a suggestion sets `travelOrigin` or `travelDestination` in the store
+- Origin is optional — if blank, current GPS location is used
+- Departure time defaults to current local time (exact, not rounded)
+- **"Plan My Prayers"** button is the explicit trigger — no automatic fetch on input change
+- Once a plan is active, the form collapses to a compact chip:
+
+```
+┌──────────────────────────────────────────────────────┐
+│  ✈️ Traveling                                     ✕  │  teal-50 bg, teal-200 border
+│  Current location → San Francisco, CA                │
+│  Departs Mar 16, 3:30 PM                             │
+└──────────────────────────────────────────────────────┘
+```
+
+- Tapping **anywhere on the chip** (except ✕) re-opens the full trip planner form for editing — the form is pre-populated with the previous origin, destination, and departure time
+- Tapping ✕ clears the destination, plan, origin, and departure time (mosque list reappears)
+
+### Travel Prayer Plan
+
+When "Plan My Prayers" is tapped, `POST /api/travel/plan` is called with:
+- `origin_lat/lng`: travelOrigin if set, otherwise user's current GPS location
+- `origin_name`: travelOrigin.place_name or "Current location"
+- `destination_lat/lng/name`: selected destination
+- `departure_time`: ISO 8601 string from datetime picker (defaults to now)
+- `timezone`: user's browser timezone (IANA)
+- `trip_mode`: `"travel"` or `"driving"`
+
+### Prayer Pair Relevance — Time-Aware Filtering
+
+**Only prayer pairs that fall within the trip window are shown.** The backend computes:
+
+```
+trip_window = [departure_time, arrival_time]
+arrival_time = departure_time + route_duration
+```
+
+For each potential pair (Fajr standalone, Dhuhr+Asr, Maghrib+Isha), it is only included in the response if **at least one prayer in the pair** has a window that overlaps with the trip window:
+
+- A prayer window is `[adhan_time, period_end_time]`
+  (Isha's period wraps midnight: it ends at the next Fajr adhan)
+- A prayer is **currently active** if `adhan_time ≤ departure_time ≤ period_end_time`
+- A prayer is **upcoming during the trip** if its adhan falls between departure and arrival
+
+**Examples:**
+| Departure | Duration | Shown pairs |
+|---|---|---|
+| 12:46 AM (after Isha) | 1 hour | Isha only (Isha period still active until Fajr) |
+| 12:00 PM (Dhuhr time) | 3 hours | Dhuhr+Asr (Dhuhr active at departure, Asr starts during trip) |
+| 6:00 PM (pre-Maghrib) | 4 hours | Maghrib+Isha (both occur during trip) |
+| 3:00 AM | 4 hours | Fajr (adhan around 5:30 AM falls within trip) |
+| 10:00 AM | 8 hours | Dhuhr+Asr, Maghrib (all three occur during trip) |
+
+Pairs where **neither prayer's window touches the trip** are completely omitted from the response — not shown as empty or "no options", just absent.
+
+### Plan Output
+
+```
+┌──────────────────────────────────────────────────────┐
+│  Route: 5h 48min · 381 mi                            │  white card, gray border
+└──────────────────────────────────────────────────────┘
+
+[Only pairs relevant to the trip window appear below]
+
+🕌 Dhuhr + Asr              ← shown only if trip spans Dhuhr or Asr time
+┌──────────────────────────────────────────────────────┐
+│  ✅ Pray Both Before Leaving          [both active]  │  teal-50
+│  Both Dhuhr and Asr are currently active...          │
+└──────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────┐
+│  🟢 Combine Early — Jam' Taqdeem      [Jam' Taqdeem] │  green-50  (Traveling only)
+│  Stop at Masjid Al-Noor (12 min detour) — pray both  │
+│  Dhuhr + Asr together during Dhuhr time.             │
+│  ┌──────────────────────────────────────────────┐    │
+│  │ Masjid Al-Noor · Bakersfield, CA             │    │
+│  │ Iqama 1:00 PM · +12 min detour               │    │
+│  └──────────────────────────────────────────────┘    │
+└──────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────┐
+│  🔵 Combine Late — Jam' Ta'kheer      [Jam' Ta'kheer] │  blue-50  (Traveling only)
+└──────────────────────────────────────────────────────┘
+
+🌙 Maghrib + Isha            ← shown only if trip spans Maghrib or Isha time
+...
+
+🌅 Fajr                      ← shown only if Fajr adhan falls within trip window
+...
+```
+
+**Driving mode**: `combine_early` and `combine_late` options are omitted. Only `separate`, `pray_before`, `at_destination`, and `stop_for_fajr` appear.
+
+**`at_destination` redundancy rule**: The `at_destination` option is only shown when there are **no route-stop options** (no `combine_early`, `combine_late`, or `separate`) covering the prayers in that pair. If a mosque stop along the route already handles those prayers, `at_destination` is omitted to avoid the confusing "third card" for the same prayer.
+
+**Travel option card — map zoom**: Tapping a mosque stop card inside a `TravelOptionCard` sets that mosque as the selected mosque in the store, un-collapses the map, and fits the map view to show both the user's current location and the mosque. This uses the same `selectedMosqueId` mechanism as tapping a mosque card in the list.
+
+### Mosque Search Along Route
+
+The backend uses:
+- **Routing**: OSRM (free) or Mapbox (if key configured) — returns turn-by-turn steps used as route checkpoints
+- **Corridor**: mosques within **30 km** of the route bounding box
+- **Detour limit**: mosques requiring more than **45 minutes** total detour (drive there + prayer overhead + drive back) are excluded
+- **Detour speed**: uses straight-line haversine × 1.4 road factor at 60 km/h highway average
+
+For each mosque: estimated arrival time = departure time + cumulative step duration to nearest checkpoint + drive to mosque. Prayer schedule lookup uses the mosque's **local date at that estimated arrival time** (handles timezone crossings and overnight trips).
+
+### Option Card Design
+
+Each option card (`TravelOptionCard`) has:
+- **Color**: determined by `option_type`
+  - `pray_before` → teal-50 / teal border
+  - `combine_early` → green-50 / green border *(Traveling mode only)*
+  - `combine_late` → blue-50 / blue border *(Traveling mode only)*
+  - `separate` → purple-50 / purple border
+  - `at_destination` → orange-50 / orange border
+  - `stop_for_fajr` → yellow-50 / yellow border
+  - `no_option` → gray-50 / gray border, opacity-60
+- **Header row**: icon + label (bold) + optional combination_label badge (pill)
+- **Description**: one-line summary of what to do
+- **Stop cards** (if any): mosque name · address · iqama time · detour in minutes
+- **Note** (italic, light gray): context hint like "~90 min into your trip"
+
+### Timezone Crossing
+
+When a trip crosses a timezone boundary (e.g., driving from Eastern to Central time), prayer time lookups for each mosque use the **mosque's local date at estimated arrival time** — not the departure date. This ensures correct prayer schedules for overnight trips and cross-timezone travel.
+
+### State Management Additions
+
+```typescript
+// Added to AppState:
+travelOrigin: TravelDestination | null;       // null = use GPS current location
+setTravelOrigin: (o: TravelDestination | null) => void;
+travelDestination: TravelDestination | null;   // required to plan a route
+setTravelDestination: (d: TravelDestination | null) => void;
+travelDepartureTime: string | null;            // ISO; null = now
+setTravelDepartureTime: (t: string | null) => void;
+travelPlan: TravelPlan | null;                 // result from /api/travel/plan
+setTravelPlan: (p: TravelPlan | null) => void;
+travelPlanLoading: boolean;                    // true while plan is fetching
+setTravelPlanLoading: (v: boolean) => void;
+```
+
+The plan fetch is triggered **explicitly by the "Plan My Prayers" button** inside `DestinationInput` — not automatically on destination change. A `useEffect` in App watches `travelDestination` only to clear the plan when destination is removed.
+
+### Map Behavior in Route Mode
+
+The map view remains unchanged in route mode (route polyline is a future enhancement). The map continues to show nearby mosque markers and the user's location dot. A destination pin is not currently added to the map.
+
+---
+
+## Deep Link / Share from Maps Apps
+
+The app supports receiving a shared destination directly from Google Maps, Apple Maps, or other navigation apps — eliminating the need to type a destination manually.
+
+### Web Share Target API (Android PWA)
+
+`manifest.json` declares a share target:
+
+```json
+"share_target": {
+  "action": "/?share=maps",
+  "method": "GET",
+  "params": { "title": "title", "text": "text", "url": "url" }
+}
+```
+
+**User flow on Android:**
+1. Open Google Maps or Apple Maps → find destination → tap **Share**
+2. Select **Catch a Prayer** from the share sheet
+3. App opens in Travel Mode with destination pre-filled (or search pre-populated if only a place name was shared)
+4. User selects departure time and taps "Plan My Prayers"
+
+**Parsing shared content:**
+- If the shared `url` is a Google Maps place URL (`/maps/place/Name/@lat,lng,zoom`), lat/lng are extracted directly
+- If it's an Apple Maps URL with `?ll=lat,lng`, those coordinates are used
+- If the URL is a shortened link (maps.app.goo.gl / goo.gl/maps) that can't be parsed, the place `title` is used to pre-fill the destination search field so the user can pick from geocode suggestions
+
+### Direct URL Parameters (Programmatic Deep Link)
+
+Any external source can open the app in travel mode via:
+
+```
+https://yourapp.com/?dest_lat=37.7749&dest_lng=-122.4194&dest_name=San+Francisco%2C+CA
+```
+
+Parameters:
+| Param | Required | Description |
+|---|---|---|
+| `dest_lat` | Yes | Destination latitude |
+| `dest_lng` | Yes | Destination longitude |
+| `dest_name` | No | Display name (default: "Shared destination") |
+
+After reading the params, the app cleans the URL with `history.replaceState` so the params don't persist on reload.
+
+### iOS Limitation
+
+iOS does not support the Web Share Target API (as of 2026). On iOS, the user can:
+- Copy a Google Maps share URL
+- Open the app and paste the URL (future enhancement — clipboard parsing on focus)
+- Or type the destination manually in the trip planner
+
+---
 
 ---
 
@@ -558,11 +964,11 @@ Prayer Reminders
   "start_url": "/",
   "display": "standalone",
   "background_color": "#FFFFFF",
-  "theme_color": "#1e3a5f",
+  "theme_color": "#0d9488",
   "icons": [
-    { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png" },
-    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png" },
-    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+    { "src": "/icons/logo192.png",  "sizes": "192x192", "type": "image/png" },
+    { "src": "/icons/logo512.png",  "sizes": "512x512", "type": "image/png" },
+    { "src": "/icons/logo512.png",  "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
   ]
 }
 ```

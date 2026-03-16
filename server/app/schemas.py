@@ -113,6 +113,7 @@ class SpotSubmitRequest(BaseModel):
     is_indoor: Optional[bool] = None
     operating_hours: Optional[str] = None
     notes: Optional[str] = None
+    website: Optional[str] = None
     session_id: str = Field(..., min_length=8, max_length=200)
 
 
@@ -134,3 +135,72 @@ class SpotVerifyResponse(BaseModel):
     rejection_count: int
     status: str
     verification_label: str
+
+
+# ---------------------------------------------------------------------------
+# Travel Plan
+# ---------------------------------------------------------------------------
+
+class GeocodeRequest(BaseModel):
+    query: str = Field(..., min_length=2, max_length=200)
+
+class GeocodeSuggestion(BaseModel):
+    place_name: str
+    lat: float
+    lng: float
+
+class GeocodeResponse(BaseModel):
+    suggestions: list[GeocodeSuggestion]
+
+class TravelPlanRequest(BaseModel):
+    origin_lat: float
+    origin_lng: float
+    origin_name: Optional[str] = None          # None = "Current location"
+    destination_lat: float
+    destination_lng: float
+    destination_name: str
+    departure_time: Optional[str] = None       # ISO 8601; None = now
+    timezone: str = "UTC"
+    trip_mode: str = "travel"                  # "travel" (combining allowed) or "driving" (single prayers only)
+
+class TravelStop(BaseModel):
+    mosque_id: str
+    mosque_name: str
+    mosque_lat: float
+    mosque_lng: float
+    mosque_address: Optional[str]
+    prayer: str
+    estimated_arrival_time: str      # "HH:MM" local time
+    minutes_into_trip: int
+    detour_minutes: int
+    status: str                       # can_catch_with_imam / can_pray_solo_at_mosque
+    iqama_time: Optional[str]
+    adhan_time: Optional[str]
+
+class TravelOption(BaseModel):
+    option_type: str  # combine_early / combine_late / separate / pray_before / at_destination
+    label: str
+    description: str
+    prayers: list[str]
+    combination_label: Optional[str]  # "Jam' Taqdeem" / "Jam' Ta'kheer" / None
+    stops: list[TravelStop]
+    feasible: bool
+    note: Optional[str]
+
+class TravelPairPlan(BaseModel):
+    pair: str        # dhuhr_asr / maghrib_isha / fajr
+    label: str       # "Dhuhr + Asr" / "Maghrib + Isha" / "Fajr"
+    emoji: str
+    options: list[TravelOption]
+
+class RouteInfo(BaseModel):
+    distance_meters: float
+    duration_minutes: int
+    origin_name: str        # "Current location" or user-provided name
+    destination_name: str
+
+class TravelPlanResponse(BaseModel):
+    route: RouteInfo
+    prayer_pairs: list[TravelPairPlan]
+    departure_time: str   # ISO
+    estimated_arrival_time: str  # ISO

@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { Mosque, PrayerSpot, LatLng } from './types';
+import { Mosque, PrayerSpot, LatLng, TravelDestination, TravelPlan } from './types';
 
 // Prayed tracker — keyed by today's date so it auto-resets at midnight
 function todayKey(): string {
@@ -61,6 +61,20 @@ interface AppState {
   setDenominationFilter: (f: 'all' | 'sunni' | 'shia' | 'ismaili') => void;
   showSpots: boolean;
   setShowSpots: (v: boolean) => void;
+  travelMode: boolean;
+  setTravelMode: (v: boolean) => void;
+
+  // Travel destination + plan (route-based travel mode)
+  travelOrigin: TravelDestination | null;        // null = use GPS current location
+  setTravelOrigin: (o: TravelDestination | null) => void;
+  travelDestination: TravelDestination | null;
+  setTravelDestination: (d: TravelDestination | null) => void;
+  travelDepartureTime: string | null;            // ISO datetime string; null = now
+  setTravelDepartureTime: (t: string | null) => void;
+  travelPlan: TravelPlan | null;
+  setTravelPlan: (p: TravelPlan | null) => void;
+  travelPlanLoading: boolean;
+  setTravelPlanLoading: (v: boolean) => void;
 
   // Prayed tracker — set<"YYYY-MM-DD:prayer"> persisted in localStorage
   prayedToday: Set<string>;
@@ -69,6 +83,11 @@ interface AppState {
   // UI
   mapCollapsed: boolean;
   setMapCollapsed: (v: boolean) => void;
+  selectedMosqueId: string | null;
+  setSelectedMosqueId: (id: string | null) => void;
+  // Focus arbitrary coords on the map (e.g., route stop mosque not in nearby list)
+  mapFocusCoords: { lat: number; lng: number } | null;
+  setMapFocusCoords: (c: { lat: number; lng: number } | null) => void;
   bottomSheet: BottomSheet;
   openSheet: (sheet: BottomSheet) => void;
   closeSheet: () => void;
@@ -96,6 +115,19 @@ export const useStore = create<AppState>((set) => ({
   setDenominationFilter: (denominationFilter) => set({ denominationFilter }),
   showSpots: true,
   setShowSpots: (showSpots) => set({ showSpots }),
+  travelMode: false,
+  setTravelMode: (travelMode) => set({ travelMode }),
+
+  travelOrigin: null,
+  setTravelOrigin: (travelOrigin) => set({ travelOrigin }),
+  travelDestination: null,
+  setTravelDestination: (travelDestination) => set({ travelDestination }),
+  travelDepartureTime: null,
+  setTravelDepartureTime: (travelDepartureTime) => set({ travelDepartureTime }),
+  travelPlan: null,
+  setTravelPlan: (travelPlan) => set({ travelPlan }),
+  travelPlanLoading: false,
+  setTravelPlanLoading: (travelPlanLoading) => set({ travelPlanLoading }),
 
   prayedToday: loadPrayed(),
   togglePrayed: (prayer) => set((state) => {
@@ -107,6 +139,10 @@ export const useStore = create<AppState>((set) => ({
 
   mapCollapsed: false,
   setMapCollapsed: (mapCollapsed) => set({ mapCollapsed }),
+  selectedMosqueId: null,
+  setSelectedMosqueId: (selectedMosqueId) => set({ selectedMosqueId }),
+  mapFocusCoords: null,
+  setMapFocusCoords: (mapFocusCoords) => set({ mapFocusCoords }),
   bottomSheet: null,
   openSheet: (bottomSheet) => set({ bottomSheet }),
   closeSheet: () => set({ bottomSheet: null }),

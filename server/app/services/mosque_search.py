@@ -60,10 +60,19 @@ def haversine_km(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
 
 
 def estimate_travel_minutes(lat1: float, lng1: float, lat2: float, lng2: float) -> int:
-    """Rough offline estimate. Only used when Mapbox is unavailable."""
+    """Rough offline estimate. Only used when routing APIs are unavailable.
+    Uses tiered speeds based on trip distance (longer = more highway driving)."""
     d_km = haversine_km(lat1, lng1, lat2, lng2)
-    road_km = d_km * 1.4
-    minutes = (road_km / 35) * 60 + 3
+    road_km = d_km * 1.4  # road factor
+    if d_km > 100:
+        speed_kmh = 100  # mostly highway
+    elif d_km > 30:
+        speed_kmh = 70   # mix of highway and suburban
+    elif d_km > 10:
+        speed_kmh = 50   # suburban / regional
+    else:
+        speed_kmh = 25   # urban / local
+    minutes = (road_km / speed_kmh) * 60 + 3
     return max(1, round(minutes))
 
 
@@ -126,6 +135,121 @@ def add_minutes(t: str, delta: int) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Musafir (traveler, no route) combination options
+# ---------------------------------------------------------------------------
+
+_PAIR_PERIOD_END_KEYS = {
+    "dhuhr": "asr_adhan",     # Dhuhr ends when Asr begins
+    "maghrib": "isha_adhan",   # Maghrib ends when Isha begins
+    "asr": "maghrib_adhan",
+    "isha": "fajr_adhan",
+}
+
+def compute_travel_combinations(schedule: dict, current_min: int) -> list:
+    """
+    Compute Jam' (prayer combining) options for a Musafir at a given mosque.
+    Called when travel_mode=True and no destination (mode 1: Musafir no route).
+
+    Returns a list of TravelPairPlan-compatible dicts — same shape as used
+    by the route-based travel planner so the frontend can reuse the same renderer.
+    """
+    PAIRS = [
+        ("dhuhr",   "asr",  "dhuhr_asr",   "Dhuhr + Asr",   "🕌"),
+        ("maghrib", "isha", "maghrib_isha", "Maghrib + Isha", "🌙"),
+    ]
+    result = []
+
+    for p1, p2, pair_key, label, emoji in PAIRS:
+        p1_adhan = schedule.get(f"{p1}_adhan")
+        p1_iqama = schedule.get(f"{p1}_iqama")
+        p2_adhan = schedule.get(f"{p2}_adhan")
+        p2_iqama = schedule.get(f"{p2}_iqama")
+
+        if not p1_adhan or not p2_adhan:
+            continue
+
+        p1_adhan_m = hhmm_to_minutes(p1_adhan)
+        p2_adhan_m = hhmm_to_minutes(p2_adhan)
+
+        # Period end for p2 (used to check Ta'kheer feasibility)
+        p2_end_key = _PAIR_PERIOD_END_KEYS.get(p2)
+        p2_end_raw = schedule.get(p2_end_key) if p2_end_key else None
+        if p2_end_raw:
+            p2_end_m = hhmm_to_minutes(p2_end_raw)
+            # Handle midnight wrap (Isha → Fajr next day)
+            if p2_end_m < p2_adhan_m:
+                p2_end_m += 1440
+        else:
+            p2_end_m = p2_adhan_m + 90  # fallback
+
+        # Normalize current_min relative to p1_adhan to handle overnight pairs
+        cur = current_min
+        if p2 == "isha" and cur < p1_adhan_m:
+            # After midnight but before the pair starts (shouldn't happen for dhuhr/maghrib)
+            pass
+
+        # Skip if both prayers have fully passed
+        if cur > p2_end_m and p2_end_m > p1_adhan_m:
+            continue
+        # Skip if neither prayer has started yet (far in the future)
+        if cur < p1_adhan_m - 60:
+            continue
+
+        options = []
+        p2_iqama_fmt = p2_iqama or p2_adhan
+
+        # Taqdeem: combine at p1 time — only feasible before p2 adhan
+        if cur < p2_adhan_m:
+            p1_iqama_fmt = p1_iqama or p1_adhan
+            options.append({
+                "option_type": "combine_early",
+                "label": "Jam' Taqdeem — Combine Early",
+                "description": (
+                    f"Pray both {p1.title()} and {p2.title()} now, during {p1.title()} time "
+                    f"(iqama {p1_iqama_fmt})."
+                ),
+                "prayers": [p1, p2],
+                "combination_label": "Jam' Taqdeem",
+                "stops": [],
+                "feasible": True,
+                "note": f"Advance {p2.title()} into {p1.title()}'s window.",
+            })
+
+        # Ta'kheer: delay p1 to p2 time — only feasible if p2 period hasn't ended
+        if cur < p2_end_m:
+            if cur >= p2_adhan_m:
+                ta_kheer_desc = (
+                    f"Pray both {p1.title()} and {p2.title()} together during {p2.title()} time "
+                    f"(iqama ~{p2_iqama_fmt})."
+                )
+            else:
+                ta_kheer_desc = (
+                    f"Wait until {p2.title()} time and pray both {p1.title()} + {p2.title()} "
+                    f"together (iqama ~{p2_iqama_fmt})."
+                )
+            options.append({
+                "option_type": "combine_late",
+                "label": "Jam' Ta'kheer — Combine Late",
+                "description": ta_kheer_desc,
+                "prayers": [p1, p2],
+                "combination_label": "Jam' Ta'kheer",
+                "stops": [],
+                "feasible": True,
+                "note": f"Delay {p1.title()} into {p2.title()}'s window.",
+            })
+
+        if options:
+            result.append({
+                "pair": pair_key,
+                "label": label,
+                "emoji": emoji,
+                "options": options,
+            })
+
+    return result
+
+
+# ---------------------------------------------------------------------------
 # Prayer period end time
 # ---------------------------------------------------------------------------
 
@@ -147,16 +271,9 @@ def get_period_end(prayer: str, schedule: dict) -> Optional[str]:
     elif prayer == "maghrib":
         return schedule.get("isha_adhan")
     elif prayer == "isha":
-        # Isha ends at next Fajr. Approximate as midnight + some hours.
-        # We'll just return None to indicate "long period" — client handles
-        fajr = schedule.get("fajr_adhan")
-        if fajr:
-            # Add 24h cycle approximation: Fajr is typically 05:00-06:00
-            # Isha period ends when next Fajr starts. We approximate as +6h after Isha iqama.
-            isha_iqama = schedule.get("isha_iqama")
-            if isha_iqama:
-                return add_minutes(isha_iqama, 360)  # +6h rough bound
-        return None
+        # Isha ends at next day's Fajr adhan — use today's Fajr as the proxy.
+        # The midnight wraparound is handled in calculate_catching_status via +24h adjustment.
+        return schedule.get("fajr_adhan")
     return None
 
 
@@ -186,20 +303,41 @@ def calculate_catching_status(
     iqama_min = hhmm_to_minutes(iqama) if iqama else adhan_min + 15
     period_end_min = hhmm_to_minutes(period_end) if period_end else iqama_min + 120
 
-    # Midnight wraparound: isha period end (e.g. 03:00) is numerically less than iqama
-    # (e.g. 21:10). Adjust by +24h so comparisons work across midnight.
+    # Midnight wraparound: isha period end (fajr next day) is numerically less than
+    # isha iqama time. Adjust period_end by +24h so comparisons work across midnight.
     if period_end_min < iqama_min:
-        period_end_min += 24 * 60  # e.g. 180 → 1620
+        period_end_min += 24 * 60  # e.g. fajr=315 → 1755 ("next day 05:15")
 
-    # After midnight, before fajr: current_minutes (e.g. 90 = 1:30 AM) is numerically
-    # less than isha adhan/iqama times (e.g. 1200). Adjust current by +24h so we
-    # correctly see it as "after isha" rather than "before isha".
+    # Isha straddles midnight — three sub-cases based on current time:
+    #
+    #  A) After Isha adhan (e.g. 8:30 PM+): normal flow, no adjustment needed.
+    #
+    #  B) After midnight, before Fajr (e.g. 1:30 AM):
+    #     We're still in yesterday's Isha window. Bump current by +24h so the
+    #     comparison current_minutes < period_end_min (1755) works correctly.
+    #     → Isha period ends at today's Fajr (same calendar day since it's after midnight).
+    #
+    #  C) After Fajr but before tonight's Isha (e.g. 9 AM – 8 PM):
+    #     Yesterday's Isha has ended; today's Isha hasn't started.
+    #     Return missed immediately — do not fall through to "upcoming".
     if prayer == "isha" and current_minutes < adhan_min:
         fajr_adhan = schedule.get("fajr_adhan")
         fajr_min = hhmm_to_minutes(fajr_adhan) if fajr_adhan else 300
         if current_minutes < fajr_min:
-            # We're in the post-midnight carry-over window
+            # Case B: post-midnight carry-over window — still valid Isha time
             current_minutes = current_minutes + 24 * 60
+        else:
+            # Case C: past Fajr, yesterday's Isha has ended
+            return {
+                "prayer": prayer,
+                "status": "missed_make_up",
+                "status_label": STATUS_LABELS["missed_make_up"],
+                "message": "Isha has ended — make it up",
+                "urgency": "low",
+                "adhan_time": adhan,
+                "iqama_time": iqama,
+                "period_ends_at": period_end,
+            }
 
     arrival_min = current_minutes + travel_minutes
     leave_by_min = iqama_min - travel_minutes
@@ -305,14 +443,41 @@ def calculate_catching_status(
             }
         # Would arrive after congregation ends — fall through to solo/missed
 
-    # Congregation over but prayer period still active
+    # Asr near Maghrib: praying within 15 min of Maghrib is discouraged (makruh)
+    _asr_discouraged_suffix = ""
+    if prayer == "asr":
+        maghrib = schedule.get("maghrib_adhan")
+        if maghrib:
+            maghrib_min = hhmm_to_minutes(maghrib)
+            if maghrib_min - current_minutes <= 15:
+                _asr_discouraged_suffix = " · Note: delaying Asr this close to Maghrib is discouraged — pray as soon as possible"
+
+    # Congregation over (or will be over by the time user arrives) but prayer period still active
     if current_minutes <= period_end_min:
         if arrival_min <= period_end_min:
+            # Distinguish: did congregation actually already end, or will it end before user arrives?
+            congregation_actually_ended = current_minutes >= congregation_end_min
+            # For Isha after midnight: valid but discouraged — note it
+            _after_midnight = (
+                prayer == "isha"
+                and current_minutes >= 24 * 60  # current was bumped by +24h in Case B
+            )
+            if _after_midnight:
+                _solo_msg = (
+                    f"Congregation ended for Isha — can pray solo until Fajr ({period_end})"
+                    f" · Note: praying after midnight is discouraged"
+                )
+            elif congregation_actually_ended:
+                _solo_msg = f"Congregation ended for {prayer.title()} — can pray solo until {period_end}"
+            else:
+                # Congregation hasn't ended yet but travel time means user will miss it
+                _solo_msg = f"Congregation will be over by the time you arrive — can still pray solo until {period_end}"
+            _solo_msg += _asr_discouraged_suffix
             return {
                 "prayer": prayer,
                 "status": "can_pray_solo_at_mosque",
                 "status_label": STATUS_LABELS["can_pray_solo_at_mosque"],
-                "message": f"Congregation ended for {prayer.title()} — can pray solo until {period_end}",
+                "message": _solo_msg,
                 "urgency": "low",
                 "adhan_time": adhan,
                 "iqama_time": iqama,
@@ -323,7 +488,7 @@ def calculate_catching_status(
                 "prayer": prayer,
                 "status": "pray_at_nearby_location",
                 "status_label": STATUS_LABELS["pray_at_nearby_location"],
-                "message": f"Cannot reach mosque before {prayer.title()} ends — pray where you are",
+                "message": f"Cannot reach mosque before {prayer.title()} ends — pray where you are{_asr_discouraged_suffix}",
                 "urgency": "normal",
                 "adhan_time": adhan,
                 "iqama_time": iqama,
@@ -609,7 +774,10 @@ async def find_nearby_mosques(
             "wheelchair_accessible": row["wheelchair_accessible"],
             "next_catchable": next_catchable,
             "catchable_prayers": catchable_prayers,
-            "travel_combinations": [],
+            "travel_combinations": (
+                compute_travel_combinations(schedule, current_min_mosque)
+                if travel_mode else []
+            ),
             "prayers": prayers_out,
             "sunrise": schedule.get("sunrise"),
             "jumuah_sessions": await _fetch_jumuah_sessions(db, row["id"], mosque_today),

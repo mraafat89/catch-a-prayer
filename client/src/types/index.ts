@@ -53,7 +53,7 @@ export interface Mosque {
   denomination: string | null;
   next_catchable: NextCatchable | null;
   catchable_prayers: NextCatchable[];
-  travel_combinations: unknown[];
+  travel_combinations: TravelPairPlan[];
   prayers: PrayerTime[];
   sunrise: string | null;
   jumuah_sessions: JumuahSession[];
@@ -96,6 +96,7 @@ export interface PrayerSpot {
   is_indoor: boolean | null;
   operating_hours: string | null;
   notes: string | null;
+  website: string | null;
   status: 'pending' | 'active' | 'rejected';
   verification_count: number;
   rejection_count: number;
@@ -121,6 +122,7 @@ export interface SpotSubmitRequest {
   is_indoor?: boolean | null;
   operating_hours?: string;
   notes?: string;
+  website?: string;
   session_id: string;
 }
 
@@ -149,3 +151,63 @@ export const SPOT_TYPE_LABELS: Record<string, string> = {
   library:          'Library',
   other:            'Other',
 };
+
+// Travel Plan types
+export interface GeocodeSuggestion {
+  place_name: string;
+  lat: number;
+  lng: number;
+}
+
+export interface TravelStop {
+  mosque_id: string;
+  mosque_name: string;
+  mosque_lat: number;
+  mosque_lng: number;
+  mosque_address: string | null;
+  prayer: string;
+  estimated_arrival_time: string;
+  minutes_into_trip: number;
+  detour_minutes: number;
+  status: string;
+  iqama_time: string | null;
+  adhan_time: string | null;
+}
+
+export interface TravelOption {
+  option_type: string;
+  label: string;
+  description: string;
+  prayers: string[];
+  combination_label: string | null;
+  stops: TravelStop[];
+  feasible: boolean;
+  note: string | null;
+}
+
+export interface TravelPairPlan {
+  pair: string;
+  label: string;
+  emoji: string;
+  options: TravelOption[];
+}
+
+export interface TravelRouteInfo {
+  distance_meters: number;
+  duration_minutes: number;
+  origin_name: string | null;
+  destination_name: string;
+}
+
+export interface TravelPlan {
+  route: TravelRouteInfo;
+  prayer_pairs: TravelPairPlan[];
+  departure_time: string;
+  estimated_arrival_time: string;
+}
+
+export interface TravelDestination {
+  place_name: string;
+  lat: number;
+  lng: number;
+}
