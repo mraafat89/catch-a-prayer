@@ -9,7 +9,10 @@ const API_BASE_URL = process.env.REACT_APP_API_URL || '';
 const api = axios.create({
   baseURL: API_BASE_URL,
   timeout: 30000,
-  headers: { 'Content-Type': 'application/json' },
+  headers: {
+    'Content-Type': 'application/json',
+    'ngrok-skip-browser-warning': 'true',
+  },
 });
 
 export const apiService = {

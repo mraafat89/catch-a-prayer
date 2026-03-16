@@ -387,12 +387,13 @@ Sanity checks:
 ### Current Pipeline Stats (as of 2026-03-15)
 | Metric | Value |
 |--------|-------|
-| Total mosques in DB | ~1,520 (US + CA) |
-| With website | ~39% |
-| Tier 2 (real HTML) | ~6% |
-| Tier 3 (JS / API) | ~0.4% |
-| Tier 4 (Vision/PDF) | ~0.9% |
-| Tier 5 (calculated fallback) | ~92% |
+| Total mosques in DB | 2,448 (US + CA) |
+| With website | 1,044 (43%) |
+| Scraping jobs done | 1,345 / 2,451 (55%) |
+| Tier 2 (real HTML) | 76 (5.7%) |
+| Tier 3 (JS / API interception) | 14 (1.0%) |
+| Tier 4 (Vision/PDF) | 10 (0.7%) |
+| Tier 5 (calculated fallback) | 1,245 (92.6%) |
 
 ### Improving Hit Rate
 The main levers for improving above tier-5:
@@ -446,8 +447,11 @@ pipeline/
 3. **MosqueList.top** — US mosques with accessibility info (wheelchair, parking)
 
 ### Deduplication Strategy
-- **Name + city + state** match (≥50% token overlap) for web source enrichment
-- **200m proximity** check before inserting geocoded new mosques (prevents OSM duplicates)
+- **Name + city + state** match (≥50% token overlap) for web source enrichment; generic names (`Unknown Mosque`, `Masjid`, `Islamic Center`, etc.) are excluded from name-matching to avoid false merges
+- **Proximity + name similarity** before inserting geocoded new mosques:
+  - ≤50m → always merge (same building)
+  - 50–200m → merge only if name similarity ≥ 0.4 (avoids collapsing distinct orgs at the same address)
+- **Periodic DB dedup pass**: deactivate exact-duplicate entries found by `ST_DWithin(100m) AND (same name OR unknown name)`
 
 ### Key Extraction Functions
 ```python

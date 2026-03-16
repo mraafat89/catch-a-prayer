@@ -305,8 +305,19 @@ def name_similarity(a: str, b: str) -> float:
 # Database matching and upsert
 # ---------------------------------------------------------------------------
 
+_GENERIC_NAMES = {"unknown mosque", "mosque", "masjid", "islamic center", "islamic centre", "musallah"}
+
+
+def _is_generic_name(name: str) -> bool:
+    return name.lower().strip() in _GENERIC_NAMES
+
+
 def find_existing_mosque(session: Session, mosque: WebMosque) -> Optional[dict]:
     """Find an existing mosque in the DB matching by name + city + state."""
+    # Don't match against generic placeholder names
+    if _is_generic_name(mosque.name):
+        return None
+
     # Exact city+state match first, then name similarity
     rows = session.execute(text("""
         SELECT id::text, name, website, phone, email, wheelchair_accessible
@@ -314,6 +325,8 @@ def find_existing_mosque(session: Session, mosque: WebMosque) -> Optional[dict]:
         WHERE LOWER(COALESCE(city, '')) = LOWER(:city)
           AND LOWER(COALESCE(state, '')) = LOWER(:state)
           AND is_active = true
+          AND LOWER(name) NOT IN ('unknown mosque', 'mosque', 'masjid',
+                                  'islamic center', 'islamic centre', 'musallah')
     """), {"city": mosque.city or "", "state": mosque.state or ""}).mappings().all()
 
     if not rows:
@@ -375,6 +388,10 @@ def enrich_mosque(session: Session, mosque_id: str, mosque: WebMosque, dry_run: 
 async def insert_new_mosque(session: Session, mosque: WebMosque,
                             client: httpx.AsyncClient, dry_run: bool) -> bool:
     """Geocode and insert a new mosque. Returns True if inserted."""
+    # Skip generically-named entries — they add noise without helping users
+    if _is_generic_name(mosque.name):
+        return False
+
     if not mosque.city and not mosque.address:
         return False
 
@@ -386,22 +403,34 @@ async def insert_new_mosque(session: Session, mosque: WebMosque,
 
     lat, lng = coords
 
-    # Check for nearby duplicates within 200m (catches OSM mosques with different names)
-    nearby = session.execute(text("""
-        SELECT id::text, name FROM mosques
+    # Check for nearby duplicates — same building (≤50m) always merges;
+    # 50–200m only merges if names are similar (avoids collapsing distinct orgs at same address)
+    nearby_rows = session.execute(text("""
+        SELECT id::text, name,
+               ROUND(ST_Distance(
+                   geom::geography,
+                   ST_SetSRID(ST_MakePoint(:lng, :lat), 4326)::geography
+               )::numeric, 1) as dist_m
+        FROM mosques
         WHERE is_active = true
           AND ST_DWithin(
               geom::geography,
               ST_SetSRID(ST_MakePoint(:lng, :lat), 4326)::geography,
               200
           )
-        LIMIT 1
-    """), {"lat": lat, "lng": lng}).mappings().first()
+        ORDER BY dist_m
+        LIMIT 5
+    """), {"lat": lat, "lng": lng}).mappings().all()
 
-    if nearby:
-        # There's already a mosque within 200m — enrich it instead of inserting
-        logger.debug(f"  Nearby duplicate: {mosque.name} → {nearby['name']} (within 200m)")
-        return enrich_mosque(session, nearby["id"], mosque, dry_run)
+    for nearby in nearby_rows:
+        dist = float(nearby["dist_m"])
+        sim = name_similarity(mosque.name, nearby["name"])
+        is_same_building = dist <= 50
+        is_similar_name = sim >= 0.4
+        if is_same_building or is_similar_name:
+            logger.debug(f"  Nearby duplicate ({dist}m, sim={sim:.2f}): "
+                         f"{mosque.name} → {nearby['name']}")
+            return enrich_mosque(session, nearby["id"], mosque, dry_run)
 
     tz = tf.timezone_at(lat=lat, lng=lng) or "UTC"
 

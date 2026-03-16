@@ -51,6 +51,10 @@ async def get_nearby_mosques(
     except Exception:
         current_time = datetime.now(timezone.utc)
 
+    logger.info(
+        "nearby request: lat=%.5f lng=%.5f radius=%.1f tz=%s",
+        request.latitude, request.longitude, request.radius_km, request.client_timezone,
+    )
     try:
         mosques = await find_nearby_mosques(
             db=db,
@@ -69,6 +73,7 @@ async def get_nearby_mosques(
         )
         raise HTTPException(status_code=500, detail=f"Internal error: {type(exc).__name__}: {exc}")
 
+    logger.info("nearby result: found %d mosques", len(mosques) if mosques else 0)
     if not mosques:
         raise HTTPException(
             status_code=404,

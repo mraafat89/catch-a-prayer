@@ -8,7 +8,7 @@ Designed for US and Canada. Mobile-first.
 
 ## Features
 
-- **Mosque Discovery**: Finds mosques near your location using OpenStreetMap data (pre-indexed, no per-request API cost)
+- **Mosque Discovery**: Finds mosques near your location from a pre-built database of 2,400+ US/Canada mosques (OpenStreetMap + Hartford Institute + MosqueList — no per-request API cost)
 - **Both Adhan and Iqama times**: Scraped from each mosque's own website — not just calculated
 - **5-level prayer catching status**: With Imam / Imam in progress / Solo at mosque / Pray nearby / Missed — make up
 - **Source transparency**: Every time shown includes where it came from (scraped, calculated, or estimated) and how fresh it is
@@ -27,7 +27,8 @@ Designed for US and Canada. Mobile-first.
 ```
 User request → FastAPI → PostGIS query (pre-built mosque DB) → prayer calc → response
 
-Background (nightly): OSM mosque sync → website scraping → Vision AI for images → DB
+Background (nightly): scraping pipeline (5 tiers) → prayer times → DB
+One-time seed: OSM + Hartford Institute + MosqueList → 2,400+ mosques
 ```
 
 No mosque data is fetched live during a user request. Everything is pre-computed and served from the database.
@@ -97,9 +98,8 @@ FCM_SERVER_KEY=...
 
 Edit `client/.env`:
 ```env
-VITE_API_URL=http://localhost:8000
-VITE_MAPBOX_TOKEN=pk.eyJ1...
-VITE_VAPID_PUBLIC_KEY=...
+REACT_APP_API_URL=          # leave empty — uses CRA proxy (works for localhost and ngrok)
+REACT_APP_GOOGLE_MAPS_API_KEY=...
 ```
 
 ### Run
@@ -115,14 +115,14 @@ docker-compose up --build
 ### Seed the Mosque Database
 
 ```bash
-# One-time: download all US/Canada mosques from OpenStreetMap
-docker-compose exec api python -m pipeline.seed_mosques
+# One-time: download US/Canada mosques from OpenStreetMap
+python -m pipeline.seed_mosques
 
-# One-time: enrich with website/phone from Google Places (optional)
-docker-compose exec api python -m pipeline.enrich_from_places
+# One-time: enrich/add mosques from Hartford Institute + MosqueList.top
+python -m pipeline.seed_from_web_sources
 
-# Start the nightly scraping pipeline (for development: run once manually)
-docker-compose exec api python -m pipeline.run_scraping
+# Run the scraping pipeline (processes pending jobs in batches)
+python -m pipeline.scraping_worker --batch-size 50
 ```
 
 ---

@@ -807,6 +807,7 @@ function App() {
   async function fetchData(lat: number, lng: number) {
     setMosquesLoading(true);
     setMosquesError(null);
+    console.log('[fetchData] lat:', lat, 'lng:', lng, 'radius:', radiusKm);
     try {
       const res = await apiService.findNearbyMosques(lat, lng, radiusKm);
       console.log('[fetchData] response:', res);
@@ -820,7 +821,11 @@ function App() {
     } catch (e: any) {
       console.error('[fetchData] error:', e?.message, e?.code, e?.response?.status, e?.response?.data, e);
       const detail = e?.response?.data?.detail;
-      setMosquesError(typeof detail === 'string' ? detail : 'Failed to load mosques.');
+      if (detail && typeof detail === 'object' && detail.error === 'no_mosques_found') {
+        setMosquesError(`No mosques found within ${radiusKm} km. Try increasing the search radius in Settings.`);
+      } else {
+        setMosquesError(typeof detail === 'string' ? detail : 'Failed to load mosques.');
+      }
     } finally {
       setMosquesLoading(false);
     }
@@ -866,14 +871,17 @@ function App() {
 
       {/* Map */}
       <div
-        className="relative bg-gray-200 transition-all duration-300"
+        className="relative isolate bg-gray-200 transition-all duration-300"
         style={{ height: mapCollapsed ? '0' : '40vh' }}
       >
         {!mapCollapsed && <MapView />}
-        {/* Collapse toggle */}
+      </div>
+
+      {/* Collapse toggle — outside the map div so Leaflet z-indexes don't cover it */}
+      <div className="flex justify-center py-1 bg-white border-b border-gray-200">
         <button
           onClick={() => setMapCollapsed(!mapCollapsed)}
-          className="absolute bottom-0 left-1/2 -translate-x-1/2 translate-y-1/2 bg-white border border-gray-300 rounded-full px-4 py-1 text-xs text-gray-600 shadow z-10 hover:bg-gray-50"
+          className="bg-white border border-gray-300 rounded-full px-4 py-1 text-xs text-gray-600 shadow hover:bg-gray-50"
         >
           {mapCollapsed ? '▲ Show map' : '▼ Hide map'}
         </button>
