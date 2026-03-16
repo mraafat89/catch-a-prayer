@@ -97,6 +97,12 @@ while true; do
         echo "--- Adaptive extractor done ---"
     fi
 
+    # Run mosque info enricher (denomination, women's section, Friday prayers, languages)
+    echo ""
+    echo "--- Running mosque info enricher (iteration $iteration) ---"
+    $PYTHON -m pipeline.mosque_info_enricher --batch 20 || true
+    echo "--- Mosque info enricher done ---"
+
     # Check if any pending jobs remain
     PENDING=$($PYTHON - <<'PYEOF'
 import sys, os

@@ -410,6 +410,76 @@ def append_extractor(code: str, approach: str, sample_urls: list[str]) -> str:
     logger.info(f"  Saved {fn_name} to custom_extractors.py (approach: {approach})")
     return fn_name
 
+# ─── Claude haiku fallback (last resort, HTML only) ──────────────────────────
+
+def _extract_prayer_section(html: str) -> str:
+    """Minimal HTML snippet for Claude: smallest element with most prayer keywords."""
+    soup = BeautifulSoup(html, "html.parser")
+    best_el, best_hits = None, 0
+    for tag in soup.find_all(["table", "div", "section", "article", "ul", "dl"]):
+        t = tag.get_text(" ", strip=True).lower()
+        hits = sum(t.count(kw) for kw in PRAYER_KEYWORDS)
+        if hits > best_hits and len(t) > 30:
+            best_hits, best_el = hits, tag
+    if best_el:
+        return re.sub(r'\s{2,}', ' ', str(best_el))[:1500]
+    return html[:1500]
+
+
+def _call_claude_haiku(samples: list[dict]) -> Optional[str]:
+    """ONE haiku call for sites that automated approaches couldn't parse."""
+    try:
+        import anthropic
+    except ImportError:
+        logger.error("anthropic package not installed"); return None
+
+    snippets = "".join(
+        f"\n--- Site {i+1}: {s['url']} ---\n{_extract_prayer_section(s['html'])}\n"
+        for i, s in enumerate(samples)
+    )
+    prompt = (
+        "These mosque websites have prayer schedules our parser couldn't extract.\n"
+        "Write: def extract(html: str) -> dict | None:\n"
+        "Return dict keys: fajr_adhan, fajr_iqama, dhuhr_adhan, dhuhr_iqama, asr_adhan, "
+        "asr_iqama, maghrib_adhan, maghrib_iqama, isha_adhan, isha_iqama (24h HH:MM or None).\n"
+        "Use BeautifulSoup and/or re. Return None if pattern doesn't match.\n"
+        f"HTML snippets:{snippets}\nOnly the Python function, no explanation."
+    )
+    try:
+        client = anthropic.Anthropic()
+        msg = client.messages.create(
+            model="claude-haiku-4-5-20251001", max_tokens=500,
+            system="Python web scraping expert. Write concise robust code.",
+            messages=[{"role": "user", "content": prompt}],
+        )
+        code = re.sub(r'^```\w*\s*|^```\s*$', '', msg.content[0].text.strip(), flags=re.MULTILINE)
+        logger.info(f"  Claude returned {len(code)} chars")
+        return code.strip()
+    except Exception as e:
+        logger.error(f"  Claude call failed: {e}"); return None
+
+
+def _validate_claude_code(code: str, samples: list[dict]) -> bool:
+    """exec() + test on full HTML. Accept if ≥1/3 samples return ≥2 valid times."""
+    ns: dict = {}
+    try:
+        exec("from bs4 import BeautifulSoup\nimport re\n" + code, ns)
+    except SyntaxError as e:
+        logger.warning(f"  Syntax error: {e}"); return False
+    fn = ns.get("extract")
+    if not callable(fn):
+        return False
+    KEYS = [f"{p}_{k}" for p in PRAYER_NAMES for k in ("adhan", "iqama")]
+    ok = sum(
+        1 for s in samples
+        if isinstance(fn(s["html"]) or {}, dict) and
+           sum(1 for k in KEYS if _valid_time((fn(s["html"]) or {}).get(k))) >= 2
+    )
+    needed = max(1, len(samples) // 3)
+    logger.info(f"  Claude validation: {ok}/{len(samples)} pass (need {needed})")
+    return ok >= needed
+
+
 # ─── Main ─────────────────────────────────────────────────────────────────────
 
 def main():
@@ -423,6 +493,7 @@ def main():
 
     new_extractor_count = 0
     processed_domains: set[str] = set()
+    claude_queue: list[dict] = []   # sites where all automated approaches failed
 
     with httpx.Client(
         timeout=FETCH_TIMEOUT, follow_redirects=True,
@@ -486,7 +557,11 @@ def main():
             processed_domains.add(domain)
 
             if not found_result:
-                logger.info(f"    all approaches failed — no Claude call (PDF/image sites handled by Tier 4)")
+                # Last resort: Claude haiku generates a Python extractor for this HTML.
+                # Only if the page clearly has prayer content but no automated approach worked.
+                # (Image/PDF schedules are already handled by Tier 4 during regular scraping.)
+                logger.info(f"    automated approaches exhausted — queuing for Claude haiku batch")
+                claude_queue.append({"url": url, "domain": domain, "html": html})
                 continue
 
             # Generate a Python function from the result (no Claude)
@@ -498,6 +573,23 @@ def main():
             new_extractor_count += 1
 
     save_cooldowns(cooldowns)
+
+    # ── Claude haiku fallback: one call for all sites that defeated automated approaches ──
+    MIN_CLAUDE_BATCH = 3
+    if len(claude_queue) >= MIN_CLAUDE_BATCH:
+        logger.info(f"  {len(claude_queue)} sites need Claude haiku — calling now...")
+        batch = claude_queue[:5]  # cap at 5 snippets per call
+        code = _call_claude_haiku(batch)
+        if code:
+            # Validate and save
+            if _validate_claude_code(code, batch):
+                fn_name = append_extractor(code, "claude_haiku", [s["url"] for s in batch])
+                new_extractor_count += 1
+                logger.info(f"  Claude extractor saved: {fn_name}")
+            else:
+                logger.warning(f"  Claude extractor failed validation — discarding")
+    elif claude_queue:
+        logger.info(f"  Only {len(claude_queue)} site(s) for Claude — need {MIN_CLAUDE_BATCH}, skipping (0 tokens)")
 
     if new_extractor_count > 0:
         requeued = requeue_tier5_websites(engine)

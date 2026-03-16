@@ -108,8 +108,21 @@ with engine.connect() as c:
 
     print(f"  Adaptive extractor:")
     print(f"    Custom extractors generated:  {extractor_count}")
-    print(f"    Domains sent to Claude:       {cooldown_count}")
+    print(f"    Domains on cooldown:          {cooldown_count}")
     print(f"    Mosques still stuck (T5+web): {stuck}  ({pct_stuck:.1f}% of websites)")
+    print()
+
+    # ── Mosque info coverage ──
+    denom  = c.execute(text("SELECT COUNT(*) FROM mosques WHERE denomination IS NOT NULL AND is_active=true")).scalar()
+    women  = c.execute(text("SELECT COUNT(*) FROM mosques WHERE has_womens_section IS NOT NULL AND is_active=true")).scalar()
+    wheel  = c.execute(text("SELECT COUNT(*) FROM mosques WHERE wheelchair_accessible IS NOT NULL AND is_active=true")).scalar()
+    langs  = c.execute(text("SELECT COUNT(*) FROM mosques WHERE languages_spoken IS NOT NULL AND array_length(languages_spoken,1)>0 AND is_active=true")).scalar()
+    juma   = c.execute(text("SELECT COUNT(DISTINCT mosque_id) FROM jumuah_sessions")).scalar()
+    print(f"  Mosque info coverage  (of {total} active mosques):")
+    for label, val in [("denomination", denom), ("has_womens_section", women),
+                       ("wheelchair", wheel), ("languages", langs), ("jumuah_sessions", juma)]:
+        pct = 100 * val / total if total else 0
+        print(f"    {label:<22} {val:>5}  ({pct:.1f}%)")
     print(f"{'='*54}\n")
 PYEOF
 }

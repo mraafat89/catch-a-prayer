@@ -663,7 +663,8 @@ Every scraping iteration:
 |------|---------|
 | `pipeline/adaptive_extractor.py` | The adaptive script — run as `python -m pipeline.adaptive_extractor` |
 | `pipeline/custom_extractors.py` | Auto-generated extractor functions, imported by scraping_worker |
-| `pipeline/adaptive_analyzed.json` | Domains already processed (avoids re-sending to Claude) |
+| `pipeline/adaptive_analyzed.json` | Domain cooldowns (14-day cooldown after each Claude call) |
+| `pipeline/mosque_info_enricher.py` | Mosque info enrichment — denomination, women's section, Friday prayers, languages |
 
 ### Extractor Format
 
@@ -703,7 +704,41 @@ tier_distribution           = count by tier_reached (shows pipeline health)
 stuck_with_website          = tier_5 mosques that have a website (the recovery target)
 adaptive_extractor_count    = number of custom extractors generated so far
 domains_on_cooldown         = domains recently sent to Claude (14-day cooldown)
+
+# Mosque info coverage (separate enrichment pipeline):
+denomination_pct            = mosques with denomination / total  (target: 100%)
+has_womens_section_pct      = mosques with womens_section known / total
+jumuah_sessions_pct         = mosques with Friday prayer times / total (target: 100%)
+languages_pct               = mosques with languages_spoken / total
 ```
+
+---
+
+## Mosque Info Enrichment
+
+Beyond prayer/iqama times, the pipeline also scrapes mosque-level info from each website.
+Runs as `python -m pipeline.mosque_info_enricher --batch 20` after every scraping batch.
+
+### Fields Collected
+
+| Field | Method |
+|-------|--------|
+| `denomination` | Keyword scan for sunni/shia/hanafi/shafi/maliki/hanbali/salafi/deobandi/ismaili/etc. |
+| `has_womens_section` | Keyword scan for "sisters prayer", "women's section", etc. |
+| `wheelchair_accessible` | Keyword scan for "wheelchair accessible", "ADA compliant", etc. |
+| `languages_spoken` | Keyword scan for Arabic/English/Urdu/Bengali/Somali/etc. near sermon mentions |
+| `jumuah_sessions` | Regex extraction of Friday prayer times: khutba_start, prayer_start, multiple sessions |
+
+### Jumuah Session Extraction
+
+Friday prayer data is the most critical missing field. The enricher:
+1. Checks homepage + common sub-pages (`/friday`, `/jumuah`, `/prayer-times`)
+2. Finds sections containing Friday/Jumu'ah keywords
+3. Extracts time pairs (khutba start, iqama) per session
+4. Handles multiple sessions (1st Jumu'ah, 2nd Jumu'ah, etc.)
+5. Detects sermon language from surrounding text
+
+All extraction is regex + BeautifulSoup — zero Claude tokens.
 
 ### Live Monitoring Commands
 
