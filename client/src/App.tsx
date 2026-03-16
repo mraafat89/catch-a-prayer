@@ -1123,8 +1123,9 @@ function DestinationInput() {
   const [originQuery, setOriginQuery] = useState(travelOrigin?.place_name ?? '');
   const [originSugg, setOriginSugg]  = useState<GeocodeSuggestion[]>([]);
   const [originLoading, setOriginLoading] = useState(false);
-  // Trip mode derives from global travel toggle: ON = "travel" (combining), OFF = "driving"
-  const tripMode = travelModeStore ? 'travel' : 'driving';
+  // Trip mode: defaults to global travel toggle but user can override per trip
+  const [tripCombine, setTripCombine] = useState<boolean>(() => travelModeStore);
+  const tripMode = tripCombine ? 'travel' : 'driving';
 
   // Default departure time = right now in local time (datetime-local needs YYYY-MM-DDTHH:mm)
   const defaultDeparture = (() => {
@@ -1213,7 +1214,7 @@ function DestinationInput() {
 
   // Compact chip when plan is active and not expanded for editing
   if (travelDestination && useStore.getState().travelPlan && !chipExpanded) {
-    const modeLabel = tripMode === 'travel' ? '✈️ Musafir' : '🚗 Driving';
+    const modeLabel = tripCombine ? '✈️ Musafir trip' : '🚗 Driving trip';
     const originLabel = travelOrigin?.place_name ?? 'Current location';
     return (
       <div
@@ -1240,20 +1241,23 @@ function DestinationInput() {
 
   return (
     <div className="mx-3 mb-2 bg-white border border-teal-200 rounded-xl p-3 shadow-sm space-y-2">
-      <p className="text-xs font-bold text-teal-700 uppercase tracking-wider">
-        {tripMode === 'travel' ? '✈️ Musafir Trip' : '🚗 Driving'}
-      </p>
+      <p className="text-xs font-bold text-teal-700 uppercase tracking-wider">Plan Your Trip</p>
 
-      {tripMode === 'travel' && (
-        <p className="text-xs text-teal-600 bg-teal-50 rounded-lg px-2 py-1.5">
-          Musafir mode — combining Dhuhr+Asr and Maghrib+Isha (Jam' Taqdeem / Ta'kheer) allowed along route.
-        </p>
-      )}
-      {tripMode === 'driving' && (
-        <p className="text-xs text-gray-500 bg-gray-50 rounded-lg px-2 py-1.5">
-          Driving mode — shows mosques along your route. Enable ✈️ Traveling in header to allow combining.
-        </p>
-      )}
+      {/* Musafir / combining toggle for this trip */}
+      <div className="flex items-center justify-between bg-gray-50 rounded-lg px-2.5 py-2">
+        <div className="min-w-0">
+          <p className="text-xs font-medium text-gray-700">✈️ Apply Musafir rules (combine prayers)</p>
+          {tripCombine && (
+            <p className="text-xs text-teal-600 mt-0.5">Jam' Taqdeem / Ta'kheer allowed along route</p>
+          )}
+        </div>
+        <button
+          onClick={() => setTripCombine((v) => !v)}
+          className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors flex-shrink-0 ml-3 ${tripCombine ? 'bg-teal-600' : 'bg-gray-300'}`}
+        >
+          <span className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white transition-transform ${tripCombine ? 'translate-x-4' : 'translate-x-0.5'}`} />
+        </button>
+      </div>
 
       {/* From */}
       <div className="relative flex items-center gap-1.5">

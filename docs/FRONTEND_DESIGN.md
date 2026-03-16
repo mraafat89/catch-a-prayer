@@ -651,21 +651,33 @@ When a destination is set, the app switches to Route Mode (see Travel Mode secti
 
 ---
 
-## Travel Mode — Three Modes
+## Travel Mode
 
-The app has three distinct travel modes driven by two inputs: the global ✈️ Musafir toggle and whether a destination is set.
+### Global ✈️ Musafir Toggle
 
-| Mode | Musafir toggle | Destination | Prayer combining | Use case |
-|---|---|---|---|---|
-| **Musafir (Traveling, no route)** | ✈️ ON | Not set | Yes — show combination options per mosque | Away from home, not currently driving (e.g. at a hotel, airport, visiting a city) |
-| **Driving** | ✈️ OFF | Set | No | Local driving or commute — route-based, single prayers only |
-| **Traveling + Driving** | ✈️ ON | Set | Yes — combination options along route | Long-distance road trip (safar while driving) |
+The global ✈️ **Musafir** toggle (header pill) indicates the user is a traveler (Musafir / Safar) — away from their home city. It controls **whether prayer combining (Jam') is allowed** across the whole app:
 
-### Mode 1: Musafir (Traveling, No Route)
+| ✈️ Toggle | Effect |
+|---|---|
+| **OFF** | Normal mode — no combining, nearby mosque list only |
+| **ON** | Musafir mode — Jam' Taqdeem / Ta'kheer shown on nearby mosque cards AND as the default for any trip plan |
 
-When the ✈️ Musafir toggle is ON but **no destination is set**, the app behaves like the normal mosque list but with combination options visible on each mosque card. This covers the Quranic allowance for Musafir (traveler) to shorten and combine prayers.
+The toggle does **not** require a destination to be set. When ON without a destination, the user is stationary in another city and sees combination options on mosque cards.
 
-Each mosque card shows combination option chips below the standard status rows:
+### Trip Planner (Separate from Global Toggle)
+
+Trip planning is available whenever ✈️ is ON or a destination is already set. The trip planner has its own **"✈️ Apply Musafir rules (combine prayers)"** toggle inside the form, which **defaults to the global toggle state** but can be overridden per trip.
+
+| Global ✈️ | Trip form toggle | `trip_mode` sent | Use case |
+|---|---|---|---|
+| OFF | OFF (default) | `"driving"` | Local commute — route mosques, no combining |
+| ON | ON (default) | `"travel"` | Safar road trip — route mosques + combining |
+| ON | OFF (user override) | `"driving"` | Driving but chose not to combine for this trip |
+| OFF | ON (user override) | `"travel"` | User turned off global toggle but wants combining for this specific trip |
+
+### Mode: Musafir, Static (No Route)
+
+When ✈️ toggle is ON and **no destination is set**, the nearby mosque list shows combination options (Dhuhr+Asr, Maghrib+Isha) as chips on each mosque card:
 
 ```
 ┌──────────────────────────────────────────────────────┐
@@ -673,35 +685,28 @@ Each mosque card shows combination option chips below the standard status rows:
 │     Dhuhr — Iqama 1:05 PM — catch with Imam now     │
 │     ────────────────────────────────────────────     │
 │     ✈️ Combination options:                          │
-│     🟢 Combine Dhuhr+Asr now (Jam' Taqdeem)         │  ← only if before Asr
+│     🟢 Combine Dhuhr+Asr now (Jam' Taqdeem)         │  ← only if before Asr adhan
 │     🔵 Wait for Asr, pray both then (Jam' Ta'kheer) │  ← only if before Asr ends
 └──────────────────────────────────────────────────────┘
 ```
 
-Combination options are computed from the mosque's today schedule and the current time:
-- **Taqdeem**: Both prayers prayed early, during the first prayer's window — only feasible before the second prayer's adhan
-- **Ta'kheer**: Both prayers delayed to the second prayer's window — only feasible before the second prayer's period ends
+Combination options are computed per mosque from today's schedule:
+- **Taqdeem**: feasible before the second prayer's adhan (combine early, during first prayer's window)
+- **Ta'kheer**: feasible before the second prayer's period ends (delay first into second's window)
 
-The combination chips are **informational only** — no separate API call. They use the `travel_combinations` field returned by `/api/nearby` when `travel_mode=true`.
-
-### Mode 2: Driving (Route, No Combining)
-
-When the ✈️ toggle is **OFF** and a destination is set, the app shows route-based mosque results with **no combination options** (`trip_mode = "driving"`).
-
-### Mode 3: Traveling + Driving (Route + Combining)
-
-When the ✈️ toggle is **ON** and a destination is set, the app shows route-based mosque results **with** combination options along the route (`trip_mode = "travel"`).
+Uses the `travel_combinations` field returned by `/api/nearby` when `travel_mode=true`.
 
 ### Trip Planner Form
 
-When Travel Mode is ON OR a destination has been set, a trip planning card appears at the top of the scrollable content area. The form **inherits the global travel toggle** — there is no separate Driving/Traveling toggle inside the form. The trip_mode sent to the backend is derived from the global ✈️ Musafir toggle state.
+Shown when ✈️ toggle is ON or a destination is set.
 
 ```
 ┌──────────────────────────────────────────────────────┐
 │  PLAN YOUR TRIP                                      │  teal-700 uppercase label
 │                                                      │
-│  ℹ️ Musafir mode: combining Dhuhr+Asr and Maghrib+  │  shown only when ✈️ toggle ON
-│     Isha (Jam' Taqdeem / Ta'kheer) allowed.          │
+│  ✈️ Apply Musafir rules (combine prayers)   [● ON]   │  toggle — defaults to global ✈️ state
+│  ℹ️ Allows combining Dhuhr+Asr, Maghrib+Isha        │  shown only when toggle ON
+│     (Jam' Taqdeem / Ta'kheer).                       │
 │                                                      │
 │  📍  From: Current location                   [⌖]   │  optional — geocode search
 │  🏁  To: Destination *                               │  required — geocode search
@@ -858,7 +863,20 @@ The plan fetch is triggered **explicitly by the "Plan My Prayers" button** insid
 
 ### Map Behavior in Route Mode
 
-The map view remains unchanged in route mode (route polyline is a future enhancement). The map continues to show nearby mosque markers and the user's location dot. A destination pin is not currently added to the map.
+When a destination is set (with or without a plan), the map shows:
+
+1. **Origin pin** (teal circle labeled "A") — user's current GPS location or custom origin if set
+2. **Destination pin** (red circle labeled "B") — travelDestination
+3. The map **auto-zooms** to fit both origin and destination at the tightest zoom that shows both
+
+When a trip plan is active ("Plan My Prayers" was clicked), the map additionally shows:
+
+4. **Route mosque stop pins** — indigo/purple pins for each unique mosque from the plan's stops (from all feasible options)
+5. The map **re-fits** to show all: origin, destination, and all mosque stops
+
+**Mosque name labels** are always visible (permanent tooltips) on all mosque pins — both nearby mosques and route stop mosques.
+
+Tapping a stop card inside a `TravelOptionCard` zooms the map to that mosque and fits it with the user's location.
 
 ---
 
