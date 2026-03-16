@@ -1138,6 +1138,10 @@ def tier5_calculated(mosque: MosqueRecord, target_date: date) -> PrayerTimes:
     utc_offset = dt_aware.utcoffset().total_seconds() / 3600
 
     pt = PrayTimes(settings.calculation_method)
+    # The praytimes library sometimes inherits wrong defaults from other methods
+    # (e.g. Jafari's maghrib:4°, midnight:'Jafari').  Explicitly enforce ISNA values:
+    #   fajr 15°, isha 15°, maghrib at sunset (0 min), standard midnight.
+    pt.adjust({"maghrib": "0 min", "midnight": "Standard", "fajr": 15, "isha": 15})
     raw = pt.getTimes(
         (target_date.year, target_date.month, target_date.day),
         [mosque.lat, mosque.lng],

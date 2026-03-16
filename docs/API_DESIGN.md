@@ -117,7 +117,31 @@ Find mosques near a location and return prayer catching status for each.
         // ... asr, maghrib, isha
       ],
       "sunrise": "06:28",
-      "jumuah_sessions": []
+      "jumuah_sessions": [
+        {
+          "session_number": 1,
+          "khutba_start": "12:30",
+          "prayer_start": "13:00",
+          "imam_name": "Sheikh Ahmed Al-Farsi",
+          "language": "English",
+          "special_notes": null,
+          "booking_required": false,
+          "booking_url": null
+        },
+        {
+          "session_number": 2,
+          "khutba_start": "13:30",
+          "prayer_start": "14:00",
+          "imam_name": null,
+          "language": null,
+          "special_notes": null,
+          "booking_required": false,
+          "booking_url": null
+        }
+      ]
+      // Note: jumuah_sessions is only populated on Fridays. The backend
+      // queries the jumuah_sessions table only when mosque_today.weekday() == 4.
+      // On all other days it always returns [].
     }
   ],
   "user_location": {
@@ -133,7 +157,7 @@ Find mosques near a location and return prayer catching status for each.
 | `status` | Description |
 |---|---|
 | `can_catch_with_imam` | Arrives before or at iqama time |
-| `can_catch_with_imam_in_progress` | Arrives during congregation window |
+| `can_catch_with_imam_in_progress` | Arrives during congregation window. Only returned when `current_time >= iqama_time` (congregation has actually started) — not merely when arrival would be after iqama. |
 | `can_pray_solo_at_mosque` | Congregation ended, prayer period still active |
 | `pray_at_nearby_location` | Cannot reach mosque before period ends, period still active |
 | `missed_make_up` | Prayer period has ended |
@@ -153,6 +177,10 @@ Inclusion rules:
 - Include `upcoming` only if adhan is within 2 hours
 - Exclude `missed_make_up` (prayer period over — nothing actionable)
 - If every prayer has passed, return one `missed_make_up` entry for the most recent prayer
+
+**`sunrise` field**:
+
+`"sunrise"` is the astronomical sunrise time (Shorooq), which marks the end of the Fajr prayer period. It comes from the `prayer_schedules.sunrise` column, calculated by the `praytimes` library. It is displayed in the mosque detail sheet as "Shorooq" between Fajr and Dhuhr.
 
 **Message formats per status** (all include prayer name and actionable timing):
 

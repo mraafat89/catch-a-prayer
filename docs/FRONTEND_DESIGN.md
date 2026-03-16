@@ -98,7 +98,7 @@ Each mosque card shows **all currently relevant prayers**, not just one. A praye
 └──────────────────────────────────────────────────────┘
 ```
 
-**"I already prayed [Prayer]" global banner**: Shown as a floating chip at the top of the list (not per mosque card). Only appears for the **current active prayer** (i.e. the one whose adhan has already passed and the period is still open — `can_catch_with_imam`, `in_progress`, or `can_pray_solo`). NOT shown for upcoming prayers (adhan hasn't happened yet — the user can't have prayed it).
+**"I already prayed [Prayer]" global banner**: Shown as a floating chip at the top of the list (not per mosque card). Only appears for prayers with **ACTIVE status** — i.e. the congregation is in progress, the user can still catch it, or they can pray solo (`can_catch_with_imam`, `can_catch_with_imam_in_progress`, `can_pray_solo_at_mosque`). NOT shown for upcoming prayers whose adhan has not yet occurred — the user cannot have already prayed a prayer before its adhan.
 
 ```
 ┌──────────────────────────────────────────────────────┐
@@ -319,10 +319,11 @@ Slides up from bottom when user taps a card. Does not navigate away from the map
 │  Today's Prayer Times                               │
 │  ──────────────────────────────────────────────────  │
 │  Fajr      5:31 AM adhan  ·  5:50 AM iqama          │
+│  Shorooq   7:19 AM                  (Fajr ends) 🌅   │  ← amber row
 │  Dhuhr    12:45 PM adhan  · 12:55 PM iqama          │
 │  Asr       4:15 PM adhan  ·  4:25 PM iqama  ← now  │
-│  Maghrib   7:22 PM adhan  ·  7:27 PM iqama          │
-│  Isha      8:55 PM adhan  ·  9:10 PM iqama          │
+│  Maghrib   7:16 PM adhan  ·  7:21 PM iqama          │
+│  Isha      8:27 PM adhan  ·  8:42 PM iqama          │
 │                                                      │
 │  Data source: Scraped from mosque website (3d ago)  │
 │                                                      │
@@ -333,17 +334,22 @@ Slides up from bottom when user taps a card. Does not navigate away from the map
 └──────────────────────────────────────────────────────┘
 ```
 
-### Friday / Jumuah View (when it's Friday or user checks Jumuah times)
+**Shorooq row**: After Fajr, a highlighted row shows the sunrise time labeled "Shorooq", with "Fajr ends" in the Iqama column. It renders with an amber/yellow background to distinguish it from the 5 obligatory prayers. The row is only shown when `mosque.sunrise` is non-null. Maghrib adhan equals the sunset time (no offset) per ISNA calculation.
+
+### Friday / Jumuah View (implemented — shown on Fridays)
+
+Sessions are fetched from the `jumuah_sessions` table and displayed only on Fridays. The section is green-themed in the UI. Each session card shows: session number, khutba start time, prayer start time, imam name, language (if not English), special notes, and booking required + registration URL when applicable.
 
 ```
-│  Friday Prayer (Jumuah)                             │
+│  Friday Jumu'ah                                     │
 │  ──────────────────────────────────────────────────  │
-│  Session 1 · 12:30 PM khutba · 1:00 PM prayer      │
-│  Imam: Sheikh Ahmed · English                       │
-│  Topic: "The Virtue of Patience"                    │
-│                                                      │
-│  Session 2 · 1:30 PM khutba · 2:00 PM prayer       │
-│  Imam: Dr. Hassan · Arabic/English                  │
+│  ┌ Session 1 ────────────────── Khutba 12:30 · Prayer 1:00 ┐ │
+│  │ Imam: Sheikh Ahmed                                      │ │
+│  └────────────────────────────────────────────────────────┘ │
+│  ┌ Session 2 ────────────────── Khutba 1:30 · Prayer 2:00 ┐ │
+│  │ Imam: Dr. Hassan · Language: Arabic/English             │ │
+│  │ Registration required — [Register link]                 │ │
+│  └────────────────────────────────────────────────────────┘ │
 ```
 
 ---
@@ -423,6 +429,8 @@ Tapping a mosque pin opens the same bottom sheet as tapping the mosque card.
 ---
 
 ## State Management (Zustand)
+
+**5-minute auto-refresh**: The app automatically re-fetches mosque data every 5 minutes when the user has a location. This is implemented via `setInterval` inside a `useEffect` that depends on `userLocation` and `radiusKm`. This ensures prayer status banners (e.g. "Asr time — leave by 4:13 PM") update automatically as time passes without requiring a manual refresh.
 
 ```typescript
 interface AppStore {

@@ -176,6 +176,8 @@ Tiers are attempted in order. The pipeline stops at the first tier that produces
 
 **When to use Tier 1 result**: Only if match confidence is high AND times pass sanity checks (see Validation section).
 
+**Skip condition**: Tier 1 is skipped entirely for mosques that have a website URL. IslamicFinder only provides city-level adhan times without iqama, so for mosques with a known website we go directly to Tier 2 where mosque-specific iqama times can be found.
+
 ---
 
 ### Tier 2 — Static HTML Scraping
@@ -215,6 +217,29 @@ Tiers are attempted in order. The pipeline stops at the first tier that produces
 - Regex patterns for each prayer name + time
 - Extract both adhan and iqama when two times appear near a prayer name
 - Time format normalization (12h/24h, with/without AM/PM, Arabic numerals)
+
+#### iframe Widget Detection
+
+The scraper detects embedded prayer widget iframes on both the homepage and any discovered sub-pages. When a matching iframe `src` is found, its URL is fetched directly and parsed with BeautifulSoup for prayer times.
+
+Patterns matched:
+- `timing.athanplus.com` (AthanPlus widget)
+- `masjidal.com`
+- `salahmate.com`
+- `salattimes.com`
+- `prayer-times.*widget` (generic)
+- `muslimpro.com/embed`
+- `masjid.us/widget`
+
+#### `extract_times_from_divs()`
+
+A sliding window over leaf DOM elements to find prayer+time pairs in div-based layouts (for sites that don't use `<table>`). This complements the existing table extraction method.
+
+#### `normalize_time()` AM/PM Inference
+
+Times without AM/PM are inferred from prayer context rather than defaulting to AM:
+- Dhuhr, Asr, Maghrib, or Isha times with hour 1–9 are assumed PM (+12 hours added)
+- Example: `"1:18"` parsed as Dhuhr → `13:18` instead of `01:18`
 
 **Store with**: `source = 'mosque_website_html'`
 
@@ -330,8 +355,17 @@ For monthly schedules, extract ALL visible date rows into monthly_rows.
 
 **What**: When all scraping fails, fall back to mathematical calculation.
 
-**Adhan times**: Calculate using the `adhan-python` library from mosque GPS coordinates.
+**Adhan times**: Calculate using the `praytimes` Python port library from mosque GPS coordinates.
 - Calculation method: ISNA (default for US/Canada) — configurable per mosque if known
+- After initialization, explicit overrides are applied to correct inherited Jafari defaults:
+
+```python
+pt = PrayTimes('ISNA')
+pt.adjust({"maghrib": "0 min", "midnight": "Standard", "fajr": 15, "isha": 15})
+```
+
+These overrides are required because initializing with the ISNA method inherits incorrect Jafari defaults (notably `maghrib: 4°`), which would cause Maghrib to be calculated approximately 16 minutes late. With the override, Maghrib is correctly set to sunset (`'0 min'`), Fajr to 15° below the horizon, and Isha to 15° below the horizon.
+
 - Source: `source = 'calculated'`, `confidence = 'medium'`
 
 **Iqama times**: Estimate using typical offset from adhan by prayer:
@@ -385,24 +419,31 @@ def validate_prayer_times(times: dict) -> tuple[bool, str]:
         if adhan_a >= adhan_b:
             return False, f"{prayers[i]} adhan ({adhan_a}) must be before {prayers[i+1]} adhan ({adhan_b})"
 
-    # Iqama must be after adhan (when both present)
-    for p in prayers:
-        adhan = times.get(f'{p}_adhan')
-        iqama = times.get(f'{p}_iqama')
-        if adhan and iqama and iqama < adhan:
-            return False, f"{p} iqama ({iqama}) is before adhan ({adhan})"
-
-    # Iqama gap must be reasonable (not more than 45 minutes after adhan)
+    # Iqama gap must be within a reasonable window around adhan
+    # Negative gap (iqama before adhan) is valid during Ramadan — e.g. early Fajr iqama
+    # Allowed range: -60 min ≤ gap ≤ 90 min
     for p in prayers:
         adhan = times.get(f'{p}_adhan')
         iqama = times.get(f'{p}_iqama')
         if adhan and iqama:
             gap_minutes = time_diff_minutes(adhan, iqama)
-            if gap_minutes > 45:
+            if gap_minutes < -60:
+                return False, f"{p} iqama is {abs(gap_minutes)} min before adhan — too early"
+            if gap_minutes > 90:
                 return False, f"{p} iqama gap of {gap_minutes} min is unreasonably large"
 
     return True, "ok"
 ```
+
+### Completeness Check — `is_complete()`
+
+A result is considered complete only when it contains both adhan and iqama times:
+
+```
+adhan_count == 5 AND iqama_count >= 4
+```
+
+This is stricter than checking adhan count alone. Previously, a result with 5 adhans and 0 iqamas (e.g. an IslamicFinder city-level result) would be marked complete and incorrectly block Tier 2 from running. Now such a result is treated as incomplete and the pipeline continues to the next tier.
 
 ---
 
@@ -433,6 +474,29 @@ Standard active mosque:              priority = 5
 Recently scraped successfully:       priority = 8
 No website, using calculated:        priority = 9 (monthly retry only)
 ```
+
+---
+
+## Daily Pipeline Script
+
+**File**: `pipeline/daily_pipeline.sh`
+
+**Cron schedule**:
+```
+0 2 * * * /path/to/daily_pipeline.sh >> /var/log/cap_pipeline.log 2>&1
+```
+
+**Steps** (run nightly at 2 AM):
+
+1. **Re-queue stale schedules** — set `status = 'pending'` for all mosques with `status = 'success'` whose schedule is older than 6 days
+2. **Reset failed jobs for retry** — set `attempt_count = 0` for failed jobs older than 24 hours
+3. **Run scraping worker** — `python -m pipeline.scraping_worker`
+4. **Print summary**:
+   - Total mosques in DB
+   - Mosques with a schedule for today
+   - Mosques freshly scraped in the last 24 hours
+   - Mosques still pending
+   - Mosques in failed state
 
 ---
 
@@ -487,6 +551,35 @@ for mosque in mosques_without_timezone:
 ```
 
 No API call — uses offline polygon data. Runs at insert time for every mosque.
+
+### Prayer Spots Seeding
+
+**File**: `pipeline/seed_prayer_spots.py`
+
+Seeds non-mosque prayer locations (airport prayer rooms, university musallas, etc.) into the database from two sources:
+
+**Source 1 — Curated airport prayer rooms**
+
+Hardcoded list of 19 major US airports known to have dedicated prayer rooms:
+
+```
+JFK, LAX, O'Hare (ORD), DFW, ATL, SFO, SEA, DEN, BOS, MIA,
+PHX, MSP, DTW, IAD, EWR, SAN, HOU, MDW, PHL
+```
+
+**Source 2 — OpenStreetMap Overpass**
+
+Queries `amenity=prayer_room` across the US. The query is split into two requests to avoid the Overpass API 120-second timeout.
+
+**Usage**:
+```
+python -m pipeline.seed_prayer_spots --source [all|airports|osm] --dry-run
+```
+
+- `--source all` (default): runs both sources
+- `--source airports`: curated airport list only
+- `--source osm`: Overpass query only
+- `--dry-run`: preview inserts without writing to the database
 
 ---
 

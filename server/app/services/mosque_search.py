@@ -428,6 +428,29 @@ def get_catchable_prayers(
 
 
 # ---------------------------------------------------------------------------
+# Jumu'ah sessions helper
+# ---------------------------------------------------------------------------
+
+async def _fetch_jumuah_sessions(db: AsyncSession, mosque_id: str, today) -> list[dict]:
+    """
+    Return Jumu'ah (Friday prayer) sessions for today.
+    Only queries on Fridays (weekday == 4) to avoid unnecessary DB calls.
+    """
+    from datetime import date as _date
+    if isinstance(today, _date) and today.weekday() != 4:
+        return []
+    result = await db.execute(text("""
+        SELECT session_number, khutba_start, prayer_start,
+               imam_name, language, special_notes, booking_required, booking_url
+        FROM jumuah_sessions
+        WHERE mosque_id = CAST(:mosque_id AS uuid) AND valid_date = :date
+        ORDER BY session_number ASC
+    """), {"mosque_id": mosque_id, "date": today})
+    rows = result.mappings().all()
+    return [dict(r) for r in rows]
+
+
+# ---------------------------------------------------------------------------
 # Main search function
 # ---------------------------------------------------------------------------
 
@@ -589,7 +612,7 @@ async def find_nearby_mosques(
             "travel_combinations": [],
             "prayers": prayers_out,
             "sunrise": schedule.get("sunrise"),
-            "jumuah_sessions": [],  # TODO: fetch from jumuah_sessions table
+            "jumuah_sessions": await _fetch_jumuah_sessions(db, row["id"], mosque_today),
         }
         mosques.append(mosque_out)
 

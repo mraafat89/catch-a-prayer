@@ -3,7 +3,7 @@ import MapView from './components/MapView';
 import { apiService } from './services/api';
 import { useStore, SESSION_ID } from './store';
 import {
-  Mosque, PrayerSpot, PrayerTime,
+  Mosque, PrayerSpot, PrayerTime, JumuahSession,
   STATUS_CONFIG, SPOT_TYPE_LABELS,
   SpotSubmitRequest,
 } from './types';
@@ -204,14 +204,66 @@ function MosqueDetailSheet({ mosque }: { mosque: Mosque }) {
               </thead>
               <tbody>
                 {mosque.prayers.map((p: PrayerTime, i) => (
-                  <tr key={i} className="border-t border-gray-100">
-                    <td className="px-3 py-2 font-medium text-gray-800 capitalize">{p.prayer}</td>
-                    <td className="px-3 py-2 text-right text-gray-600">{fmtTime(p.adhan_time)}</td>
-                    <td className="px-3 py-2 text-right text-gray-700 font-medium">{fmtTime(p.iqama_time)}</td>
-                  </tr>
+                  <React.Fragment key={i}>
+                    <tr className="border-t border-gray-100">
+                      <td className="px-3 py-2 font-medium text-gray-800 capitalize">{p.prayer}</td>
+                      <td className="px-3 py-2 text-right text-gray-600">{fmtTime(p.adhan_time)}</td>
+                      <td className="px-3 py-2 text-right text-gray-700 font-medium">{fmtTime(p.iqama_time)}</td>
+                    </tr>
+                    {/* Shorooq (sunrise) row after Fajr */}
+                    {p.prayer === 'fajr' && mosque.sunrise && (
+                      <tr className="border-t border-gray-100 bg-amber-50">
+                        <td className="px-3 py-2 text-amber-700 font-medium">Shorooq</td>
+                        <td className="px-3 py-2 text-right text-amber-600">{fmtTime(mosque.sunrise)}</td>
+                        <td className="px-3 py-2 text-right text-gray-400 text-xs italic">Fajr ends</td>
+                      </tr>
+                    )}
+                  </React.Fragment>
                 ))}
               </tbody>
             </table>
+          </div>
+        </div>
+      )}
+
+      {/* Friday Jumu'ah sessions */}
+      {mosque.jumuah_sessions.length > 0 && (
+        <div className="mb-4">
+          <h3 className="text-sm font-semibold text-gray-700 mb-2">Friday Jumu'ah</h3>
+          <div className="space-y-2">
+            {mosque.jumuah_sessions.map((s: JumuahSession) => (
+              <div key={s.session_number} className="rounded-lg border border-green-200 bg-green-50 px-3 py-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-sm font-medium text-green-900">
+                    {mosque.jumuah_sessions.length > 1 ? `Session ${s.session_number}` : 'Jumu\'ah Prayer'}
+                  </span>
+                  <div className="text-right text-sm text-green-800">
+                    {s.khutba_start && <span>Khutba {fmtTime(s.khutba_start)}</span>}
+                    {s.khutba_start && s.prayer_start && <span className="mx-1">·</span>}
+                    {s.prayer_start && <span className="font-medium">Prayer {fmtTime(s.prayer_start)}</span>}
+                  </div>
+                </div>
+                {s.imam_name && (
+                  <p className="text-xs text-green-700 mt-0.5">{s.imam_name}</p>
+                )}
+                {s.language && s.language.toLowerCase() !== 'english' && (
+                  <p className="text-xs text-green-600 mt-0.5">Language: {s.language}</p>
+                )}
+                {s.special_notes && (
+                  <p className="text-xs text-gray-600 mt-1 italic">{s.special_notes}</p>
+                )}
+                {s.booking_required && (
+                  <p className="text-xs text-amber-700 mt-1">
+                    Registration required
+                    {s.booking_url && (
+                      <a href={s.booking_url} target="_blank" rel="noopener noreferrer" className="ml-1 underline">
+                        Register
+                      </a>
+                    )}
+                  </p>
+                )}
+              </div>
+            ))}
           </div>
         </div>
       )}

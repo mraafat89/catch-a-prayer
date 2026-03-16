@@ -43,7 +43,8 @@ The fundamental architecture principle: **no mosque data is fetched live during 
 │  ├── Overpass API → bulk US/Canada mosque download              │
 │  └── Google Places → one-time enrichment (website, phone)      │
 │                                                                 │
-│  Iqama Scraping Workers (nightly)                               │
+│  Iqama Scraping Workers (nightly, pipeline/daily_pipeline.sh,  │
+│  schedule: 0 2 * * *)                                          │
 │  ├── Tier 1: IslamicFinder / Aladhan structured lookup         │
 │  ├── Tier 2: Static HTML (httpx + BeautifulSoup)               │
 │  ├── Tier 3: JS-rendered sites (Playwright async pool)         │
@@ -73,7 +74,7 @@ The fundamental architecture principle: **no mosque data is fetched live during 
 | HTTP client | httpx (async) | Async scraping |
 | JS scraping | Playwright (async) | Modern Selenium replacement |
 | Vision AI | Anthropic Claude API | Image prayer schedule extraction |
-| Prayer calc | adhan-python library | Astronomical calculation, no API cost |
+| Prayer calc | praytimes library | Astronomical calculation; explicitly initialized with ISNA settings (maghrib at sunset, fajr 15°, isha 15°) |
 | Push notifications | Firebase Cloud Messaging (FCM) | Free, cross-platform |
 | Timezone lookup | timezonefinder library | Coordinates → IANA timezone, offline |
 
@@ -151,9 +152,13 @@ Nightly 2AM (staggered by timezone batch):
 
 2. For each job:
    a. Mark status = 'running'
-   b. Attempt Tier 1 (structured source lookup)
-   c. If fails → attempt Tier 2 (static HTML)
-   d. If fails → attempt Tier 3 (Playwright)
+   b. Attempt Tier 1 (structured source lookup via IslamicFinder/Aladhan)
+      — Tier 1 is SKIPPED for mosques that have a known website (goes
+        directly to Tier 2)
+   c. If fails → attempt Tier 2 (static HTML: httpx + BeautifulSoup)
+      — Tier 2 includes iframe widget detection (AthanPlus, Masjidal,
+        etc.) and div-based extraction for embedded schedule widgets
+   d. If fails → attempt Tier 3 (Playwright for JS-rendered sites)
    e. Images found in Tiers 2/3 → Tier 4 (Vision AI)
    f. If all fail → Tier 5 (calculated/estimated)
    g. Write results to prayer_schedules + jumuah_sessions
@@ -189,6 +194,9 @@ Google Maps Distance Matrix costs $10/1000 elements. Mapbox costs $2/1000 with a
 
 ### Why PWA first, Capacitor second
 PWA allows instant deployment without app store review. The same React codebase wraps into a native app via Capacitor for iOS/Android when needed. iOS push notification support for PWAs improved significantly in iOS 16.4 (March 2023) and is now viable.
+
+### Why Maghrib is always at sunset
+Maghrib marks the end of the day in Islamic timekeeping and begins at astronomical sunset with no delay. The ISNA calculation method correctly specifies `maghrib: '0 min'` (zero minutes after sunset). The `praytimes` Python library has a known issue where it can inherit Jafari method defaults (`maghrib: 4°`, meaning ~16 minutes after sunset) when initialized with ISNA. The scraping worker explicitly overrides this with `pt.adjust({"maghrib": "0 min", ...})` after every initialization to prevent wrong Maghrib times in the database.
 
 ---
 

@@ -56,7 +56,18 @@ export interface Mosque {
   travel_combinations: unknown[];
   prayers: PrayerTime[];
   sunrise: string | null;
-  jumuah_sessions: unknown[];
+  jumuah_sessions: JumuahSession[];
+}
+
+export interface JumuahSession {
+  session_number: number;
+  khutba_start: string | null;
+  prayer_start: string | null;
+  imam_name: string | null;
+  language: string | null;
+  special_notes: string | null;
+  booking_required: boolean;
+  booking_url: string | null;
 }
 
 export interface NearbyResponse {
