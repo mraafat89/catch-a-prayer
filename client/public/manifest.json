@@ -1,0 +1,23 @@
+{
+  "name": "Catch a Prayer",
+  "short_name": "CatchAPrayer",
+  "description": "Find nearby mosques and prayer times. Plan prayers along your route.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#0d9488",
+  "icons": [
+    { "src": "logo192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "logo512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "apple-touch-icon.png", "sizes": "180x180", "type": "image/png" }
+  ],
+  "share_target": {
+    "action": "/?share=maps",
+    "method": "GET",
+    "params": {
+      "title": "title",
+      "text": "text",
+      "url": "url"
+    }
+  }
+}
