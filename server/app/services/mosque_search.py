@@ -532,7 +532,11 @@ def get_next_catchable(
         )
         if status is None:
             continue
-        # Filter out upcoming prayers that are more than 2 hours away
+        # missed_make_up is never a "winner" — only shown when nothing else exists
+        if status["status"] == "missed_make_up":
+            continue
+        # Filter out upcoming prayers that are more than 2 hours away when
+        # there are other active options to show — but keep them in the fallback.
         if status["status"] == "upcoming":
             minutes_until = status.get("minutes_until_iqama", 9999)
             if minutes_until > UPCOMING_WINDOW_MINUTES:
@@ -540,7 +544,15 @@ def get_next_catchable(
         candidates.append(status)
 
     if not candidates:
-        # Fall back: return the most recent missed prayer only
+        # Nothing active or imminent: show the soonest upcoming prayer regardless
+        # of how far away it is (dead time — user needs to plan for Dhuhr etc.)
+        for prayer in priority_order:
+            status = calculate_catching_status(
+                prayer, schedule, current_minutes, travel_minutes, congregation_window
+            )
+            if status and status["status"] == "upcoming":
+                return status
+        # Truly nothing upcoming — return most recent missed prayer
         for prayer in reversed(priority_order):
             status = calculate_catching_status(
                 prayer, schedule, current_minutes, travel_minutes, congregation_window
@@ -579,8 +591,14 @@ def get_catchable_prayers(
                 continue
         results.append(status)
 
-    # If nothing actionable, return the most recent missed prayer as a fallback
+    # If nothing actionable, prefer the soonest upcoming prayer over missed
     if not results:
+        for prayer in priority_order:
+            status = calculate_catching_status(
+                prayer, schedule, current_minutes, travel_minutes, congregation_window
+            )
+            if status and status["status"] == "upcoming":
+                return [status]
         for prayer in reversed(priority_order):
             status = calculate_catching_status(
                 prayer, schedule, current_minutes, travel_minutes, congregation_window

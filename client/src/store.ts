@@ -1,6 +1,17 @@
 import { create } from 'zustand';
 import { Mosque, PrayerSpot, LatLng, TravelDestination, TravelPlan } from './types';
 
+// Confirmed spots tracker — persisted across sessions (spot confirmation is permanent)
+function loadConfirmed(): Set<string> {
+  try {
+    const raw = localStorage.getItem('cap_confirmed_spots');
+    return raw ? new Set(JSON.parse(raw)) : new Set();
+  } catch { return new Set(); }
+}
+function saveConfirmed(set: Set<string>) {
+  localStorage.setItem('cap_confirmed_spots', JSON.stringify(Array.from(set)));
+}
+
 // Prayed tracker — keyed by today's date so it auto-resets at midnight
 function todayKey(): string {
   return new Date().toISOString().slice(0, 10); // "YYYY-MM-DD"
@@ -80,6 +91,10 @@ interface AppState {
   prayedToday: Set<string>;
   togglePrayed: (prayer: string) => void;
 
+  // Confirmed spots — set<spot_id> persisted permanently in localStorage
+  confirmedSpots: Set<string>;
+  addConfirmedSpot: (spotId: string) => void;
+
   // UI
   mapCollapsed: boolean;
   setMapCollapsed: (v: boolean) => void;
@@ -135,6 +150,14 @@ export const useStore = create<AppState>((set) => ({
     if (next.has(prayer)) next.delete(prayer); else next.add(prayer);
     savePrayed(next);
     return { prayedToday: next };
+  }),
+
+  confirmedSpots: loadConfirmed(),
+  addConfirmedSpot: (spotId) => set((state) => {
+    const next = new Set(state.confirmedSpots);
+    next.add(spotId);
+    saveConfirmed(next);
+    return { confirmedSpots: next };
   }),
 
   mapCollapsed: false,

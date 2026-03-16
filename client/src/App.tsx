@@ -303,7 +303,32 @@ function MosqueCard({ mosque }: { mosque: Mosque }) {
 // ─── Prayer Spot Card ────────────────────────────────────────────────────────
 
 function SpotCard({ spot }: { spot: PrayerSpot }) {
-  const openSheet = useStore((s) => s.openSheet);
+  const openSheet       = useStore((s) => s.openSheet);
+  const confirmedSpots  = useStore((s) => s.confirmedSpots);
+  const addConfirmedSpot = useStore((s) => s.addConfirmedSpot);
+  const [confirming, setConfirming] = useState(false);
+
+  const isConfirmed = confirmedSpots.has(spot.id);
+
+  const handleConfirm = async (e: React.MouseEvent) => {
+    e.stopPropagation(); // don't open the detail sheet
+    if (isConfirmed || confirming) return;
+    setConfirming(true);
+    try {
+      await apiService.verifySpot(spot.id, {
+        session_id: SESSION_ID,
+        is_positive: true,
+        attributes: {},
+      });
+      addConfirmedSpot(spot.id);
+    } catch {
+      // 409 = already voted — mark confirmed anyway so the button updates
+      addConfirmedSpot(spot.id);
+    } finally {
+      setConfirming(false);
+    }
+  };
+
   return (
     <div
       className="rounded-xl border border-orange-200 bg-orange-50 p-3 cursor-pointer hover:shadow-md transition-shadow"
@@ -320,12 +345,25 @@ function SpotCard({ spot }: { spot: PrayerSpot }) {
           {spot.verification_label}
         </span>
       </div>
-      <div className="flex gap-2 mt-1.5 text-xs text-gray-500">
-        {spot.has_wudu_facilities === true && <span>🚿 Wudu</span>}
-        {spot.is_indoor === true && <span>🏠 Indoor</span>}
-        {spot.gender_access && spot.gender_access !== 'all' && (
-          <span>{spot.gender_access === 'men_only' ? '♂ Men' : '♀ Women'}</span>
-        )}
+      <div className="flex items-center justify-between mt-2 gap-2">
+        <div className="flex gap-2 text-xs text-gray-500">
+          {spot.has_wudu_facilities === true && <span>🚿 Wudu</span>}
+          {spot.is_indoor === true && <span>🏠 Indoor</span>}
+          {spot.gender_access && spot.gender_access !== 'all' && (
+            <span>{spot.gender_access === 'men_only' ? '♂ Men' : '♀ Women'}</span>
+          )}
+        </div>
+        <button
+          onClick={handleConfirm}
+          disabled={isConfirmed || confirming}
+          className={`flex-shrink-0 text-xs px-2.5 py-1 rounded-full font-medium border transition-colors ${
+            isConfirmed
+              ? 'bg-green-50 border-green-300 text-green-700 cursor-default'
+              : 'bg-white border-orange-400 text-orange-700 hover:bg-orange-100 active:bg-orange-200'
+          }`}
+        >
+          {isConfirmed ? '✓ Confirmed' : confirming ? '…' : '✓ I prayed here'}
+        </button>
       </div>
     </div>
   );
@@ -334,10 +372,33 @@ function SpotCard({ spot }: { spot: PrayerSpot }) {
 // ─── Mosque Detail Sheet ────────────────────────────────────────────────────
 
 function MosqueDetailSheet({ mosque }: { mosque: Mosque }) {
-  const closeSheet = useStore((s) => s.closeSheet);
+  const closeSheet    = useStore((s) => s.closeSheet);
+  const prayedToday   = useStore((s) => s.prayedToday);
+  const togglePrayed  = useStore((s) => s.togglePrayed);
+
   const nc = mosque.next_catchable;
-  const cfg = nc ? (STATUS_CONFIG[nc.status] ?? STATUS_CONFIG['upcoming']) : STATUS_CONFIG['upcoming'];
+  const isMissed    = nc?.status === 'missed_make_up';
+  const isUpcoming  = nc?.status === 'upcoming';
+  const isNcPrayed  = nc ? prayedToday.has(nc.prayer) : false;
+
+  // When nc is already prayed, find the next future prayer from the table
+  const nowMin = new Date().getHours() * 60 + new Date().getMinutes();
+  const nextFromTable = isNcPrayed
+    ? mosque.prayers.find(p => {
+        if (!p.adhan_time) return false;
+        const [h, m] = p.adhan_time.split(':').map(Number);
+        return h * 60 + m > nowMin;
+      })
+    : null;
+
   const badge = dataSourceBadge(mosque.prayers);
+
+  // Badge config: upcoming gets teal (distinct from gray missed)
+  const cfg = nc && !isNcPrayed
+    ? (isUpcoming
+        ? { bg: 'bg-teal-50', border: 'border-teal-200', text: 'text-teal-800', icon: STATUS_CONFIG['upcoming'].icon }
+        : (STATUS_CONFIG[nc.status] ?? STATUS_CONFIG['upcoming']))
+    : null;
 
   return (
     <div>
@@ -350,19 +411,66 @@ function MosqueDetailSheet({ mosque }: { mosque: Mosque }) {
         <p className="text-sm text-gray-500 mb-3">{mosque.location.address}</p>
       )}
 
-      {nc && (
-        <div className={`rounded-lg border px-3 py-2 mb-4 ${cfg.bg} ${cfg.border}`}>
+      {/* Status badge — hidden when nc prayer is already marked as prayed */}
+      {nc && cfg && (
+        <div className={`rounded-lg border px-3 py-2.5 mb-4 ${cfg.bg} ${cfg.border}`}>
           <div className={`flex items-center gap-2 text-sm font-semibold ${cfg.text}`}>
             <img src={cfg.icon} alt="" className="w-10 h-10 object-contain flex-shrink-0" />
-            {nc.status_label}
+            <span className="capitalize">{isUpcoming ? `Next: ${nc.prayer}` : nc.status_label}</span>
           </div>
-          <p className={`text-sm mt-0.5 ${cfg.text}`}>{nc.message}</p>
-          {nc.iqama_time && (
-            <p className="text-xs text-gray-500 mt-1">Iqama: {fmtTime(nc.iqama_time)}</p>
+
+          {/* Upcoming: structured time display */}
+          {isUpcoming ? (
+            <div className={`mt-1.5 space-y-0.5 text-sm ${cfg.text}`}>
+              <p>Azan at <span className="font-semibold">{fmtTime(nc.adhan_time)}</span>
+                {nc.iqama_time && <span className="text-xs font-normal opacity-75"> · Iqama {fmtTime(nc.iqama_time)}</span>}
+              </p>
+              {nc.leave_by && (
+                <p>Leave by <span className="font-semibold">{fmtTime(nc.leave_by)}</span> to pray with Imam</p>
+              )}
+            </div>
+          ) : (
+            <>
+              <p className={`text-sm mt-0.5 ${cfg.text}`}>{nc.message}</p>
+              {nc.iqama_time && !isMissed && (
+                <p className="text-xs text-gray-500 mt-1">Iqama: {fmtTime(nc.iqama_time)}</p>
+              )}
+              {nc.leave_by && !isMissed && (
+                <p className="text-xs text-gray-500">Leave by: {fmtTime(nc.leave_by)}</p>
+              )}
+            </>
           )}
-          {nc.leave_by && (
-            <p className="text-xs text-gray-500">Leave by: {fmtTime(nc.leave_by)}</p>
+
+          {/* Mark as prayed button — only for missed prayers */}
+          {isMissed && (
+            <button
+              onClick={() => togglePrayed(nc.prayer)}
+              className="mt-2 text-xs px-3 py-1 rounded-full border border-gray-300 bg-white text-gray-600 hover:bg-gray-50 active:bg-gray-100"
+            >
+              ✓ I already prayed {nc.prayer.charAt(0).toUpperCase() + nc.prayer.slice(1)}
+            </button>
           )}
+        </div>
+      )}
+
+      {/* Show next prayer when nc is already marked as prayed */}
+      {isNcPrayed && nextFromTable && (
+        <div className="rounded-lg border border-teal-200 bg-teal-50 px-3 py-2.5 mb-4">
+          <p className="text-sm font-semibold text-teal-800 capitalize">Next: {nextFromTable.prayer}</p>
+          <div className="mt-1 space-y-0.5 text-sm text-teal-700">
+            <p>Azan at <span className="font-semibold">{fmtTime(nextFromTable.adhan_time)}</span>
+              {nextFromTable.iqama_time && <span className="text-xs font-normal opacity-75"> · Iqama {fmtTime(nextFromTable.iqama_time)}</span>}
+            </p>
+            {nextFromTable.iqama_time && mosque.travel_time_minutes && (() => {
+              const [h, m] = nextFromTable.iqama_time!.split(':').map(Number);
+              const leaveMin = h * 60 + m - mosque.travel_time_minutes;
+              const lh = Math.floor(((leaveMin % 1440) + 1440) % 1440 / 60);
+              const lm = ((leaveMin % 1440) + 1440) % 1440 % 60;
+              const suffix = lh >= 12 ? 'PM' : 'AM';
+              const fh = lh > 12 ? lh - 12 : lh === 0 ? 12 : lh;
+              return <p>Leave by <span className="font-semibold">{fh}:{String(lm).padStart(2,'0')} {suffix}</span> to pray with Imam</p>;
+            })()}
+          </div>
         </div>
       )}
 
@@ -595,7 +703,6 @@ function SpotSubmitSheet() {
   // Resolved lat/lng for the spot (starts as GPS, can be overridden by address search)
   const [spotLat, setSpotLat] = useState<number | null>(userLocation?.latitude ?? null);
   const [spotLng, setSpotLng] = useState<number | null>(userLocation?.longitude ?? null);
-  const [locationLabel, setLocationLabel] = useState<string>('');
   const [locationQuery, setLocationQuery] = useState('');
   const [locationSugg, setLocationSugg]   = useState<GeocodeSuggestion[]>([]);
   const [locationLoading, setLocationLoading] = useState(false);
@@ -611,13 +718,13 @@ function SpotSubmitSheet() {
   const [done, setDone]             = useState(false);
   const [error, setError]           = useState<string | null>(null);
 
-  // Reverse-geocode GPS location for display label
+  // Pre-fill address input with reverse-geocoded GPS address on open
   useEffect(() => {
     if (!userLocation) return;
     setSpotLat(userLocation.latitude);
     setSpotLng(userLocation.longitude);
     apiService.reverseGeocode(userLocation.latitude, userLocation.longitude)
-      .then((lbl) => { if (lbl) setLocationLabel(lbl); })
+      .then((lbl) => { if (lbl) setLocationQuery(lbl); })
       .catch(() => {});
   }, [userLocation]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -631,17 +738,6 @@ function SpotSubmitSheet() {
       catch { setLocationSugg([]); }
       finally { setLocationLoading(false); }
     }, 400);
-  }
-
-  function useGps() {
-    if (!userLocation) return;
-    setSpotLat(userLocation.latitude);
-    setSpotLng(userLocation.longitude);
-    setLocationQuery('');
-    setLocationSugg([]);
-    apiService.reverseGeocode(userLocation.latitude, userLocation.longitude)
-      .then((lbl) => { if (lbl) setLocationLabel(lbl); })
-      .catch(() => {});
   }
 
   const set = (k: keyof SpotSubmitRequest, v: unknown) =>
@@ -712,23 +808,6 @@ function SpotSubmitSheet() {
         {/* Location — GPS or address search */}
         <div>
           <label className="block text-xs font-medium text-gray-700 mb-1">Location *</label>
-          {/* Current resolved location display */}
-          {spotLat !== null && (
-            <div className="flex items-center gap-2 bg-green-50 border border-green-200 rounded-lg px-2.5 py-1.5 mb-1.5">
-              <span className="text-green-600 text-xs">📍</span>
-              <span className="text-xs text-green-800 flex-1 truncate">{locationLabel || `${spotLat.toFixed(5)}, ${spotLng?.toFixed(5)}`}</span>
-              {userLocation && (
-                <button
-                  onClick={useGps}
-                  title="Use my current GPS location"
-                  className="text-xs text-green-600 hover:text-green-800 font-medium flex-shrink-0"
-                >
-                  ⟳ GPS
-                </button>
-              )}
-            </div>
-          )}
-          {/* Address search */}
           <div className="relative">
             <input
               type="text"
@@ -749,8 +828,7 @@ function SpotSubmitSheet() {
                     onClick={() => {
                       setSpotLat(s.lat);
                       setSpotLng(s.lng);
-                      setLocationLabel(s.place_name);
-                      setLocationQuery('');
+                      setLocationQuery(s.place_name);
                       setLocationSugg([]);
                     }}
                   >
@@ -1071,12 +1149,13 @@ function LastResortCard() {
 // ─── Destination Input ───────────────────────────────────────────────────────
 
 function GeoInput({
-  placeholder, icon, value, onChange, suggestions, onSelect, loading,
+  placeholder, icon, value, onChange, suggestions, onSelect, loading, onClear,
 }: {
   placeholder: string; icon: string; value: string;
   onChange: (v: string) => void;
   suggestions: GeocodeSuggestion[]; onSelect: (s: GeocodeSuggestion) => void;
   loading: boolean;
+  onClear?: () => void;
 }) {
   return (
     <div className="relative">
@@ -1090,6 +1169,15 @@ function GeoInput({
           className="flex-1 text-sm outline-none bg-transparent text-gray-800 placeholder-gray-400 min-w-0"
         />
         {loading && <span className="text-xs text-gray-300">…</span>}
+        {onClear && !loading && (
+          <button
+            onClick={onClear}
+            className="flex-shrink-0 w-5 h-5 flex items-center justify-center rounded-full bg-gray-200 hover:bg-gray-300 text-gray-500 text-xs leading-none"
+            title="Clear — use current location"
+          >
+            ×
+          </button>
+        )}
       </div>
       {suggestions.length > 0 && (
         <div className="absolute z-50 top-full left-0 right-0 mt-0.5 bg-white border border-gray-200 rounded-lg shadow-lg overflow-hidden">
@@ -1260,34 +1348,17 @@ function DestinationInput() {
       </div>
 
       {/* From */}
-      <div className="relative flex items-center gap-1.5">
-        <div className="flex-1 min-w-0">
-          <GeoInput
-            placeholder="From: Current location"
-            icon="📍"
-            value={originQuery}
-            onChange={(v) => { setOriginQuery(v); debounceGeocode(v, originDebounce, setOriginLoading, setOriginSugg); }}
-            suggestions={originSugg}
-            onSelect={(s) => { setTravelOrigin(s); setOriginQuery(s.place_name); setOriginSugg([]); }}
-            loading={originLoading}
-          />
-        </div>
-        {userLocation && (
-          <button
-            title="Update to current GPS location"
-            onClick={() => {
-              setTravelOrigin(null);
-              setOriginQuery('');
-              setOriginSugg([]);
-              apiService.reverseGeocode(userLocation.latitude, userLocation.longitude)
-                .then((label) => { if (label) setOriginQuery(label); })
-                .catch(() => {});
-            }}
-            className="flex-shrink-0 w-8 h-8 flex items-center justify-center rounded-full bg-gray-100 hover:bg-teal-100 hover:text-teal-700 text-gray-500 transition-colors text-base"
-          >
-            ⌖
-          </button>
-        )}
+      <div className="relative">
+        <GeoInput
+          placeholder="From: Current location"
+          icon="📍"
+          value={originQuery}
+          onChange={(v) => { setOriginQuery(v); debounceGeocode(v, originDebounce, setOriginLoading, setOriginSugg); }}
+          suggestions={originSugg}
+          onSelect={(s) => { setTravelOrigin(s); setOriginQuery(s.place_name); setOriginSugg([]); }}
+          loading={originLoading}
+          onClear={originQuery ? () => { setTravelOrigin(null); setOriginQuery(''); setOriginSugg([]); } : undefined}
+        />
       </div>
 
       {/* To */}
@@ -1561,7 +1632,7 @@ function App() {
     if (showSpots) {
       setSpotsLoading(true);
       try {
-        const res2 = await apiService.findNearbySpots(lat, lng, radiusKm);
+        const res2 = await apiService.findNearbySpots(lat, lng, radiusKm, SESSION_ID);
         setSpots(res2.spots);
       } catch {
         setSpots([]);

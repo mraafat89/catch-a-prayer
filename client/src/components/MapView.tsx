@@ -246,8 +246,8 @@ const MapView: React.FC = () => {
         </Marker>
       ))}
 
-      {/* Nearby mosque pins — skip any already shown as route stops */}
-      {mosques.filter((m) => !routeStopIds.has(m.id)).map((mosque) => {
+      {/* Nearby mosque pins — hidden during trip planning (route stop pins take over) */}
+      {!travelDestination && mosques.filter((m) => !routeStopIds.has(m.id)).map((mosque) => {
         const color    = mosqueColor(mosque);
         const selected = mosque.id === currentSelectedId;
         return (

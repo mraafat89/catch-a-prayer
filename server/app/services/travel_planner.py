@@ -80,14 +80,15 @@ async def get_mapbox_route(
             logger.warning(f"Mapbox Directions failed, falling back to OSRM: {e}")
 
     # --- OSRM public router (free, no key needed, same response format) ---
-    # verify=False works around SSL handshake failures on older Python/macOS builds
-    # while still connecting to the well-known OSRM endpoint.
-    for verify_ssl in (True, False):
+    # Try https (verify=True), https (verify=False), then plain http — the last
+    # handles macOS Python 3.9 TLS handshake failures against the OSRM endpoint.
+    osrm_attempts = [
+        (f"https://router.project-osrm.org/route/v1/driving/{origin_lng},{origin_lat};{dest_lng},{dest_lat}", True),
+        (f"https://router.project-osrm.org/route/v1/driving/{origin_lng},{origin_lat};{dest_lng},{dest_lat}", False),
+        (f"http://router.project-osrm.org/route/v1/driving/{origin_lng},{origin_lat};{dest_lng},{dest_lat}", True),
+    ]
+    for url, verify_ssl in osrm_attempts:
         try:
-            url = (
-                f"https://router.project-osrm.org/route/v1/driving/"
-                f"{origin_lng},{origin_lat};{dest_lng},{dest_lat}"
-            )
             params = {"overview": "full", "steps": "true", "geometries": "geojson"}
             async with httpx.AsyncClient(timeout=20, verify=verify_ssl) as client:
                 resp = await client.get(url, params=params, headers=_OSM_HEADERS)
@@ -95,13 +96,10 @@ async def get_mapbox_route(
                 data = resp.json()
             routes = data.get("routes")
             if routes:
+                logger.info(f"OSRM routing succeeded via {url[:8]}... verify={verify_ssl}")
                 return routes[0]
-            break
         except Exception as e:
-            if verify_ssl:
-                logger.warning(f"OSRM routing failed (will retry without SSL verify): {e}")
-            else:
-                logger.warning(f"OSRM routing also failed without SSL verify: {e}")
+            logger.warning(f"OSRM attempt failed ({url[:8]}... verify={verify_ssl}): {e}")
 
     return None
 
@@ -235,9 +233,44 @@ async def reverse_geocode(lat: float, lng: float) -> Optional[str]:
 
 def build_checkpoints(route: dict, departure_dt: datetime) -> list[dict]:
     """
-    Build a list of {lat, lng, time: datetime} from route steps.
-    Uses step maneuver locations and cumulative durations.
+    Build a list of {lat, lng, time, cumulative_minutes} checkpoints along the route.
+
+    Uses the full route geometry (overview=full) with time interpolated by cumulative
+    distance, giving dense coverage of the entire route — not just turn/maneuver locations.
+    This ensures mosques along long straight highway stretches are found and timed correctly.
+
+    Points within 0.1 km of the previous kept point are skipped (deduplication).
     """
+    total_duration = route.get("duration", 0)
+    coords = route.get("geometry", {}).get("coordinates", [])
+
+    if coords and len(coords) >= 2:
+        # Compute cumulative haversine distance at each geometry point
+        cum_dist: list[float] = [0.0]
+        for i in range(1, len(coords)):
+            lng1, lat1 = coords[i - 1]
+            lng2, lat2 = coords[i]
+            cum_dist.append(cum_dist[-1] + haversine_km(lat1, lng1, lat2, lng2))
+        total_dist = cum_dist[-1] or 1.0
+
+        checkpoints: list[dict] = []
+        last_kept_dist = -1.0
+        for i, (lng, lat) in enumerate(coords):
+            d = cum_dist[i]
+            if d - last_kept_dist < 0.1 and i != len(coords) - 1:
+                continue  # skip points within 100 m of the last kept one
+            last_kept_dist = d
+            t_frac = d / total_dist
+            t = departure_dt + timedelta(seconds=t_frac * total_duration)
+            checkpoints.append({
+                "lat": lat,
+                "lng": lng,
+                "time": t,
+                "cumulative_minutes": t_frac * total_duration / 60,
+            })
+        return checkpoints
+
+    # Fallback: step maneuver locations (used when geometry is absent)
     checkpoints = []
     cumulative_seconds = 0.0
     for leg in route.get("legs", []):
@@ -252,16 +285,6 @@ def build_checkpoints(route: dict, departure_dt: datetime) -> list[dict]:
                     "cumulative_minutes": cumulative_seconds / 60,
                 })
             cumulative_seconds += step.get("duration", 0)
-    # Add destination as final checkpoint
-    total = route.get("duration", 0)
-    geometry = route.get("geometry", {}).get("coordinates", [])
-    if geometry:
-        last = geometry[-1]
-        checkpoints.append({
-            "lat": last[1], "lng": last[0],
-            "time": departure_dt + timedelta(seconds=total),
-            "cumulative_minutes": total / 60,
-        })
     return checkpoints
 
 
@@ -300,21 +323,22 @@ async def find_route_mosques(
     lat_buf = ROUTE_CORRIDOR_KM / 111.0
     lng_buf = ROUTE_CORRIDOR_KM / 85.0  # conservative
 
+    bbox = {
+        "lat_min": min(lats) - lat_buf,
+        "lat_max": max(lats) + lat_buf,
+        "lng_min": min(lngs) - lng_buf,
+        "lng_max": max(lngs) + lng_buf,
+    }
     result = await db.execute(text("""
         SELECT id::text, name, lat, lng, address, city, state, timezone
         FROM mosques
         WHERE is_active = true
           AND lat BETWEEN :lat_min AND :lat_max
           AND lng BETWEEN :lng_min AND :lng_max
-        ORDER BY lat ASC
-        LIMIT 100
-    """), {
-        "lat_min": min(lats) - lat_buf,
-        "lat_max": max(lats) + lat_buf,
-        "lng_min": min(lngs) - lng_buf,
-        "lng_max": max(lngs) + lng_buf,
-    })
+        LIMIT 500
+    """), bbox)
     rows = result.mappings().all()
+    logger.info(f"find_route_mosques: {len(checkpoints)} checkpoints, {len(rows)} mosques in bbox")
 
     route_mosques = []
 
@@ -382,6 +406,7 @@ async def find_route_mosques(
             "schedule": schedule,
         })
 
+    logger.info(f"find_route_mosques: {len(route_mosques)}/{len(rows)} mosques pass detour filter")
     return route_mosques
 
 
@@ -524,19 +549,21 @@ def build_combination_plan(
         })
 
     # ── Combine Early / Late — only in Travel mode (not Driving) ──────────
+    # Return up to 3 diverse mosque options per combination type
+    MAX_OPTIONS = 3
     if allow_combining:
-        best_early = None
+        early_candidates = []
         for m in sorted(route_mosques, key=lambda x: x["minutes_into_trip"]):
             s = prayer_status_at_arrival(prayer1, m["schedule"], m["local_arrival_minutes"])
             if s:
-                best_early = (_make_stop(m, prayer1, s), m)
-                break
+                early_candidates.append((_make_stop(m, prayer1, s), m))
+                if len(early_candidates) >= MAX_OPTIONS:
+                    break
 
-        if best_early:
-            stop, m = best_early
+        for stop, m in early_candidates:
             options.append({
                 "option_type": "combine_early",
-                "label": "Combine Early — Jam' Taqdeem",
+                "label": f"Jam' Taqdeem — {m['name']}",
                 "description": (
                     f"Stop at {m['name']} ({m['detour_minutes']} min detour) and pray "
                     f"both {prayer1.title()} + {prayer2.title()} together during {prayer1.title()} time."
@@ -548,18 +575,18 @@ def build_combination_plan(
                 "note": f"~{m['minutes_into_trip']} min into your trip",
             })
 
-        best_late = None
+        late_candidates = []
         for m in sorted(route_mosques, key=lambda x: x["minutes_into_trip"]):
             s = prayer_status_at_arrival(prayer2, m["schedule"], m["local_arrival_minutes"])
             if s:
-                best_late = (_make_stop(m, prayer2, s), m)
-                break
+                late_candidates.append((_make_stop(m, prayer2, s), m))
+                if len(late_candidates) >= MAX_OPTIONS:
+                    break
 
-        if best_late:
-            stop, m = best_late
+        for stop, m in late_candidates:
             options.append({
                 "option_type": "combine_late",
-                "label": "Combine Late — Jam' Ta'kheer",
+                "label": f"Jam' Ta'kheer — {m['name']}",
                 "description": (
                     f"Stop at {m['name']} ({m['detour_minutes']} min detour) and pray "
                     f"both {prayer1.title()} + {prayer2.title()} together during {prayer2.title()} time."
@@ -741,15 +768,24 @@ async def build_travel_plan(
     # 1. Get Mapbox route
     route = await get_mapbox_route(origin_lat, origin_lng, dest_lat, dest_lng)
     if not route:
-        # Fallback: straight-line estimate
+        # Fallback: straight-line estimate with intermediate checkpoints every ~50 km
+        # so that mosques along the route (not just near origin/destination) can be found.
         dist_km = haversine_km(origin_lat, origin_lng, dest_lat, dest_lng)
         duration_min = estimate_travel_minutes(origin_lat, origin_lng, dest_lat, dest_lng)
+        n_segments = max(4, int(dist_km / 50))
+        fallback_coords = [
+            [origin_lng + (dest_lng - origin_lng) * i / n_segments,
+             origin_lat + (dest_lat - origin_lat) * i / n_segments]
+            for i in range(n_segments + 1)
+        ]
+        logger.warning(
+            f"Routing unavailable — using straight-line fallback with {len(fallback_coords)} checkpoints "
+            f"over {dist_km:.0f} km"
+        )
         route = {
             "duration": duration_min * 60,
             "distance": dist_km * 1000,
-            "geometry": {"type": "LineString", "coordinates": [
-                [origin_lng, origin_lat], [dest_lng, dest_lat]
-            ]},
+            "geometry": {"type": "LineString", "coordinates": fallback_coords},
             "legs": [],
         }
 

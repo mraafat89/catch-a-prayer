@@ -8,21 +8,22 @@ Endpoints:
   POST /api/spots              — submit a new spot
   POST /api/spots/{id}/verify  — verify or reject a spot
 
-Abuse Protection
-----------------
-- Geographic bounds: US + Canada only (lat 24–72, lng –168 to –52)
-- Content filter: no URLs, no all-caps spam in name/notes
-- Rate limit submit: max 3 spots per session per 24 h
-- Dedup: reject if an active/pending spot exists within 50 m
-- Self-vote prevention: submitter cannot verify their own spot
-- Rate limit verify: max 30 verifications per session per 24 h
+Safety Model (high-recall: catch all bad spots)
+------------------------------------------------
+New spots are INVISIBLE to all users except the submitter until they receive
+at least one external positive verification. This prevents private addresses
+and fake locations from ever reaching users.
+
+Identity: session_id (client localStorage UUID) + sha256(client IP) together.
+Neither alone is sufficient — both are checked for rate limits and dedup.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import text
 
@@ -41,8 +42,10 @@ _LAT_MIN, _LAT_MAX = 24.0, 72.0
 _LNG_MIN, _LNG_MAX = -168.0, -52.0
 
 # Rate limits
-_MAX_SUBMITS_PER_24H = 3
-_MAX_VERIFIES_PER_24H = 30
+_MAX_SUBMITS_PER_SESSION_24H = 3
+_MAX_SUBMITS_PER_IP_24H = 2
+_MAX_VERIFIES_PER_SESSION_24H = 30
+_MAX_VERIFIES_PER_IP_24H = 10
 
 # Nearby-dedup radius: reject new submission if an existing (non-rejected) spot
 # sits within this distance.
@@ -50,10 +53,10 @@ _DEDUP_RADIUS_M = 50
 
 # Simple content-filter patterns
 _URL_RE = re.compile(r'https?://|www\.', re.IGNORECASE)
-_ALLCAPS_RE = re.compile(r'\b[A-Z]{5,}\b')  # 5+ consecutive capital-letter words
+_ALLCAPS_RE = re.compile(r'\b[A-Z]{5,}\b')
 
 
-def _check_content(field: str, value: str | None, label: str) -> None:
+def _check_content(value: str | None, label: str) -> None:
     """Raise 422 if value looks like spam/abuse."""
     if not value:
         return
@@ -63,9 +66,22 @@ def _check_content(field: str, value: str | None, label: str) -> None:
     if len(caps_words) >= 3:
         raise HTTPException(status_code=422, detail=f"{label} appears to be spam (excessive caps)")
 
+
+def _ip_hash(request: Request) -> str | None:
+    """Return sha256(client_ip), privacy-preserving — never stores raw IP."""
+    ip = (
+        request.headers.get("X-Forwarded-For", "").split(",")[0].strip()
+        or request.headers.get("X-Real-IP", "").strip()
+        or (request.client.host if request.client else None)
+    )
+    if not ip:
+        return None
+    return hashlib.sha256(ip.encode()).hexdigest()
+
+
 router = APIRouter(tags=["spots"])
 
-# Net score thresholds (from design doc)
+# Net score thresholds
 _ACTIVE_THRESHOLD = 3    # net ≥  3 → active
 _REJECT_THRESHOLD = -3   # net ≤ -3 → rejected
 
@@ -77,9 +93,9 @@ def _verification_label(v: int, r: int, status: str) -> str:
     if net <= 0 or v == 0:
         return "Reported — not yet verified"
     if v == 1:
-        return "Reported by 1 user — not yet verified"
+        return "Reported by 1 user — tap to confirm"
     if v < 3:
-        return f"Reported by {v} users — not yet verified"
+        return f"Reported by {v} users — tap to confirm"
     if v >= 10:
         return f"Highly verified ({v} users)"
     return f"Verified by {v} users"
@@ -118,8 +134,17 @@ def _row_to_response(row, distance_m: float) -> SpotResponse:
 
 @router.post("/spots/nearby", response_model=SpotNearbyResponse)
 async def spots_nearby(req: SpotNearbyRequest, db: AsyncSession = Depends(get_db)):
-    """Find active and pending prayer spots near a location."""
+    """Find prayer spots near a location.
+
+    Visibility rules (high-recall safety model):
+    - active spots: always shown
+    - pending spots with ≥1 external confirmation: shown with warning label
+    - pending spots with 0 external confirmations: shown ONLY to their submitter
+      (identified by session_id match)
+    - rejected spots: never shown
+    """
     radius_m = req.radius_km * 1000
+    session_id = req.session_id or ""
 
     result = await db.execute(text("""
         SELECT
@@ -152,11 +177,21 @@ async def spots_nearby(req: SpotNearbyRequest, db: AsyncSession = Depends(get_db
                 ST_SetSRID(ST_MakePoint(:lng, :lat), 4326)::geography,
                 :radius_m
             )
+            AND (
+                status = 'active'
+                OR verification_count >= 1
+                OR submitted_by_session = :session_id
+            )
         ORDER BY
             CASE WHEN status = 'active' THEN 0 ELSE 1 END ASC,
             distance_m ASC
         LIMIT 20
-    """), {"lat": req.latitude, "lng": req.longitude, "radius_m": radius_m})
+    """), {
+        "lat": req.latitude,
+        "lng": req.longitude,
+        "radius_m": radius_m,
+        "session_id": session_id,
+    })
 
     spots = [_row_to_response(row, row["distance_m"]) for row in result.mappings()]
 
@@ -167,8 +202,13 @@ async def spots_nearby(req: SpotNearbyRequest, db: AsyncSession = Depends(get_db
 
 
 @router.post("/spots", response_model=SpotSubmitResponse, status_code=201)
-async def submit_spot(req: SpotSubmitRequest, db: AsyncSession = Depends(get_db)):
+async def submit_spot(
+    req: SpotSubmitRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
     """Submit a new community prayer spot."""
+    ip_h = _ip_hash(request)
 
     # ── 1. Geographic bounds ────────────────────────────────────────────────
     if not (_LAT_MIN <= req.latitude <= _LAT_MAX and _LNG_MIN <= req.longitude <= _LNG_MAX):
@@ -178,25 +218,41 @@ async def submit_spot(req: SpotSubmitRequest, db: AsyncSession = Depends(get_db)
         )
 
     # ── 2. Content filter ───────────────────────────────────────────────────
-    _check_content("name", req.name, "Name")
-    _check_content("notes", req.notes, "Notes")
-    _check_content("operating_hours", req.operating_hours, "Operating hours")
+    _check_content(req.name, "Name")
+    _check_content(req.notes, "Notes")
+    _check_content(req.operating_hours, "Operating hours")
+    # Website field may be a URL — only block if it has extra content beyond a URL
+    if req.notes and _URL_RE.search(req.notes):
+        raise HTTPException(status_code=422, detail="Notes must not contain URLs")
 
-    # ── 3. Rate limit: max 3 submissions per session per 24 h ───────────────
+    # ── 3. Rate limit: session ───────────────────────────────────────────────
     rate_result = await db.execute(text("""
         SELECT COUNT(*) AS cnt
         FROM prayer_spots
         WHERE submitted_by_session = :session_id
           AND created_at >= NOW() - INTERVAL '24 hours'
     """), {"session_id": req.session_id})
-    recent_count = rate_result.scalar() or 0
-    if recent_count >= _MAX_SUBMITS_PER_24H:
+    if (rate_result.scalar() or 0) >= _MAX_SUBMITS_PER_SESSION_24H:
         raise HTTPException(
             status_code=429,
             detail="You have submitted too many spots today. Please try again tomorrow.",
         )
 
-    # ── 4. Dedup: reject if an existing spot sits within 50 m ───────────────
+    # ── 4. Rate limit: IP ────────────────────────────────────────────────────
+    if ip_h:
+        ip_rate = await db.execute(text("""
+            SELECT COUNT(*) AS cnt
+            FROM prayer_spots
+            WHERE submitted_ip_hash = :ip_hash
+              AND created_at >= NOW() - INTERVAL '24 hours'
+        """), {"ip_hash": ip_h})
+        if (ip_rate.scalar() or 0) >= _MAX_SUBMITS_PER_IP_24H:
+            raise HTTPException(
+                status_code=429,
+                detail="Too many spots submitted from this device today. Please try again tomorrow.",
+            )
+
+    # ── 5. Dedup: reject if an existing spot sits within 50 m ───────────────
     dedup_result = await db.execute(text("""
         SELECT id, name FROM prayer_spots
         WHERE status != 'rejected'
@@ -215,7 +271,7 @@ async def submit_spot(req: SpotSubmitRequest, db: AsyncSession = Depends(get_db)
                    "If it has incorrect information, use the verify/report flow instead.",
         )
 
-    # ── 5. Insert ────────────────────────────────────────────────────────────
+    # ── 6. Insert ────────────────────────────────────────────────────────────
     from timezonefinder import TimezoneFinder
     tz = TimezoneFinder().timezone_at(lat=req.latitude, lng=req.longitude) or "UTC"
 
@@ -229,7 +285,7 @@ async def submit_spot(req: SpotSubmitRequest, db: AsyncSession = Depends(get_db)
             country, timezone,
             has_wudu_facilities, gender_access,
             is_indoor, operating_hours, notes, website,
-            submitted_by_session, status,
+            submitted_by_session, submitted_ip_hash, status,
             verification_count, rejection_count
         ) VALUES (
             :id, :name, :spot_type,
@@ -238,7 +294,7 @@ async def submit_spot(req: SpotSubmitRequest, db: AsyncSession = Depends(get_db)
             'US', :timezone,
             :wudu, :gender,
             :indoor, :hours, :notes, :website,
-            :session_id, 'pending',
+            :session_id, :ip_hash, 'pending',
             0, 0
         )
     """), {
@@ -259,6 +315,7 @@ async def submit_spot(req: SpotSubmitRequest, db: AsyncSession = Depends(get_db)
         "notes": req.notes,
         "website": req.website,
         "session_id": req.session_id,
+        "ip_hash": ip_h,
     })
     await db.commit()
 
@@ -266,15 +323,20 @@ async def submit_spot(req: SpotSubmitRequest, db: AsyncSession = Depends(get_db)
         spot_id=spot_id,
         status="pending",
         message="Thank you! Your spot has been submitted. "
-                "It will appear to others once verified by the community.",
+                "It will appear to others once another user confirms it.",
     )
 
 
 @router.post("/spots/{spot_id}/verify", response_model=SpotVerifyResponse)
 async def verify_spot(
-    spot_id: str, req: SpotVerifyRequest, db: AsyncSession = Depends(get_db)
+    spot_id: str,
+    req: SpotVerifyRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
 ):
-    """Submit a verification (positive) or rejection (negative) for a prayer spot."""
+    """Submit a confirmation (positive) or report (negative) for a prayer spot."""
+    ip_h = _ip_hash(request)
+
     # Fetch spot
     spot_result = await db.execute(text("""
         SELECT id, status, verification_count, rejection_count, submitted_by_session
@@ -295,44 +357,67 @@ async def verify_spot(
             detail="You cannot verify a spot you submitted",
         )
 
-    # ── Rate limit: max 30 verify actions per session per 24 h ──────────────
-    verify_rate = await db.execute(text("""
-        SELECT COUNT(*) AS cnt
-        FROM prayer_spot_verifications
+    # ── Duplicate vote: session ──────────────────────────────────────────────
+    dup_session = await db.execute(text("""
+        SELECT id FROM prayer_spot_verifications
+        WHERE spot_id = CAST(:spot_id AS uuid) AND session_id = :session_id
+    """), {"spot_id": spot_id, "session_id": req.session_id})
+    if dup_session.fetchone():
+        raise HTTPException(status_code=409, detail="You have already verified this spot")
+
+    # ── Duplicate vote: IP ───────────────────────────────────────────────────
+    if ip_h:
+        dup_ip = await db.execute(text("""
+            SELECT id FROM prayer_spot_verifications
+            WHERE spot_id = CAST(:spot_id AS uuid) AND ip_hash = :ip_hash
+        """), {"spot_id": spot_id, "ip_hash": ip_h})
+        if dup_ip.fetchone():
+            raise HTTPException(
+                status_code=409,
+                detail="You have already verified this spot",
+            )
+
+    # ── Rate limit: session ──────────────────────────────────────────────────
+    verify_rate_s = await db.execute(text("""
+        SELECT COUNT(*) AS cnt FROM prayer_spot_verifications
         WHERE session_id = :session_id
           AND created_at >= NOW() - INTERVAL '24 hours'
     """), {"session_id": req.session_id})
-    verify_count = verify_rate.scalar() or 0
-    if verify_count >= _MAX_VERIFIES_PER_24H:
+    if (verify_rate_s.scalar() or 0) >= _MAX_VERIFIES_PER_SESSION_24H:
         raise HTTPException(
             status_code=429,
             detail="You have submitted too many verifications today. Please try again tomorrow.",
         )
 
-    # Prevent duplicate votes from the same session
-    dup = await db.execute(text("""
-        SELECT id FROM prayer_spot_verifications
-        WHERE spot_id = CAST(:spot_id AS uuid) AND session_id = :session_id
-    """), {"spot_id": spot_id, "session_id": req.session_id})
+    # ── Rate limit: IP ───────────────────────────────────────────────────────
+    if ip_h:
+        verify_rate_ip = await db.execute(text("""
+            SELECT COUNT(*) AS cnt FROM prayer_spot_verifications
+            WHERE ip_hash = :ip_hash
+              AND created_at >= NOW() - INTERVAL '24 hours'
+        """), {"ip_hash": ip_h})
+        if (verify_rate_ip.scalar() or 0) >= _MAX_VERIFIES_PER_IP_24H:
+            raise HTTPException(
+                status_code=429,
+                detail="Too many verifications from this device today. Please try again tomorrow.",
+            )
 
-    if dup.fetchone():
-        raise HTTPException(status_code=409, detail="You have already verified this spot")
-
-    # Insert verification record
+    # ── Insert verification record ───────────────────────────────────────────
     await db.execute(text("""
         INSERT INTO prayer_spot_verifications
-            (id, spot_id, session_id, is_positive, attributes)
+            (id, spot_id, session_id, ip_hash, is_positive, attributes)
         VALUES
-            (:id, CAST(:spot_id AS uuid), :session_id, :positive, CAST(:attrs AS jsonb))
+            (:id, CAST(:spot_id AS uuid), :session_id, :ip_hash, :positive, CAST(:attrs AS jsonb))
     """), {
         "id": new_uuid(),
         "spot_id": spot_id,
         "session_id": req.session_id,
+        "ip_hash": ip_h,
         "positive": req.is_positive,
         "attrs": json.dumps(req.attributes),
     })
 
-    # Increment the appropriate counter and touch last_verified_at
+    # ── Update counts and status ─────────────────────────────────────────────
     count_col = "verification_count" if req.is_positive else "rejection_count"
     await db.execute(text(f"""
         UPDATE prayer_spots
@@ -342,7 +427,6 @@ async def verify_spot(
         WHERE id = CAST(:id AS uuid)
     """), {"id": spot_id})
 
-    # Re-read updated counts to determine new status
     updated = await db.execute(text("""
         SELECT verification_count, rejection_count
         FROM prayer_spots WHERE id = CAST(:id AS uuid)

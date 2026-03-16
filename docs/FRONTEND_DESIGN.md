@@ -135,7 +135,7 @@ switch_point(prayer) = adhan_time(prayer) + (period_end_time(prayer) − adhan_t
 | Maghrib | `isha_adhan` | Relatively stable but still varies |
 | Isha | `fajr_adhan` (next day) | **Override: use midnight (00:00) instead of midpoint** — Isha's window can span 6–10 h depending on season; midnight is the natural UX divide regardless |
 
-In **dead time** (after Fajr ends at sunrise, before Dhuhr starts — roughly 7 AM to 12:30 PM), there is no active current prayer. The card shows only the upcoming Dhuhr row as primary with no secondary row.
+In **dead time** (after Fajr ends at sunrise, before Dhuhr starts — roughly 7 AM to 12:30 PM), there is no active current prayer. The card shows only the upcoming Dhuhr row as primary with no secondary row. The backend must return the next upcoming prayer as `next_catchable` in dead time regardless of how far away it is — the 2-hour upcoming window only applies when there is already an active or recently-missed prayer to compete with.
 
 **Example at 12:46 AM** (after Isha adhan ~9 PM, past midnight switch point):
 ```
@@ -196,11 +196,13 @@ The primary row should feel like a **call to action card** — immediately scann
 ```
 
 Both the inline button and the global "I already prayed X" chip trigger the same state update. Rules:
-- The "✓ Prayed" button is only shown when the prayer's adhan has already occurred (cannot pre-mark future prayers)
+- The "✓ Prayed" button is shown when the prayer's adhan has already occurred (cannot pre-mark future prayers) — this includes `missed_make_up` prayers in the detail sheet
 - Marking hides the prayer row from **all** mosque cards and from the global chip target
 - `prayedToday` is stored in `localStorage` keyed by `prayer + date` — resets at midnight
 - "Undo" in the global chip restores the row on all cards
 - This is **client-side only** — no API call needed
+
+The "✓ Prayed" button also appears in the **mosque detail sheet** on the status badge when `nc.status === 'missed_make_up'`. This is the primary affordance for "I already prayed Fajr" during dead time.
 
 ### Data Source Indicator
 
@@ -275,12 +277,14 @@ Prayer spot cards look similar to mosque cards but with a distinct icon and veri
 │     Prayer room · Indoor · Wudu ✓                    │
 │     ✅ Verified by 7 users                           │
 │     Mon-Sat 10am–9pm                                 │
+│     [  ✓ I prayed here  ]                            │  ← quick-confirm button
 └──────────────────────────────────────────────────────┘
 
 ┌──────────────────────────────────────────────────────┐
 │ 🔶  Yahoo Campus Building D              1.2 km away │
 │     Campus prayer room · Wudu ✓ · Men & Women        │
-│     ⚠️ Reported by 1 user — not yet verified          │
+│     ⚠️ Reported by 1 user — tap to confirm            │
+│     [  ✓ I prayed here  ]                            │  ← prominent on unverified spots
 └──────────────────────────────────────────────────────┘
 ```
 
@@ -290,14 +294,16 @@ Prayer spot cards look similar to mosque cards but with a distinct icon and veri
 - Wudu ? = wudu facilities unknown
 
 **Verification badge styles:**
-| Verifications | Badge |
-|---|---|
-| 0 (pending) | "Reported — not yet verified" (grey, italic) |
-| 1–2 | "Reported by N users" (grey) |
-| 3–9 | "Verified by N users" (green check) |
-| ≥10 | "Highly verified" (green bold) |
+| Condition | Badge | Card style |
+|---|---|---|
+| 0 external confirms (submitter only) | Not shown to other users | — |
+| 1–2 net positive | "Reported by N users — tap to confirm" (grey, italic) | Muted, with confirm button |
+| 3–9 net positive | "Verified by N users" (green check) | Normal, with confirm button |
+| ≥10 net positive | "Highly verified" (green bold) | Normal, confirm button hidden (already trusted) |
 
-Pending/unverified spots are shown with a muted style and a disclaimer. Rejected spots are never shown.
+**Quick-confirm button**: A `[✓ I prayed here]` button appears directly on the spot card for spots with fewer than 10 verifications. Tapping it calls `POST /api/spots/{id}/verify` with `is_positive: true` and the user's `session_id`. After confirming, the button changes to `✓ Confirmed` (disabled, stored in `confirmedSpots` in localStorage). No need to open the detail sheet for a basic confirmation.
+
+Rejected spots are never shown.
 
 ### Last Resort — "Pray Anywhere" Card
 
@@ -352,9 +358,9 @@ Accessible from: map "+" button, prayer spot cards "Suggest edit", or "Pray anyw
 └──────────────────────────────────────────────────────┘
 ```
 
-**Location entry**: The location defaults to the user's current GPS position (reverse-geocoded to a readable label). The user can override it by typing in the address search box, which uses the same Nominatim geocode lookup as the trip planner — no extra API needed. A `⌖ GPS` button resets back to the current GPS location.
+**Location entry**: A single address search input, pre-populated with the reverse-geocoded GPS address when the form opens. The user can edit or replace it by typing and selecting from autocomplete suggestions. No separate "resolved location" banner is shown above the input — the input itself shows the current location. Coordinates (`spotLat`/`spotLng`) are set from GPS on open, and updated when the user selects from suggestions.
 
-**Trip planner "From" field**: A `⌖` icon button sits to the right of the "From" input. Tapping it re-fetches the current GPS coordinates and reverse-geocodes them to update the origin — useful when the user has moved since the app loaded.
+**Trip planner "From" field**: When the input has user-entered text, a small `×` clear button appears at the right edge of the input row. Tapping it clears the typed origin and resets to GPS (shown as placeholder "Current location"). There is no separate GPS icon button to the side — clearing the field is equivalent to "use GPS".
 
 ### Spot Verification Flow
 
@@ -397,40 +403,63 @@ Prayer spots appear on the map with a different marker style:
 
 ### Abuse Protection
 
-The spot system is community-driven, so it must guard against spam, ballot-stuffing, and fake entries without requiring accounts.
+The spot system is community-driven with a **high-recall** safety model: the priority is to never show incorrect or harmful spots (private addresses, fake locations) to users, even at the cost of delaying legitimate spots briefly. A spot must receive at least one external confirmation before any other user sees it.
+
+#### Identity Model
+
+Two complementary identifiers are used together — neither alone is sufficient:
+
+| Identifier | Where stored | Strength | Purpose |
+|---|---|---|---|
+| **Session ID** | Client `localStorage` (UUID) | Weak — user can clear it | Primary dedup key for submissions and verifications |
+| **IP hash** | Server DB (sha256 of client IP) | Medium — VPN bypasses, but adds real friction | Rate limiting and cross-session dedup per spot |
+
+The IP is **never stored in plain text** — only `sha256(IP)` is stored, making it irreversible and privacy-preserving. Together, session + IP hash means a user would need both a new browser session AND a new IP to bypass dedup — a high enough bar for a prayer app.
+
+Phone number OTP would be stronger but adds friction incompatible with the app's anonymous philosophy. The session + IP hash combination is the right trade-off.
 
 #### Submit endpoint (`POST /api/spots`)
 
 | Check | Rule | Error |
 |---|---|---|
 | **Geographic bounds** | Lat 24–72 / Lng −168 to −52 (US + Canada) | 422 |
-| **Content filter** | No URLs in name/notes; no 5+ consecutive all-caps words | 422 |
-| **Rate limit** | Max 3 submissions per `session_id` per 24 h | 429 |
+| **Content filter** | No URLs in name/notes/hours; no 3+ all-caps words | 422 |
+| **Rate limit (session)** | Max 3 submissions per `session_id` per 24 h | 429 |
+| **Rate limit (IP)** | Max 2 submissions per `ip_hash` per 24 h | 429 |
 | **Deduplication** | Reject if a non-rejected spot exists within 50 m | 409 (with existing spot name shown) |
 
-All spots start as `status = pending` — they are visible but clearly labeled "not yet verified" until they accumulate community verification.
+New spots start as `status = pending` and are **invisible to all other users** until they receive their first external positive verification. The submitter can always see their own pending spot (via `session_id` match in the nearby query).
 
 #### Verify endpoint (`POST /api/spots/{id}/verify`)
 
 | Check | Rule | Error |
 |---|---|---|
 | **Self-vote prevention** | Session that submitted the spot cannot verify it | 403 |
-| **Duplicate vote** | Same session cannot vote twice on the same spot | 409 |
-| **Rate limit** | Max 30 verify actions per `session_id` per 24 h | 429 |
+| **Duplicate vote (session)** | Same session cannot vote twice on the same spot | 409 |
+| **Duplicate vote (IP)** | Same IP hash cannot vote twice on the same spot | 409 |
+| **Rate limit (session)** | Max 30 verify actions per `session_id` per 24 h | 429 |
+| **Rate limit (IP)** | Max 10 verify actions per `ip_hash` per 24 h | 429 |
 
-#### Status transitions
+#### Status transitions and visibility
 
-| Net score (verifications − rejections) | Status |
-|---|---|
-| Newly submitted | `pending` |
-| ≥ +3 | `active` (shown normally) |
-| ≤ −3 | `rejected` (hidden from all users) |
+| Condition | Status | Visible to |
+|---|---|---|
+| Just submitted, 0 external confirmations | `pending` | **Submitter only** (via session_id match) |
+| ≥ 1 net positive from external user | `pending` | All users (with "unverified" warning label + confirm button) |
+| ≥ 3 net positive | `active` | All users (normal display) |
+| ≤ −3 net | `rejected` | Nobody (permanently hidden) |
 
-A spot needs at least 3 net positive votes to become active, so a single bad actor with one session cannot promote their own fake spot. Rejection requires −3 net, so a single user cannot remove a good spot alone.
+The "hidden until confirmed" rule is the main defense against private addresses and fake spots. A bad actor submitting a private home address cannot cause harm — no other user will see it unless a second person independently confirms it, which is unlikely for a fake spot.
+
+Rejection requires −3 net, so a single user cannot silently remove a real spot. Multiple independent negative reports are needed.
+
+#### `confirmedSpots` client state
+
+The frontend maintains a `confirmedSpots: Set<string>` in `localStorage` (keyed by spot_id) to track which spots the current session has already confirmed. This prevents showing the confirm button after the user has already tapped it, without needing an extra API call.
 
 #### What is NOT collected
 
-The system is deliberately anonymous. No IP addresses, device fingerprints, names, or emails are stored. The `session_id` is a random UUID generated per browser/device install (stored in localStorage), used only to prevent duplicate submissions within a session.
+No plain-text IP addresses, device fingerprints, names, or emails are stored. Only `sha256(client_ip)` is stored server-side to enforce rate limits and prevent ballot-stuffing across sessions. The `session_id` is a random UUID generated per browser install (stored in localStorage).
 
 ---
 
@@ -468,6 +497,20 @@ Slides up from bottom when user taps a card. Does not navigate away from the map
 │                                                      │
 └──────────────────────────────────────────────────────┘
 ```
+
+### Status Badge Behaviour in the Detail Sheet
+
+The status badge at the top of the sheet adapts to the prayer state:
+
+| `nc.status` | Badge style | Extra affordances |
+|---|---|---|
+| `can_catch_with_imam` / `in_progress` | Green | — |
+| `can_pray_solo_at_mosque` | Blue | — |
+| `pray_at_nearby_location` | Orange | — |
+| `upcoming` | **Teal** (distinct from missed) | Shows "Azan at HH:MM · Iqama HH:MM" on line 2, "Leave by HH:MM to pray with Imam" on line 3 |
+| `missed_make_up` | Gray | **[✓ Already prayed Fajr]** button below the message |
+
+When `nc.prayer` is in `prayedToday` (user already marked it), the badge is hidden entirely and the sheet shows the next upcoming prayer from `mosque.prayers` directly, using the same teal upcoming style.
 
 **Shorooq row**: After Fajr, a highlighted row shows the sunrise time labeled "Shorooq", with "Fajr ends" in the Iqama column. It renders with an amber/yellow background to distinguish it from the 5 obligatory prayers. The row is only shown when `mosque.sunrise` is non-null. Maghrib adhan equals the sunset time (no offset) per ISNA calculation.
 
@@ -816,7 +859,7 @@ Pairs where **neither prayer's window touches the trip** are completely omitted 
 ### Mosque Search Along Route
 
 The backend uses:
-- **Routing**: OSRM (free) or Mapbox (if key configured) — returns turn-by-turn steps used as route checkpoints
+- **Routing**: OSRM (free) or Mapbox (if key configured) — full route geometry (overview=full) is sampled into dense checkpoints with time interpolated by cumulative distance, ensuring mosques along long straight highway stretches are found and timed correctly
 - **Corridor**: mosques within **30 km** of the route bounding box
 - **Detour limit**: mosques requiring more than **45 minutes** total detour (drive there + prayer overhead + drive back) are excluded
 - **Detour speed**: uses straight-line haversine × 1.4 road factor at 60 km/h highway average
@@ -868,15 +911,20 @@ When a destination is set (with or without a plan), the map shows:
 1. **Origin pin** (teal circle labeled "A") — user's current GPS location or custom origin if set
 2. **Destination pin** (red circle labeled "B") — travelDestination
 3. The map **auto-zooms** to fit both origin and destination at the tightest zoom that shows both
+4. **Nearby mosque pins are hidden** — only route stops and endpoint pins are shown during trip planning; nearby mosques reappear when the trip is cleared
 
 When a trip plan is active ("Plan My Prayers" was clicked), the map additionally shows:
 
-4. **Route mosque stop pins** — indigo/purple pins for each unique mosque from the plan's stops (from all feasible options)
-5. The map **re-fits** to show all: origin, destination, and all mosque stops
+5. **Route mosque stop pins** — indigo/purple pins for each unique mosque from the plan's stops (from all feasible options)
+6. The map **re-fits** to show all: origin, destination, and all mosque stops
 
 **Mosque name labels** are always visible (permanent tooltips) on all mosque pins — both nearby mosques and route stop mosques.
 
 Tapping a stop card inside a `TravelOptionCard` zooms the map to that mosque and fits it with the user's location.
+
+### Diverse Trip Options
+
+The trip planner returns **up to 3 diverse options per combination type** (Jam' Taqdeem, Jam' Ta'kheer) — each showing a different mosque along the route, sorted by minutes into the trip. This gives users meaningful choice (e.g., stop earlier with a longer detour vs. later with a shorter one). The "Separate Stops" option remains a single best pairing.
 
 ---
 

@@ -69,9 +69,11 @@ PRAYER_ALIASES = {
     "subh": "fajr", "subuh": "fajr", "sobh": "fajr",
     "dhuhr": "dhuhr", "zuhr": "dhuhr", "zohr": "dhuhr", "dhuhr/zuhr": "dhuhr",
     "dhuhar": "dhuhr", "dhohr": "dhuhr", "dhur": "dhuhr", "zhuhr": "dhuhr",
+    "duhr": "dhuhr", "dohr": "dhuhr", "zuher": "dhuhr", "duhor": "dhuhr",
     "asr": "asr", "asar": "asr", "asr/asar": "asr", "asor": "asr",
     "maghrib": "maghrib", "magrib": "maghrib", "maghrib/sunset": "maghrib",
-    "maghreb": "maghrib", "mughrib": "maghrib",
+    "maghreb": "maghrib", "mughrib": "maghrib", "magreb": "maghrib",
+    "mghrib": "maghrib", "maghrib/magrib": "maghrib",
     "isha": "isha", "isha'a": "isha", "esha": "isha", "ishaa": "isha",
     "ishaa'": "isha", "isha'": "isha",
 }
@@ -127,6 +129,25 @@ class PrayerTimes:
     def is_complete(self) -> bool:
         """True only if we have all 5 adhans AND at least 4 iqamas (mosque-specific data)."""
         return self.adhan_count() == 5 and self.iqama_count() >= 4
+
+
+def _custom_dict_to_prayer_times(d: dict, source_url: str) -> Optional["PrayerTimes"]:
+    """Convert dict output from a custom adaptive extractor into a PrayerTimes object."""
+    try:
+        return PrayerTimes(
+            fajr_adhan=d.get("fajr_adhan"), fajr_iqama=d.get("fajr_iqama"),
+            dhuhr_adhan=d.get("dhuhr_adhan"), dhuhr_iqama=d.get("dhuhr_iqama"),
+            asr_adhan=d.get("asr_adhan"), asr_iqama=d.get("asr_iqama"),
+            maghrib_adhan=d.get("maghrib_adhan"), maghrib_iqama=d.get("maghrib_iqama"),
+            isha_adhan=d.get("isha_adhan"), isha_iqama=d.get("isha_iqama"),
+            sunrise=d.get("sunrise"),
+            source="mosque_website_html",
+            confidence="medium",
+            tier=2,
+            source_url=source_url,
+        )
+    except Exception:
+        return None
 
 
 @dataclass
@@ -332,7 +353,8 @@ def extract_times_from_text(text: str) -> Optional[PrayerTimes]:
         for alias, prayer in PRAYER_ALIASES.items():
             if re.search(r"\b" + re.escape(alias) + r"\b", line_lower):
                 times_found = _TIME_RE.findall(line)
-                normalized = [normalize_time(f"{t[0]} {t[1]}") for t in times_found]
+                # Pass prayer context so e.g. "1:15" for dhuhr → 13:15, not 01:15
+                normalized = [normalize_time(f"{t[0]} {t[1]}", prayer) for t in times_found]
                 normalized = [t for t in normalized if t]
                 if normalized and not getattr(result, f"{prayer}_adhan"):
                     setattr(result, f"{prayer}_adhan", normalized[0])
@@ -349,15 +371,28 @@ def extract_times_from_divs(soup: BeautifulSoup) -> Optional[PrayerTimes]:
     Handle div/flex/grid layouts where prayer names and times are in separate elements.
     Looks for a container that has all 5 prayer names in close proximity with time patterns.
     """
+    import copy as _copy
     result = PrayerTimes()
     found = 0
 
     # Strategy: find any element that contains a prayer name, then look at siblings/nearby text for times
-    # Walk all elements and build a flat list of (text, element) pairs
+    # Walk all elements and build a flat list of (text, element) pairs.
+    # Remove script/style tags first to avoid JS/CSS contaminating the text stream.
+    soup_copy = _copy.copy(soup)
+    for tag in soup_copy.find_all(["script", "style", "noscript"]):
+        tag.decompose()
+
     flat: list[str] = []
-    for el in soup.find_all(True):
+    for el in soup_copy.find_all(True):
         if el.find(True):  # skip parents, only leaf-like nodes
             continue
+        # Also include bare NavigableString children of this element
+        from bs4 import NavigableString as _NS
+        for child in el.children:
+            if isinstance(child, _NS):
+                t_bare = str(child).strip()
+                if t_bare:
+                    flat.append(t_bare)
         t = el.get_text(strip=True)
         if t:
             flat.append(t)
@@ -378,7 +413,8 @@ def extract_times_from_divs(soup: BeautifulSoup) -> Optional[PrayerTimes]:
             for j in range(i + 1, min(i + 6, len(flat))):
                 m = _TIME_RE.search(flat[j])
                 if m:
-                    t = normalize_time(f"{m.group(1)} {m.group(2) or ''}")
+                    # Pass prayer context so e.g. "1:15" for dhuhr → 13:15, not 01:15
+                    t = normalize_time(f"{m.group(1)} {m.group(2) or ''}", matched_prayer)
                     if t:
                         times.append(t)
                 # Stop if we hit another prayer name
@@ -425,6 +461,7 @@ IFRAME_WIDGET_PATTERNS = [
     (r"salahtime\.net", "salahtime"),
     (r"prayerboard\.net", "prayerboard"),
     (r"islamicfinder\.org/embed", "islamicfinder_embed"),
+    (r"mawaqit\.net", "mawaqit"),
 ]
 
 
@@ -466,11 +503,129 @@ def discover_prayer_iframes(soup: BeautifulSoup, base_url: str) -> list[tuple[st
     return results[:5]
 
 
+def _parse_mawaqit_html(html: str, source_url: str) -> Optional[PrayerTimes]:
+    """
+    Parse mawaqit.net page HTML. The page embeds today's prayer times as:
+      "times":["HH:MM","HH:MM","HH:MM","HH:MM","HH:MM"]  (Fajr,Dhuhr,Asr,Maghrib,Isha)
+      "shuruq":"HH:MM"  (sunrise)
+      "iqamas":["HH:MM","HH:MM","HH:MM","HH:MM","HH:MM"] or integer offsets
+    """
+    times_m = re.search(r'"times":\s*\[([^\]]+)\]', html)
+    if not times_m:
+        return None
+    raw_times = [t.strip().strip('"') for t in times_m.group(1).split(",")]
+    if len(raw_times) < 5:
+        return None
+
+    prayers = ["fajr", "dhuhr", "asr", "maghrib", "isha"]
+    pt = PrayerTimes()
+    found = 0
+    for i, prayer in enumerate(prayers):
+        t = normalize_time(raw_times[i], prayer)
+        if t:
+            setattr(pt, f"{prayer}_adhan", t)
+            found += 1
+
+    if found < 3:
+        return None
+
+    # Sunrise
+    sr_m = re.search(r'"shuruq":\s*"([^"]+)"', html)
+    if sr_m:
+        pt.sunrise = normalize_time(sr_m.group(1))
+
+    # Iqama times — array of HH:MM strings or integer minute offsets
+    iqama_m = re.search(r'"iqamas":\s*\[([^\]]+)\]', html)
+    if iqama_m:
+        raw_iqamas = [t.strip().strip('"') for t in iqama_m.group(1).split(",")]
+        for i, prayer in enumerate(prayers):
+            if i < len(raw_iqamas):
+                raw = raw_iqamas[i]
+                # Could be "HH:MM" or a positive integer (offset in minutes)
+                iq = normalize_time(raw, prayer)
+                if not iq:
+                    try:
+                        offset = int(raw)
+                        adhan = getattr(pt, f"{prayer}_adhan")
+                        if adhan and offset > 0:
+                            iq = add_minutes(adhan, offset)
+                    except (ValueError, TypeError):
+                        pass
+                if iq:
+                    setattr(pt, f"{prayer}_iqama", iq)
+
+    pt.source = "mosque_website_html"
+    pt.confidence = "high" if pt.is_complete() else "medium"
+    pt.source_url = source_url
+    logger.info(f"    Mawaqit: {pt.adhan_count()} adhans, {pt.iqama_count()} iqamas")
+    return pt
+
+
 async def fetch_iframe_prayer_times(
     iframe_url: str, widget_type: str, client: httpx.AsyncClient
 ) -> Optional[PrayerTimes]:
     """Fetch an iframe URL and extract prayer times from its HTML."""
     try:
+        # Masjidal: call the direct API using masjid_id from the iframe URL
+        if widget_type == "masjidal":
+            m_id = re.search(r'masjid_id=([A-Za-z0-9_-]+)', iframe_url)
+            if m_id:
+                masjid_id = m_id.group(1)
+                api_url = f"https://masjidal.com/api/v1/time?masjid_id={masjid_id}"
+                try:
+                    resp = await client.get(api_url, timeout=15)
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        if data.get("status") == "success" and data.get("data"):
+                            d = data["data"]
+                            salah = d.get("salah", {})
+                            iqama = d.get("iqama", {})
+                            prayer_map = [
+                                ("fajr",    "fajr"),
+                                ("dhuhr",   "zuhr"),
+                                ("asr",     "asr"),
+                                ("maghrib", "maghrib"),
+                                ("isha",    "isha"),
+                            ]
+                            pt = PrayerTimes()
+                            found = 0
+                            for prayer, key in prayer_map:
+                                adhan = normalize_time(salah.get(key), prayer)
+                                iq = normalize_time(iqama.get(key), prayer)
+                                if adhan:
+                                    setattr(pt, f"{prayer}_adhan", adhan)
+                                    found += 1
+                                if iq:
+                                    setattr(pt, f"{prayer}_iqama", iq)
+                            if found >= 3:
+                                pt.source = "mosque_website_html"
+                                pt.confidence = "high" if pt.is_complete() else "medium"
+                                pt.source_url = api_url
+                                logger.info(f"    Masjidal API: {pt.adhan_count()} adhans, "
+                                            f"{pt.iqama_count()} iqamas (id={masjid_id})")
+                                return pt
+                except Exception as e:
+                    logger.debug(f"    Masjidal API error: {e}")
+
+        # Mawaqit: mobile iframe is at /en/m/slug — fetch the main page /en/slug instead
+        if widget_type == "mawaqit":
+            main_url = re.sub(r'/en/m/', '/en/', iframe_url)
+            main_url = main_url.split("?")[0]  # strip query params
+            try:
+                resp = await client.get(
+                    main_url, follow_redirects=True,
+                    headers={"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                                           "AppleWebKit/537.36 (KHTML, like Gecko) "
+                                           "Chrome/120.0.0.0 Safari/537.36"},
+                    timeout=20,
+                )
+                if resp.status_code == 200:
+                    result = _parse_mawaqit_html(resp.text, main_url)
+                    if result and result.adhan_count() >= 3:
+                        return result
+            except Exception as e:
+                logger.debug(f"    Mawaqit main page error: {e}")
+
         resp = await client.get(
             iframe_url, follow_redirects=True,
             headers={
@@ -483,6 +638,12 @@ async def fetch_iframe_prayer_times(
         )
         if resp.status_code != 200:
             return None
+
+        # For mawaqit, also try parsing the HTML response for embedded JS data
+        if widget_type == "mawaqit":
+            result = _parse_mawaqit_html(resp.text, iframe_url)
+            if result and result.adhan_count() >= 3:
+                return result
 
         soup = BeautifulSoup(resp.text, "lxml")
         result = _extract_from_soup(soup)
@@ -1075,7 +1236,8 @@ async def tier2_static_html(mosque: MosqueRecord) -> Optional[PrayerTimes]:
                 best = masjidal_result
 
         if best and best.adhan_count() >= 3:
-            best.source = best.source or "mosque_website_html"
+            if not best.source or best.source == "unknown":
+                best.source = "mosque_website_html"
             best.confidence = "high" if best.is_complete() else "medium"
             best.tier = 2
             logger.info(f"    Tier 2: {best.adhan_count()} adhans, "
@@ -1197,9 +1359,9 @@ def _extract_from_text(text: str) -> Optional[PrayerTimes]:
 
     for prayer, aliases in [
         ("fajr",    ["fajr", "fajir", "subh"]),
-        ("dhuhr",   ["dhuhr", "zuhr", "zohr", "duhr"]),
+        ("dhuhr",   ["dhuhr", "zuhr", "zohr", "duhr", "dohr", "dhohr"]),
         ("asr",     ["asr", "asar"]),
-        ("maghrib", ["maghrib", "magrib", "sunset"]),
+        ("maghrib", ["maghrib", "magrib", "magreb", "mghrib", "sunset"]),
         ("isha",    ["isha", "esha", "ishaa", "isha'"]),
     ]:
         for alias in aliases:
@@ -1839,6 +2001,33 @@ async def scrape_mosque(mosque: MosqueRecord, target_date: date,
             _accept(t2, 2)
         except Exception as e:
             logger.info(f"  Tier 2 exception: {e}")
+
+    # Tier 2c — adaptive custom extractors (auto-generated by adaptive_extractor.py)
+    if not (result and result.is_complete()) and mosque.website and \
+            "facebook.com" not in (mosque.website or "").lower():
+        try:
+            from pipeline import custom_extractors as _cx  # re-import each run to pick up new ones
+            if _cx.CUSTOM_EXTRACTORS:
+                async with httpx.AsyncClient(
+                    timeout=8, follow_redirects=True,
+                    headers={"User-Agent": "Mozilla/5.0"},
+                ) as _client:
+                    _resp = await _client.get(mosque.website)
+                    _html = _resp.text
+                for _ext_name, _ext_fn in _cx.CUSTOM_EXTRACTORS:
+                    try:
+                        _d = _ext_fn(_html)
+                        if _d:
+                            _t2c = _custom_dict_to_prayer_times(_d, mosque.website)
+                            if _accept(_t2c, 2):
+                                logger.info(f"  ✓ Tier 2c ({_ext_name}) success")
+                                break
+                    except Exception:
+                        pass
+        except ImportError:
+            pass
+        except Exception as _e:
+            logger.debug(f"  Tier 2c exception: {_e}")
 
     # Tier 3 — Playwright (JS-heavy sites, including Facebook fallback)
     if not (result and result.is_complete()) and mosque.website:
