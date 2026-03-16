@@ -65,11 +65,15 @@ PRAYER_TIME_RANGES = {
 
 # OSM aliases to canonical prayer names
 PRAYER_ALIASES = {
-    "fajr": "fajr", "fajir": "fajr", "subh": "fajr", "subuh": "fajr",
+    "fajr": "fajr", "fajir": "fajr", "fajar": "fajr", "fajur": "fajr",
+    "subh": "fajr", "subuh": "fajr", "sobh": "fajr",
     "dhuhr": "dhuhr", "zuhr": "dhuhr", "zohr": "dhuhr", "dhuhr/zuhr": "dhuhr",
-    "asr": "asr", "asar": "asr", "asr/asar": "asr",
+    "dhuhar": "dhuhr", "dhohr": "dhuhr", "dhur": "dhuhr", "zhuhr": "dhuhr",
+    "asr": "asr", "asar": "asr", "asr/asar": "asr", "asor": "asr",
     "maghrib": "maghrib", "magrib": "maghrib", "maghrib/sunset": "maghrib",
+    "maghreb": "maghrib", "mughrib": "maghrib",
     "isha": "isha", "isha'a": "isha", "esha": "isha", "ishaa": "isha",
+    "ishaa'": "isha", "isha'": "isha",
 }
 
 PRAYER_SUBPAGE_PATTERNS = [
@@ -417,6 +421,10 @@ IFRAME_WIDGET_PATTERNS = [
     (r"prayertimeswidget\.com", "prayertimeswidget"),
     (r"iqamah\.com/widget", "iqamah"),
     (r"masjidbox\.com", "masjidbox"),
+    (r"masjidnow\.com", "masjidnow"),
+    (r"salahtime\.net", "salahtime"),
+    (r"prayerboard\.net", "prayerboard"),
+    (r"islamicfinder\.org/embed", "islamicfinder_embed"),
 ]
 
 
@@ -841,6 +849,143 @@ async def _fetch_soup(url: str, client: httpx.AsyncClient) -> Optional[tuple[Bea
     return None
 
 
+async def _try_google_sheets(html_source: str, client: httpx.AsyncClient,
+                             base_url: str) -> Optional[PrayerTimes]:
+    """
+    Detect Google Sheets-backed prayer time widgets (e.g. iccpaz.com Masjid-Tools).
+    Looks for googleSheetUrl or direct spreadsheet links in the page source,
+    then fetches the sheet as CSV and parses it.
+    """
+    import csv, io
+
+    # Pattern 1: explicit googleSheetUrl config (Masjid-Tools widget)
+    m = re.search(
+        r'googleSheetUrl["\s]*:\s*["\']([^"\']+docs\.google\.com/spreadsheets[^"\']+)["\']',
+        html_source,
+    )
+    sheet_url = m.group(1) if m else None
+
+    # Pattern 2: direct spreadsheet embed/export link anywhere on the page
+    if not sheet_url:
+        m2 = re.search(
+            r'(https://docs\.google\.com/spreadsheets/d/[A-Za-z0-9_-]+[^"\'<>\s]*)',
+            html_source,
+        )
+        if m2:
+            sheet_url = m2.group(1)
+
+    if not sheet_url:
+        return None
+
+    # Normalise to CSV export URL
+    id_match = re.search(r'/spreadsheets/d/([A-Za-z0-9_-]+)', sheet_url)
+    gid_match = re.search(r'gid=(\d+)', sheet_url)
+    if not id_match:
+        return None
+
+    sheet_id = id_match.group(1)
+    gid = gid_match.group(1) if gid_match else None
+    # Try with gid first (if found), then without (defaults to first sheet)
+    csv_urls = []
+    if gid:
+        csv_urls.append(f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv&gid={gid}")
+    csv_urls.append(f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv")
+
+    for csv_url in csv_urls:
+        try:
+            resp = await client.get(csv_url, timeout=15, follow_redirects=True)
+            if resp.status_code != 200:
+                continue
+            reader = csv.reader(io.StringIO(resp.text))
+            rows = list(reader)
+            if not rows:
+                continue
+
+            # Build a plain-text block from the CSV and run our text extractor
+            text_blob = "\n".join(" ".join(row) for row in rows)
+            result = _extract_from_text(text_blob)
+            if result and result.adhan_count() >= 3:
+                result.source = "mosque_website_html"
+                result.confidence = "high" if result.is_complete() else "medium"
+                result.source_url = csv_url
+                logger.info(f"    Google Sheets: {result.adhan_count()} adhans, "
+                            f"{result.iqama_count()} iqamas from {csv_url}")
+                return result
+        except Exception as e:
+            logger.debug(f"    Google Sheets fetch error ({csv_url}): {e}")
+
+    return None
+
+
+async def _try_masjidal_direct(html_source: str, client: httpx.AsyncClient,
+                                target_date: date) -> Optional[PrayerTimes]:
+    """
+    Detect Masjidal widget config in page HTML and call the Masjidal API directly.
+    The widget sets a <div class="masjidalContainer" data-id="..."> or similar.
+    API: https://api.masjidal.com/API/v1/prayer/times?masjid_id={id}&date=YYYY-MM-DD
+    """
+    # Look for data-id / data-masjid-id inside masjidal widget markup
+    patterns = [
+        r'masjidalContainer[^>]*data-id=["\']([A-Za-z0-9_-]+)["\']',
+        r'data-masjid(?:-id)?=["\']([A-Za-z0-9_-]+)["\']',
+        r'masjidal[^>]*id=["\']([A-Za-z0-9_-]+)["\']',
+        r'masjid_id["\s]*[:=]["\s]*["\']([A-Za-z0-9_-]+)["\']',
+    ]
+    masjid_id = None
+    for pat in patterns:
+        m = re.search(pat, html_source, re.IGNORECASE)
+        if m:
+            masjid_id = m.group(1)
+            break
+
+    if not masjid_id:
+        return None
+
+    date_str = target_date.strftime("%Y-%m-%d")
+    api_url = (f"https://api.masjidal.com/API/v1/prayer/times"
+               f"?masjid_id={masjid_id}&date={date_str}")
+    try:
+        resp = await client.get(api_url, timeout=15)
+        if resp.status_code != 200:
+            return None
+        data = resp.json()
+        result = _parse_athanplus_response(data, target_date)  # Masjidal shares AthanPlus format
+        if not result:
+            # Try direct field mapping
+            pt = PrayerTimes()
+            prayer_map = {"fajr": "fajr", "dhuhr": "dhuhr", "asr": "asr",
+                          "maghrib": "maghrib", "isha": "isha"}
+            found = 0
+            for key, prayer in prayer_map.items():
+                entry = data.get(key) or data.get(key.capitalize())
+                if isinstance(entry, dict):
+                    adhan = normalize_time(entry.get("adhan") or entry.get("azan"), prayer)
+                    iqama = normalize_time(entry.get("iqama") or entry.get("iqamah"), prayer)
+                elif isinstance(entry, str):
+                    adhan = normalize_time(entry, prayer)
+                    iqama = None
+                else:
+                    continue
+                if adhan:
+                    setattr(pt, f"{prayer}_adhan", adhan)
+                    if iqama:
+                        setattr(pt, f"{prayer}_iqama", iqama)
+                    found += 1
+            result = pt if found >= 3 else None
+
+        if result and result.adhan_count() >= 3:
+            result.source = "mosque_website_js"
+            result.confidence = "high"
+            result.source_url = api_url
+            logger.info(f"    Masjidal direct API: {result.adhan_count()} adhans, "
+                        f"{result.iqama_count()} iqamas (id={masjid_id})")
+            return result
+    except Exception as e:
+        logger.debug(f"    Masjidal direct API error (id={masjid_id}): {e}")
+
+    return None
+
+
 async def tier2_static_html(mosque: MosqueRecord) -> Optional[PrayerTimes]:
     """Fetch mosque website with httpx and extract prayer times.
     Also checks iframes (AthanPlus, Masjidal, etc.) and prayer sub-pages.
@@ -912,8 +1057,25 @@ async def tier2_static_html(mosque: MosqueRecord) -> Optional[PrayerTimes]:
                         if best.is_complete():
                             break
 
+        # Google Sheets widget detection (e.g. Masjid-Tools / IqamaWidgetConfig)
+        if not (best and best.is_complete()):
+            homepage_html = str(homepage_soup)
+            gs_result = await _try_google_sheets(homepage_html, client, final_url)
+            if gs_result and gs_result.adhan_count() > best_count:
+                best_count = gs_result.adhan_count()
+                best = gs_result
+
+        # Masjidal direct API detection
+        if not (best and best.is_complete()):
+            today = date.today()
+            homepage_html = str(homepage_soup)
+            masjidal_result = await _try_masjidal_direct(homepage_html, client, today)
+            if masjidal_result and masjidal_result.adhan_count() > best_count:
+                best_count = masjidal_result.adhan_count()
+                best = masjidal_result
+
         if best and best.adhan_count() >= 3:
-            best.source = "mosque_website_html"
+            best.source = best.source or "mosque_website_html"
             best.confidence = "high" if best.is_complete() else "medium"
             best.tier = 2
             logger.info(f"    Tier 2: {best.adhan_count()} adhans, "
@@ -958,7 +1120,9 @@ async def tier2_facebook(mosque: MosqueRecord) -> Optional[PrayerTimes]:
 
     async with httpx.AsyncClient(timeout=20, follow_redirects=True,
                                   headers={"User-Agent": (
-                                      "Mozilla/5.0 (compatible; CatchAPrayer/1.0)"
+                                      "Mozilla/5.0 (Linux; Android 10) "
+                                      "AppleWebKit/537.36 (KHTML, like Gecko) "
+                                      "Chrome/120.0.0.0 Mobile Safari/537.36"
                                   )}) as client:
         for page_url in pages_to_try:
             parsed = await _fetch_soup(page_url, client)
@@ -970,7 +1134,7 @@ async def tier2_facebook(mosque: MosqueRecord) -> Optional[PrayerTimes]:
             # Try structured extraction first
             result = _extract_from_soup(soup)
             if result and result.adhan_count() >= 3:
-                result.source = "mosque_website_html"
+                result.source = "mosque_website_facebook"
                 result.confidence = "medium"
                 result.tier = 2
                 result.source_url = page_url
@@ -981,13 +1145,40 @@ async def tier2_facebook(mosque: MosqueRecord) -> Optional[PrayerTimes]:
             # Fallback: regex scan of raw text for prayer-time lines
             result = _extract_from_text(full_text)
             if result and result.adhan_count() >= 3:
-                result.source = "mosque_website_html"
+                result.source = "mosque_website_facebook"
                 result.confidence = "medium"
                 result.tier = 2
                 result.source_url = page_url
                 logger.info(f"    Tier 2 (FB text): {result.adhan_count()} adhans, "
                             f"{result.iqama_count()} iqamas")
                 return result
+
+        # Also scan recent posts on the timeline — prayer times are often posted weekly
+        try:
+            posts_parsed = await _fetch_soup(mobile_url, client)
+            if posts_parsed:
+                posts_soup, _ = posts_parsed
+                # mbasic posts are in <div id="recent"> or article/div with story content
+                all_text_blocks = []
+                for el in posts_soup.find_all(["article", "div"], id=re.compile(r"recent|posts|feed", re.I)):
+                    all_text_blocks.append(el.get_text("\n", strip=True))
+                # Also grab all story-body text elements
+                for el in posts_soup.find_all("div", attrs={"data-ft": True}):
+                    all_text_blocks.append(el.get_text("\n", strip=True))
+
+                combined = "\n".join(all_text_blocks)
+                if combined:
+                    result = _extract_from_text(combined)
+                    if result and result.adhan_count() >= 3:
+                        result.source = "mosque_website_facebook"
+                        result.confidence = "medium"
+                        result.tier = 2
+                        result.source_url = mobile_url + " (posts)"
+                        logger.info(f"    Tier 2 (FB posts): {result.adhan_count()} adhans, "
+                                    f"{result.iqama_count()} iqamas")
+                        return result
+        except Exception as e:
+            logger.debug(f"    FB posts scan error: {e}")
 
     return None
 
@@ -1084,7 +1275,12 @@ _PRAYER_API_PATTERNS = [
     "salahmate.com/api",
     "muslimpro.com/api",
     "masjidal.com/api",
+    "api.masjidal.com",
     "athan.pro/api",
+    "masjidnow.com/api",
+    "api.masjidnow.com",
+    "salahtime.net/api",
+    "prayerboard.net/api",
 ]
 
 
@@ -1573,10 +1769,33 @@ async def scrape_mosque(mosque: MosqueRecord, target_date: date,
     last_valid_tier: int = 0
 
     def _accept(candidate: Optional[PrayerTimes], tier: int) -> bool:
-        """Accept candidate if it improves adhan count AND passes standalone validation."""
+        """Accept candidate if it improves adhan count AND the present times look valid.
+        For tiers 2-4 (real data), partial results (3+ adhans) are accepted even without
+        all 5 prayers — Tier 5 gap-filling will supply the missing ones afterward.
+        """
         nonlocal result, tier_reached, last_valid_result, last_valid_tier
         if not candidate or candidate.adhan_count() <= (result.adhan_count() if result else 0):
             return False
+
+        # Partial real-data acceptance (tiers 2-4): require only 3+ valid adhans
+        if tier in (2, 3, 4) and candidate.adhan_count() >= 3:
+            # Validate only the present adhans (ranges + ordering)
+            partial_ok = True
+            present = [(p, getattr(candidate, f"{p}_adhan"))
+                       for p in PRAYER_NAMES if getattr(candidate, f"{p}_adhan")]
+            for p, t in present:
+                lo, hi = PRAYER_TIME_RANGES[p]
+                if not (lo <= t <= hi):
+                    partial_ok = False
+                    logger.debug(f"  Tier {tier} {p} adhan {t} outside range — skipping")
+                    break
+            if partial_ok:
+                result = candidate
+                tier_reached = tier
+                last_valid_result = candidate
+                last_valid_tier = tier
+                return True
+
         ok, reason = validate_prayer_times(candidate)
         if not ok:
             logger.debug(f"  Tier {tier} result invalid ({reason}), skipping")
