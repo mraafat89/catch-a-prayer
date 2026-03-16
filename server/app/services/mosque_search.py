@@ -186,6 +186,21 @@ def calculate_catching_status(
     iqama_min = hhmm_to_minutes(iqama) if iqama else adhan_min + 15
     period_end_min = hhmm_to_minutes(period_end) if period_end else iqama_min + 120
 
+    # Midnight wraparound: isha period end (e.g. 03:00) is numerically less than iqama
+    # (e.g. 21:10). Adjust by +24h so comparisons work across midnight.
+    if period_end_min < iqama_min:
+        period_end_min += 24 * 60  # e.g. 180 → 1620
+
+    # After midnight, before fajr: current_minutes (e.g. 90 = 1:30 AM) is numerically
+    # less than isha adhan/iqama times (e.g. 1200). Adjust current by +24h so we
+    # correctly see it as "after isha" rather than "before isha".
+    if prayer == "isha" and current_minutes < adhan_min:
+        fajr_adhan = schedule.get("fajr_adhan")
+        fajr_min = hhmm_to_minutes(fajr_adhan) if fajr_adhan else 300
+        if current_minutes < fajr_min:
+            # We're in the post-midnight carry-over window
+            current_minutes = current_minutes + 24 * 60
+
     arrival_min = current_minutes + travel_minutes
     leave_by_min = iqama_min - travel_minutes
 
@@ -360,12 +375,12 @@ def get_next_catchable(
         candidates.append(status)
 
     if not candidates:
-        # Fall back: return the most recent missed prayer
+        # Fall back: return the most recent missed prayer only
         for prayer in reversed(priority_order):
             status = calculate_catching_status(
                 prayer, schedule, current_minutes, travel_minutes, congregation_window
             )
-            if status:
+            if status and status["status"] == "missed_make_up":
                 return status
         return None
 
@@ -405,8 +420,9 @@ def get_catchable_prayers(
             status = calculate_catching_status(
                 prayer, schedule, current_minutes, travel_minutes, congregation_window
             )
-            if status:
+            if status and status["status"] == "missed_make_up":
                 return [status]
+        return []
 
     return results
 

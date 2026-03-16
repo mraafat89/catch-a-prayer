@@ -741,10 +741,15 @@ function App() {
     );
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Fetch when location or radius changes
+  // Fetch when location or radius changes, and auto-refresh every 5 minutes
   useEffect(() => {
     if (!userLocation) return;
     fetchData(userLocation.latitude, userLocation.longitude);
+    const interval = setInterval(
+      () => fetchData(userLocation.latitude, userLocation.longitude),
+      5 * 60 * 1000
+    );
+    return () => clearInterval(interval);
   }, [userLocation, radiusKm]); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function fetchData(lat: number, lng: number) {
