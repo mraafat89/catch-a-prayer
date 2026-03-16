@@ -630,26 +630,31 @@ The adaptive extractor is a lightweight Claude-powered sub-process that runs eve
 
 ### Design Principles
 
-- **Token budget: ONE Claude call per invocation** — Claude is never called unless ≥5 fresh candidate sites are found.
-- **Pre-filter without Claude** — pages are fetched and checked for prayer keyword density (≥3 hits from a 20-word list). Pages with no prayer content are discarded immediately.
-- **Minimal input to Claude** — HTML is stripped to the single DOM element with the highest prayer keyword density, truncated to 1500 chars per site. Five snippets ≈ 700 total tokens (~$0.0002 per call using claude-haiku).
-- **Domain deduplication** — once a domain is analyzed, it is recorded in `pipeline/adaptive_analyzed.json` and never sent to Claude again.
+- **Zero Claude tokens for HTML/JS** — automated heuristics handle all code-based recovery. Claude is NOT used to generate extraction code.
+- **Claude Vision only for images/PDFs** — that is already Tier 4's responsibility. The adaptive extractor never calls Claude.
+- **Domain cooldown (14 days)** — once a domain is checked, it is not re-fetched for 14 days to avoid wasting HTTP requests.
+- **Re-queue on success** — when a new extractor is generated, ALL tier-5 website mosques are reset to `pending` so subsequent scraping iterations retry them.
 
 ### Flow
 
 ```
-Every 3 scraping iterations:
+Every scraping iteration:
 
-1. Query DB → mosques with (tier_reached=5 AND has_website AND attempts≥2)
-2. Fetch each page (8s timeout, no JS)
-3. Regex pre-screen: ≥3 prayer keywords? → keep, else mark domain as analyzed, skip
-4. Strip HTML → smallest element with most prayer keywords (≤1500 chars)
-5. Deduplicate by domain, cap at 5 snippets
-6. If < 5 fresh samples → exit (no Claude call, 0 tokens used)
-7. ONE Claude haiku call: "write an extract(html) function for these patterns"
-8. exec() + validate: test against full page HTML, accept if ≥1/3 samples return ≥2 valid times
-9. If valid → append to pipeline/custom_extractors.py
-10. Next scraping run: Tier 2c tries new extractor before falling to Tier 3
+1. Query DB → mosques with (tier_reached=5 AND has_website)
+2. Fetch each page (8s timeout, skip domains on cooldown)
+3. Regex pre-screen: ≥3 prayer keywords? → skip if no content
+4. Try 6 automated approaches in order (zero Claude tokens):
+   a. JSON-LD structured data
+   b. Inline JS variables (var prayerTimes={...})
+   c. JS API endpoint detection (fetch/XHR calls → call API directly)
+   d. data-* attribute tables
+   e. <dl><dt>/<dd> definition lists
+   f. Aggressive regex sweep (30+ pattern variants)
+5. If any approach yields ≥3 valid prayer times:
+   → generate Python extractor function from result (no Claude)
+   → append to pipeline/custom_extractors.py
+   → reset ALL tier-5 website mosques to pending
+6. If all fail: no Claude call — PDF/image sites are already handled by Tier 4
 ```
 
 ### Files
@@ -680,18 +685,24 @@ Multiple extractors accumulate over time. Each one covers a distinct CMS/layout 
 
 ## Monitoring
 
-Key metrics to track:
+### Primary Metric — Real Scrape Rate
 
 ```
-scrape_success_rate         = success / total_jobs  (target: >85%)
+real_scrape_rate = mosques_with_tier_2_3_4_result / mosques_with_website
+```
+
+**Target: 100%** (every mosque that has a website should have real scraped prayer data, not a calculated estimate).
+
+The no-website floor (~790 mosques) is irreducible — those can only be improved by finding their websites. For all other mosques, the scraping pipeline + adaptive extractor should eventually reach full coverage.
+
+Secondary metrics:
+
+```
+jobs_done_pct               = success / total_jobs
 tier_distribution           = count by tier_reached (shows pipeline health)
-data_freshness              = % mosques scraped in last 7 days
-coverage_rate               = % mosques with actual scraped iqama (vs estimated)
-islamicfinder_match_rate    = tier1 hits / total
-vision_ai_success_rate      = valid results / images_sent
-validation_failure_rate     = failed validation / total extracted
+stuck_with_website          = tier_5 mosques that have a website (the recovery target)
 adaptive_extractor_count    = number of custom extractors generated so far
-adaptive_domains_analyzed   = domains already sent to Claude (won't be re-sent)
+domains_on_cooldown         = domains recently sent to Claude (14-day cooldown)
 ```
 
 ### Live Monitoring Commands

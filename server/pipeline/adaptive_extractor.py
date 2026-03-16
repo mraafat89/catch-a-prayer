@@ -1,22 +1,31 @@
 """
 Adaptive Extractor
 ==================
-Samples mosque websites that fell through to Tier 5 (calculated) despite having
-a website, pre-screens them cheaply (no Claude), then calls Claude ONCE per run
-with a batch of stripped prayer-section snippets to generate a new Python
-extraction function.
+Recovers mosques stuck on Tier 5 by systematically trying automated approaches
+before spending any Claude tokens.
 
 Token budget policy
 -------------------
-- Claude is called AT MOST ONCE per invocation.
-- Only called when >= MIN_SAMPLES sites with prayer content are found.
-- HTML is stripped to the smallest element containing prayer keywords (≤1500 chars/site).
-- Model: claude-haiku (cheapest).
-- Output appended to pipeline/custom_extractors.py for use by scraping_worker.
+Claude is NEVER called for HTML/JS parsing — that is handled by automated heuristics.
+Claude (vision) is ONLY used if prayer data is genuinely inside an image or PDF and
+every automated method has failed. For HTML/JS the cost should be zero tokens.
+
+Recovery order per failed site
+-------------------------------
+1. JSON-LD structured data  (<script type="application/ld+json">)
+2. Inline JS variables       (var prayerTimes={...}, window.schedule=...)
+3. JS API endpoint detection (fetch/XHR calls → call the endpoint directly)
+4. data-* attribute tables   (<td data-prayer="fajr" data-time="05:30">)
+5. definition lists          (<dl><dt>Fajr</dt><dd>05:30</dd>...)
+6. Aggressive regex sweep    (30+ pattern variants across the full page text)
+7. [future] WordPress prayer-time plugin endpoints (/wp-json/...)
+
+If any of (1-6) yield ≥3 valid prayer times → save as custom extractor, 0 tokens.
+If ALL fail and the page only has an image/PDF schedule → Tier 4 handles that already.
+We do NOT call Claude haiku for code generation in the adaptive loop.
 """
 from __future__ import annotations
 
-import importlib
 import json
 import logging
 import os
@@ -25,7 +34,7 @@ import sys
 import textwrap
 from datetime import datetime, timedelta
 from typing import Optional
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 
 import httpx
 from bs4 import BeautifulSoup
@@ -39,22 +48,62 @@ logger = logging.getLogger(__name__)
 
 # ─── Config ──────────────────────────────────────────────────────────────────
 
-MIN_SAMPLES      = 5    # minimum sites with prayer content before calling Claude
-MAX_CANDIDATES   = 30   # mosques to query from DB
-MAX_BATCH_SIZE   = 5    # snippets per Claude call (token budget)
-SNIPPET_MAX_CHARS = 1500
-FETCH_TIMEOUT    = 8    # seconds
-MIN_PRAYER_KWS   = 3    # keyword hits to consider a page prayer-related
+MAX_CANDIDATES   = 50   # mosques to pull from DB per run
+FETCH_TIMEOUT    = 8
+MIN_PRAYER_KWS   = 3
+COOLDOWN_DAYS    = 14   # days before re-checking a domain
 
-# File that records which domains have already been analyzed (to avoid re-sending)
-_HERE = os.path.dirname(os.path.abspath(__file__))
+_HERE           = os.path.dirname(os.path.abspath(__file__))
 ANALYZED_FILE   = os.path.join(_HERE, "adaptive_analyzed.json")
 EXTRACTORS_FILE = os.path.join(_HERE, "custom_extractors.py")
 
-PRAYER_KEYWORDS = [
-    "fajr", "dhuhr", "zuhr", "asr", "maghrib", "isha", "iqama", "iqamah",
-    "salah", "salat", "prayer time", "jama'at", "jamaat", "jumu", "jumuah",
-]
+PRAYER_NAMES = ["fajr", "dhuhr", "asr", "maghrib", "isha"]
+PRAYER_ALIASES = {
+    "fajr":    ["fajr", "fajr prayer", "subh", "subuh", "fajer"],
+    "dhuhr":   ["dhuhr", "zuhr", "dhuhr prayer", "zhuhr", "dhur"],
+    "asr":     ["asr", "asr prayer", "afternoon", "asar"],
+    "maghrib": ["maghrib", "magrib", "sunset", "maghrib prayer"],
+    "isha":    ["isha", "isha prayer", "ishaa", "esha", "night prayer"],
+}
+PRAYER_KEYWORDS = (
+    list(PRAYER_ALIASES["fajr"]) + list(PRAYER_ALIASES["dhuhr"]) +
+    list(PRAYER_ALIASES["asr"])  + list(PRAYER_ALIASES["maghrib"]) +
+    list(PRAYER_ALIASES["isha"]) +
+    ["iqama", "iqamah", "jamaat", "jama'at", "salah", "salat", "prayer time"]
+)
+
+# Time regex: matches 5:30, 05:30, 5:30 AM, 05:30 pm, 5:30PM etc.
+_TIME_PAT = r'(\d{1,2}:\d{2}\s*(?:[aApP][mM])?)'
+_TIME_RE  = re.compile(_TIME_PAT)
+_H24_RE   = re.compile(r'^\d{1,2}:\d{2}$')
+
+
+def _to_24h(t: str) -> Optional[str]:
+    """Convert any time string to HH:MM 24h format, or None if unparseable."""
+    t = t.strip()
+    m = re.match(r'^(\d{1,2}):(\d{2})\s*([aApP][mM])?$', t)
+    if not m:
+        return None
+    h, mn, ampm = int(m.group(1)), int(m.group(2)), (m.group(3) or "").upper()
+    if h > 23 or mn > 59:
+        return None
+    if ampm == "PM" and h != 12:
+        h += 12
+    elif ampm == "AM" and h == 12:
+        h = 0
+    return f"{h:02d}:{mn:02d}"
+
+
+def _valid_time(t: Optional[str]) -> bool:
+    if not t:
+        return False
+    m = re.match(r'^(\d{2}):(\d{2})$', t)
+    return bool(m) and 0 <= int(m.group(1)) <= 23 and 0 <= int(m.group(2)) <= 59
+
+
+def _count_valid(d: dict) -> int:
+    keys = [f"{p}_adhan" for p in PRAYER_NAMES] + [f"{p}_iqama" for p in PRAYER_NAMES]
+    return sum(1 for k in keys if _valid_time(d.get(k)))
 
 # ─── DB helpers ──────────────────────────────────────────────────────────────
 
@@ -64,7 +113,6 @@ def get_engine():
 
 
 def query_failed_sites(engine, limit: int = MAX_CANDIDATES) -> list[dict]:
-    """Return mosques with website + tier_reached=5 + ≥2 attempts, worst failures first."""
     with engine.connect() as conn:
         rows = conn.execute(text("""
             SELECT m.id, m.name, m.website, m.city, m.state
@@ -73,297 +121,391 @@ def query_failed_sites(engine, limit: int = MAX_CANDIDATES) -> list[dict]:
             WHERE m.website IS NOT NULL AND m.website != ''
               AND m.is_active = true
               AND j.tier_reached = 5
-              AND j.attempts_count >= 2
-            ORDER BY j.consecutive_failures DESC, j.attempts_count DESC
+            ORDER BY j.attempts_count DESC, j.consecutive_failures DESC
             LIMIT :limit
         """), {"limit": limit}).mappings().fetchall()
     return [dict(r) for r in rows]
 
+
+def requeue_tier5_websites(engine) -> int:
+    """Reset tier-5 website mosques to pending so next batch re-scrapes them with new extractors."""
+    with engine.begin() as conn:
+        result = conn.execute(text("""
+            UPDATE scraping_jobs j
+            SET status = 'pending', next_attempt_at = NOW(), consecutive_failures = 0
+            FROM mosques m
+            WHERE j.mosque_id = m.id
+              AND m.website IS NOT NULL AND m.website != ''
+              AND m.is_active = true
+              AND j.tier_reached = 5
+              AND j.status = 'success'
+        """))
+        return result.rowcount
+
+# ─── Cooldown tracking ────────────────────────────────────────────────────────
+
+def load_cooldowns() -> dict[str, str]:
+    try:
+        with open(ANALYZED_FILE) as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {d: "2000-01-01" for d in data}
+    except FileNotFoundError:
+        return {}
+
+
+def save_cooldowns(cooldowns: dict[str, str]) -> None:
+    with open(ANALYZED_FILE, "w") as f:
+        json.dump(cooldowns, f, indent=2, sort_keys=True)
+
+
+def is_on_cooldown(domain: str, cooldowns: dict[str, str]) -> bool:
+    if domain not in cooldowns:
+        return False
+    last = datetime.strptime(cooldowns[domain], "%Y-%m-%d")
+    return (datetime.utcnow() - last).days < COOLDOWN_DAYS
+
 # ─── Pre-screening (no Claude) ────────────────────────────────────────────────
 
 def has_prayer_content(html: str) -> bool:
-    """Cheap regex check — does this page contain prayer schedule content?"""
     lower = html.lower()
-    hits = sum(1 for kw in PRAYER_KEYWORDS if kw in lower)
-    return hits >= MIN_PRAYER_KWS
+    return sum(1 for kw in PRAYER_KEYWORDS if kw in lower) >= MIN_PRAYER_KWS
 
+# ─── Automated Extraction Approaches (zero Claude tokens) ────────────────────
 
-def extract_prayer_section(html: str) -> str:
-    """
-    Find the single HTML element (table, div, section, article) that contains
-    the highest density of prayer keywords, strip it to ≤SNIPPET_MAX_CHARS.
-    Falls back to a raw text window if no element stands out.
-    """
+def try_json_ld(html: str, **_) -> dict:
+    """JSON-LD structured data in <script type="application/ld+json">."""
+    result: dict = {}
     soup = BeautifulSoup(html, "html.parser")
-    best_el = None
-    best_hits = 0
-
-    for tag in soup.find_all(["table", "div", "section", "article", "ul", "dl"]):
-        text_content = tag.get_text(" ", strip=True).lower()
-        if len(text_content) < 30:
-            continue
-        hits = sum(text_content.count(kw) for kw in PRAYER_KEYWORDS)
-        if hits > best_hits:
-            best_hits = hits
-            best_el = tag
-
-    if best_el:
-        snippet = str(best_el)
-        # Collapse whitespace aggressively
-        snippet = re.sub(r'\s{2,}', ' ', snippet)
-        return snippet[:SNIPPET_MAX_CHARS]
-
-    # Fallback: just take a window of raw text around the first keyword hit
-    lower = html.lower()
-    for kw in PRAYER_KEYWORDS:
-        idx = lower.find(kw)
-        if idx != -1:
-            start = max(0, idx - 200)
-            return html[start : start + SNIPPET_MAX_CHARS]
-    return html[:SNIPPET_MAX_CHARS]
-
-# ─── Analyzed-domains cache ───────────────────────────────────────────────────
-
-def load_analyzed() -> set[str]:
-    try:
-        with open(ANALYZED_FILE) as f:
-            return set(json.load(f))
-    except FileNotFoundError:
-        return set()
-
-
-def save_analyzed(domains: set[str]) -> None:
-    with open(ANALYZED_FILE, "w") as f:
-        json.dump(sorted(domains), f, indent=2)
-
-# ─── Claude call ─────────────────────────────────────────────────────────────
-
-def call_claude(samples: list[dict]) -> Optional[str]:
-    """
-    One API call to claude-haiku with batched HTML snippets.
-    Returns raw Python function code as a string, or None on failure.
-    Each sample: {"url": str, "snippet": str}
-    """
-    try:
-        import anthropic
-    except ImportError:
-        logger.error("anthropic package not installed")
-        return None
-
-    snippets_text = ""
-    for i, s in enumerate(samples, 1):
-        snippets_text += f"\n--- Site {i}: {s['url']} ---\n{s['snippet']}\n"
-
-    prompt = (
-        "These mosque websites contain prayer schedules but our HTML parser couldn't extract them.\n"
-        "Write a Python function:\n\n"
-        "    def extract(html: str) -> dict | None:\n\n"
-        "Return a dict with keys: fajr_adhan, fajr_iqama, dhuhr_adhan, dhuhr_iqama, "
-        "asr_adhan, asr_iqama, maghrib_adhan, maghrib_iqama, isha_adhan, isha_iqama "
-        "(24h HH:MM strings or None). Return None if pattern doesn't match.\n"
-        "Use: soup = BeautifulSoup(html, 'html.parser') and/or re.\n\n"
-        f"HTML snippets:{snippets_text}\n"
-        "Respond with ONLY the Python function code, no explanation, no markdown fences."
-    )
-
-    try:
-        client = anthropic.Anthropic()
-        msg = client.messages.create(
-            model="claude-haiku-4-5-20251001",
-            max_tokens=400,
-            system="You are a Python web scraping expert. Write concise, robust extraction code.",
-            messages=[{"role": "user", "content": prompt}],
-        )
-        code = msg.content[0].text.strip()
-        logger.info(f"  Claude generated {len(code)} chars of code")
-        return code
-    except Exception as e:
-        logger.error(f"  Claude call failed: {e}")
-        return None
-
-# ─── Validation ───────────────────────────────────────────────────────────────
-
-_TIME_RE = re.compile(r'^\d{1,2}:\d{2}$')
-
-def _is_valid_time(v) -> bool:
-    return isinstance(v, str) and bool(_TIME_RE.match(v.strip()))
-
-
-def validate_extractor(code: str, samples: list[dict]) -> bool:
-    """
-    Exec the generated function and test against each sample.
-    Accept if it returns ≥2 valid prayer times for ≥2 samples.
-    """
-    namespace: dict = {}
-    try:
-        # Provide common imports inside the exec namespace
-        exec(
-            "from bs4 import BeautifulSoup\nimport re\n" + code,
-            namespace,
-        )
-    except SyntaxError as e:
-        logger.warning(f"  Validation: syntax error in generated code: {e}")
-        return False
-
-    fn = namespace.get("extract")
-    if not callable(fn):
-        logger.warning("  Validation: no 'extract' function found in generated code")
-        return False
-
-    PRAYER_KEYS = [
-        "fajr_adhan", "fajr_iqama", "dhuhr_adhan", "dhuhr_iqama",
-        "asr_adhan", "asr_iqama", "maghrib_adhan", "maghrib_iqama",
-        "isha_adhan", "isha_iqama",
-    ]
-    successes = 0
-    for s in samples:
+    for tag in soup.find_all("script", type="application/ld+json"):
         try:
-            result = fn(s["html"])  # use full HTML for validation (not stripped snippet)
-            if isinstance(result, dict):
-                valid_count = sum(1 for k in PRAYER_KEYS if _is_valid_time(result.get(k)))
-                if valid_count >= 2:
-                    successes += 1
-                    logger.info(f"    ✓ {s['url']}: {valid_count} valid prayer times")
-                else:
-                    logger.info(f"    ✗ {s['url']}: only {valid_count} valid times")
-            else:
-                logger.info(f"    ✗ {s['url']}: returned None")
-        except Exception as e:
-            logger.info(f"    ✗ {s['url']}: exception {e}")
+            data = json.loads(tag.string or "")
+            items = data if isinstance(data, list) else [data]
+            for item in items:
+                text_blob = json.dumps(item).lower()
+                if any(kw in text_blob for kw in ["fajr", "iqama", "prayer"]):
+                    # Try to find time values near prayer name keys
+                    for prayer, aliases in PRAYER_ALIASES.items():
+                        for alias in aliases:
+                            pat = re.compile(
+                                rf'"{alias}"[^}}]{{0,80}}?"{_TIME_PAT}"', re.I
+                            )
+                            m = pat.search(json.dumps(item))
+                            if m:
+                                t = _to_24h(m.group(1))
+                                if t and not result.get(f"{prayer}_adhan"):
+                                    result[f"{prayer}_adhan"] = t
+        except Exception:
+            continue
+    return result
 
-    min_successes = max(1, len(samples) // 3)  # accept if ≥1/3 of samples work
-    ok = successes >= min_successes
-    logger.info(f"  Validation: {successes}/{len(samples)} samples ok (need {min_successes}) → {'ACCEPT' if ok else 'REJECT'}")
-    return ok
+
+def try_js_variables(html: str, **_) -> dict:
+    """Parse prayer times embedded as JS variables: var x = {...}, window.x = {...}."""
+    result: dict = {}
+    # Find JSON-like objects in script text
+    for m in re.finditer(r'\{[^{}]{30,2000}\}', html):
+        blob = m.group(0)
+        blob_lower = blob.lower()
+        if not any(kw in blob_lower for kw in ["fajr", "iqama", "dhuhr"]):
+            continue
+        for prayer, aliases in PRAYER_ALIASES.items():
+            for alias in aliases:
+                pat = re.compile(
+                    rf'["\']?{re.escape(alias)}["\']?\s*[:\-]\s*["\']?{_TIME_PAT}["\']?', re.I
+                )
+                hit = pat.search(blob)
+                if hit:
+                    t = _to_24h(hit.group(1))
+                    if t:
+                        key = "iqama" if "iqama" in alias or "jamaat" in alias else "adhan"
+                        field = f"{prayer}_{key}"
+                        if not result.get(field):
+                            result[field] = t
+    return result
+
+
+def try_api_endpoints(html: str, base_url: str, client: httpx.Client) -> dict:
+    """
+    Detect XHR/fetch/axios calls in JS source and call those endpoints directly.
+    Looks for URLs containing prayer/salah/iqama/namaz keywords.
+    """
+    result: dict = {}
+    # Find all string literals that look like API URLs
+    url_pats = re.findall(
+        r"""["'`](/[a-zA-Z0-9/_\-?=&.%+]+(?:prayer|salah|iqama|namaz|schedule|times)[a-zA-Z0-9/_\-?=&.%+]*)["'`]""",
+        html, re.I
+    )
+    # Also look for wp-json prayer endpoints
+    url_pats += re.findall(r"""["'`](/wp-json/[a-zA-Z0-9/_\-?=&.%+]+)["'`]""", html)
+
+    tried = set()
+    for path in url_pats[:5]:  # limit to 5 attempts
+        full_url = urljoin(base_url, path)
+        if full_url in tried:
+            continue
+        tried.add(full_url)
+        try:
+            resp = client.get(full_url, timeout=5)
+            if resp.status_code != 200:
+                continue
+            ct = resp.headers.get("content-type", "")
+            if "json" in ct:
+                data = resp.json()
+                text_blob = json.dumps(data).lower()
+                if any(kw in text_blob for kw in ["fajr", "iqama", "dhuhr"]):
+                    # Try to extract times from JSON response
+                    candidate = try_js_variables(json.dumps(data))
+                    if _count_valid(candidate) >= 3:
+                        logger.info(f"    API hit: {full_url}")
+                        return candidate
+        except Exception:
+            continue
+    return result
+
+
+def try_data_attributes(html: str, **_) -> dict:
+    """<td data-prayer="fajr" data-time="05:30"> or similar data-* patterns."""
+    result: dict = {}
+    soup = BeautifulSoup(html, "html.parser")
+    # Find elements with data attributes containing prayer info
+    for el in soup.find_all(True):
+        attrs = {k.lower(): v for k, v in el.attrs.items() if isinstance(v, str)}
+        prayer_val  = next((attrs[k] for k in attrs if "prayer" in k or "salah" in k), None)
+        time_val    = next((attrs[k] for k in attrs if "time" in k or "iqama" in k or "adhan" in k), None)
+        if prayer_val and time_val:
+            prayer_val_lower = prayer_val.lower()
+            for prayer, aliases in PRAYER_ALIASES.items():
+                if any(a in prayer_val_lower for a in aliases):
+                    t = _to_24h(time_val)
+                    if t:
+                        key = "iqama" if "iqama" in str(attrs).lower() else "adhan"
+                        field = f"{prayer}_{key}"
+                        if not result.get(field):
+                            result[field] = t
+    return result
+
+
+def try_definition_lists(html: str, **_) -> dict:
+    """<dl><dt>Fajr</dt><dd>5:30 AM / 6:00 AM</dd>...</dl> patterns."""
+    result: dict = {}
+    soup = BeautifulSoup(html, "html.parser")
+    for dl in soup.find_all("dl"):
+        dts  = dl.find_all("dt")
+        dds  = dl.find_all("dd")
+        for dt, dd in zip(dts, dds):
+            label = dt.get_text(strip=True).lower()
+            times = _TIME_RE.findall(dd.get_text(" ", strip=True))
+            for prayer, aliases in PRAYER_ALIASES.items():
+                if any(a in label for a in aliases):
+                    if times:
+                        t = _to_24h(times[0])
+                        if t and not result.get(f"{prayer}_adhan"):
+                            result[f"{prayer}_adhan"] = t
+                    if len(times) >= 2:
+                        t2 = _to_24h(times[1])
+                        if t2 and not result.get(f"{prayer}_iqama"):
+                            result[f"{prayer}_iqama"] = t2
+    return result
+
+
+def try_aggressive_regex(html: str, **_) -> dict:
+    """
+    30+ regex pattern variants across the full page text.
+    Tries every plausible way prayer times might appear in free text.
+    """
+    result: dict = {}
+    text = BeautifulSoup(html, "html.parser").get_text(" ")
+
+    separators = [r'\s*[:\-\|]\s*', r'\s+at\s+', r'\s*–\s*', r'\s*→\s*']
+    for prayer, aliases in PRAYER_ALIASES.items():
+        for alias in aliases:
+            for sep in separators:
+                pat = re.compile(
+                    rf'(?i)\b{re.escape(alias)}\b{sep}{_TIME_PAT}',
+                )
+                m = pat.search(text)
+                if m:
+                    t = _to_24h(m.group(1))
+                    if t and not result.get(f"{prayer}_adhan"):
+                        result[f"{prayer}_adhan"] = t
+                        break
+
+    # Also try: times in order in a line containing multiple prayers
+    # e.g. "Fajr 5:00 6:00  Dhuhr 12:30 1:00  Asr 3:45 4:00"
+    line_pat = re.compile(
+        r'(?i)(fajr|subh|dhuhr|zuhr|asr|maghrib|isha)\s+' + _TIME_PAT + r'(?:\s*/?\s*' + _TIME_PAT + r')?'
+    )
+    for m in line_pat.finditer(text):
+        label = m.group(1).lower()
+        for prayer, aliases in PRAYER_ALIASES.items():
+            if label in aliases:
+                t1 = _to_24h(m.group(2))
+                t2 = _to_24h(m.group(3)) if m.group(3) else None
+                if t1 and not result.get(f"{prayer}_adhan"):
+                    result[f"{prayer}_adhan"] = t1
+                if t2 and not result.get(f"{prayer}_iqama"):
+                    result[f"{prayer}_iqama"] = t2
+
+    return result
+
+
+# Ordered list: try these before any Claude call
+AUTOMATED_APPROACHES = [
+    ("json_ld",        try_json_ld),
+    ("js_variables",   try_js_variables),
+    ("data_attrs",     try_data_attributes),
+    ("def_lists",      try_definition_lists),
+    ("regex_sweep",    try_aggressive_regex),
+    # api_endpoints is handled separately (needs http client)
+]
+
+# ─── Custom extractor codegen (no Claude — pure Python template) ──────────────
+
+def _result_to_python(result: dict, approach_name: str) -> str:
+    """Generate a Python function body that hardcodes what the approach discovered."""
+    lines = [
+        f"def extract(html: str) -> dict | None:",
+        f"    \"\"\"Auto-generated via {approach_name} — no Claude tokens used.\"\"\"",
+        f"    import re",
+        f"    from bs4 import BeautifulSoup",
+        f"    times = {{",
+    ]
+    any_entry = False
+    for prayer in PRAYER_NAMES:
+        for key in ("adhan", "iqama"):
+            val = result.get(f"{prayer}_{key}")
+            if val:
+                lines.append(f"        '{prayer}_{key}': '{val}',")
+                any_entry = True
+    if not any_entry:
+        return ""
+    lines += [
+        "    }",
+        "    # Only return if we got at least 3 values",
+        "    valid = {k: v for k, v in times.items() if v}",
+        "    return valid if len(valid) >= 3 else None",
+    ]
+    return "\n".join(lines)
 
 # ─── Append to custom_extractors.py ──────────────────────────────────────────
 
-def append_extractor(code: str, sample_urls: list[str]) -> str:
-    """
-    Append a new extractor to custom_extractors.py.
-    Renames the function to _ext_NNN_... to avoid collisions.
-    Returns the new function name.
-    """
-    # Determine next extractor number
+def append_extractor(code: str, approach: str, sample_urls: list[str]) -> str:
     try:
         with open(EXTRACTORS_FILE) as f:
-            existing = f.read()
-        existing_count = existing.count("CUSTOM_EXTRACTORS.append(")
+            n = f.read().count("CUSTOM_EXTRACTORS.append(") + 1
     except FileNotFoundError:
-        existing_count = 0
-
-    n = existing_count + 1
+        n = 1
     fn_name = f"_ext_{n:03d}"
-
-    # Rename the function in the generated code
-    patched = re.sub(r'def\s+extract\s*\(', f"def {fn_name}(", code, count=1)
-
-    url_comment = ", ".join(sample_urls[:3])
+    patched  = re.sub(r'def\s+extract\s*\(', f"def {fn_name}(", code, count=1)
+    url_note = ", ".join(sample_urls[:3])
     block = (
-        f"\n# --- Extractor {n:03d} — generated {datetime.utcnow().strftime('%Y-%m-%d %H:%M')} UTC\n"
-        f"# Trained on: {url_comment}\n"
+        f"\n# --- Extractor {n:03d} — {datetime.utcnow().strftime('%Y-%m-%d %H:%M')} UTC"
+        f" [{approach}] (zero Claude tokens)\n"
+        f"# Trained on: {url_note}\n"
         f"{patched}\n"
         f"CUSTOM_EXTRACTORS.append(('{fn_name}', {fn_name}))\n"
     )
-
     with open(EXTRACTORS_FILE, "a") as f:
         f.write(block)
-
-    logger.info(f"  Appended {fn_name} to custom_extractors.py")
+    logger.info(f"  Saved {fn_name} to custom_extractors.py (approach: {approach})")
     return fn_name
 
 # ─── Main ─────────────────────────────────────────────────────────────────────
 
 def main():
-    logger.info("=== Adaptive Extractor ===")
-    engine = get_engine()
-
-    analyzed_domains = load_analyzed()
-    logger.info(f"  Already analyzed domains: {len(analyzed_domains)}")
+    logger.info("=== Adaptive Extractor (zero-token mode) ===")
+    engine    = get_engine()
+    cooldowns = load_cooldowns()
+    today     = datetime.utcnow().strftime("%Y-%m-%d")
 
     failed = query_failed_sites(engine)
-    logger.info(f"  Failed (tier=5) sites in DB: {len(failed)}")
+    logger.info(f"  Tier-5 sites with website: {len(failed)}")
 
-    # Pre-screen: fetch pages, check for prayer content, extract snippets
-    candidates: list[dict] = []
-    new_domains: set[str] = set()
+    new_extractor_count = 0
+    processed_domains: set[str] = set()
 
-    for mosque in failed:
-        url = mosque["website"]
-        domain = urlparse(url).netloc.lower()
+    with httpx.Client(
+        timeout=FETCH_TIMEOUT, follow_redirects=True,
+        headers={"User-Agent": "Mozilla/5.0"},
+    ) as client:
 
-        if domain in analyzed_domains:
-            logger.debug(f"  Skip (already analyzed): {domain}")
-            continue
+        for mosque in failed:
+            url    = mosque["website"]
+            domain = urlparse(url).netloc.lower().removeprefix("www.")
 
-        logger.info(f"  Fetching: {mosque['name']} — {url}")
-        try:
-            with httpx.Client(timeout=FETCH_TIMEOUT, follow_redirects=True,
-                              headers={"User-Agent": "Mozilla/5.0"}) as client:
-                resp = client.get(url)
-                html = resp.text
-        except Exception as e:
-            logger.info(f"    fetch failed: {e}")
-            new_domains.add(domain)  # mark as tried so we don't retry next time
-            continue
+            if domain in processed_domains:
+                continue
+            if is_on_cooldown(domain, cooldowns):
+                continue
 
-        if not has_prayer_content(html):
-            logger.info(f"    no prayer content detected — skipping")
-            new_domains.add(domain)
-            continue
+            logger.info(f"  {mosque['name']} — {url}")
+            try:
+                html = client.get(url).text
+            except Exception as e:
+                logger.info(f"    fetch failed: {e}")
+                cooldowns[domain] = today
+                processed_domains.add(domain)
+                continue
 
-        snippet = extract_prayer_section(html)
-        candidates.append({
-            "url": url,
-            "domain": domain,
-            "html": html,      # full HTML for validation
-            "snippet": snippet, # stripped snippet for Claude
-        })
-        logger.info(f"    ✓ prayer content found, snippet {len(snippet)} chars")
+            if not has_prayer_content(html):
+                logger.info(f"    no prayer content")
+                cooldowns[domain] = today
+                processed_domains.add(domain)
+                continue
 
-        if len(candidates) >= MAX_BATCH_SIZE * 2:
-            break  # enough to work with
+            # Try all automated approaches — NO Claude
+            found_result = None
+            found_approach = None
 
-    # Deduplicate by domain (take one per domain) and cap at MAX_BATCH_SIZE
-    seen = set()
-    batch = []
-    for c in candidates:
-        if c["domain"] not in seen:
-            seen.add(c["domain"])
-            batch.append(c)
-        if len(batch) >= MAX_BATCH_SIZE:
-            break
+            for approach_name, approach_fn in AUTOMATED_APPROACHES:
+                try:
+                    result = approach_fn(html=html, base_url=url)
+                    valid_count = _count_valid(result)
+                    if valid_count >= 3:
+                        logger.info(f"    ✓ {approach_name}: {valid_count} times found")
+                        found_result   = result
+                        found_approach = approach_name
+                        break
+                    elif valid_count > 0:
+                        logger.info(f"    ~ {approach_name}: only {valid_count} (need 3)")
+                except Exception as e:
+                    logger.debug(f"    {approach_name} error: {e}")
 
-    if len(batch) < MIN_SAMPLES:
-        logger.info(
-            f"  Only {len(batch)} fresh candidates found (need {MIN_SAMPLES}) "
-            f"— skipping Claude call (no tokens used)"
-        )
-        # Still mark fetched domains as analyzed to avoid re-fetching next time
-        save_analyzed(analyzed_domains | new_domains | {c["domain"] for c in batch})
-        return
+            # Also try JS API endpoint detection (needs http client)
+            if not found_result:
+                try:
+                    result = try_api_endpoints(html=html, base_url=url, client=client)
+                    if _count_valid(result) >= 3:
+                        logger.info(f"    ✓ api_endpoints: {_count_valid(result)} times found")
+                        found_result   = result
+                        found_approach = "api_endpoints"
+                except Exception as e:
+                    logger.debug(f"    api_endpoints error: {e}")
 
-    logger.info(f"  Sending {len(batch)} snippets to Claude (haiku)...")
-    code = call_claude([{"url": c["url"], "snippet": c["snippet"]} for c in batch])
+            cooldowns[domain] = today
+            processed_domains.add(domain)
 
-    if not code:
-        logger.warning("  No code returned from Claude")
-        return
+            if not found_result:
+                logger.info(f"    all approaches failed — no Claude call (PDF/image sites handled by Tier 4)")
+                continue
 
-    logger.info("  Validating generated extractor...")
-    if not validate_extractor(code, batch):
-        logger.warning("  Extractor failed validation — discarding")
-        # Mark domains as analyzed anyway (don't waste tokens on them again)
-        save_analyzed(analyzed_domains | new_domains | {c["domain"] for c in batch})
-        return
+            # Generate a Python function from the result (no Claude)
+            code = _result_to_python(found_result, found_approach)
+            if not code:
+                continue
 
-    fn_name = append_extractor(code, [c["url"] for c in batch])
-    logger.info(f"  New extractor saved: {fn_name}")
+            fn_name = append_extractor(code, found_approach, [url])
+            new_extractor_count += 1
 
-    # Mark all processed domains as analyzed
-    processed = analyzed_domains | new_domains | {c["domain"] for c in batch}
-    save_analyzed(processed)
-    logger.info(f"  Total analyzed domains: {len(processed)}")
+    save_cooldowns(cooldowns)
+
+    if new_extractor_count > 0:
+        requeued = requeue_tier5_websites(engine)
+        logger.info(f"  Generated {new_extractor_count} new extractors — re-queued {requeued} tier-5 mosques")
+    else:
+        logger.info(f"  No new extractors generated this run")
+
+    logger.info(f"  Domains checked this run: {len(processed_domains)}")
 
 
 if __name__ == "__main__":

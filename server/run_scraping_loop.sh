@@ -13,7 +13,7 @@ cd "$(dirname "$0")"
 
 BATCH=${1:-25}
 PYTHON=python3
-ADAPTIVE_EVERY=3   # run adaptive extractor once every N iterations
+ADAPTIVE_EVERY=1   # run adaptive extractor every iteration
 
 # Log directory
 mkdir -p logs

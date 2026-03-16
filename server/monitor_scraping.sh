@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# monitor_scraping.sh — Live view of the scraping loop.
+# monitor_scraping.sh — Show current scraping metrics.
 #
-# Usage (run in a separate terminal while run_scraping_loop.sh is running):
-#   ./monitor_scraping.sh          # tail the live log
-#   ./monitor_scraping.sh metrics  # print current DB metrics once and exit
-#   ./monitor_scraping.sh watch    # watch metrics refresh every 30s (no log)
+# Usage:
+#   ./monitor_scraping.sh          — print metrics once (default)
+#   ./monitor_scraping.sh watch    — auto-refresh every 30s
+#   ./monitor_scraping.sh tail     — tail the live scraping log
 
 set -euo pipefail
 cd "$(dirname "$0")"
@@ -14,78 +14,103 @@ LOG_FILE="logs/scraping.log"
 
 print_metrics_now() {
     $PYTHON - <<'PYEOF'
-import sys, os
+import sys, os, json
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from sqlalchemy import create_engine, text
 from app.config import get_settings
+from datetime import datetime
 
-settings = get_settings()
-engine = create_engine(settings.database_url.replace("+asyncpg", ""), echo=False)
+engine = create_engine(get_settings().database_url.replace("+asyncpg",""), echo=False)
 
-with engine.connect() as conn:
-    total      = conn.execute(text("SELECT COUNT(*) FROM mosques WHERE is_active=true")).scalar()
-    with_sites = conn.execute(text("SELECT COUNT(*) FROM mosques WHERE website IS NOT NULL AND website != '' AND is_active=true")).scalar()
+with engine.connect() as c:
+    total      = c.execute(text("SELECT COUNT(*) FROM mosques WHERE is_active=true")).scalar()
+    with_web   = c.execute(text("SELECT COUNT(*) FROM mosques WHERE website IS NOT NULL AND website!='' AND is_active=true")).scalar()
+    no_web     = total - with_web
 
-    statuses = dict(conn.execute(text("SELECT status, COUNT(*) FROM scraping_jobs GROUP BY status")).fetchall())
-    success  = statuses.get('success', 0)
-    pending  = statuses.get('pending', 0)
-    total_jobs = success + pending
-    pct_done = 100 * success / total_jobs if total_jobs else 0
+    # ── Scraping jobs progress ──
+    done       = c.execute(text("SELECT COUNT(*) FROM scraping_jobs WHERE status='success'")).scalar()
+    pending    = c.execute(text("SELECT COUNT(*) FROM scraping_jobs WHERE status='pending'")).scalar()
+    total_jobs = done + pending
 
-    tiers = dict(conn.execute(text(
-        "SELECT tier_reached, COUNT(*) FROM scraping_jobs WHERE status='success' GROUP BY tier_reached ORDER BY tier_reached"
+    # ── Tier breakdown (success jobs) ──
+    tiers = dict(c.execute(text(
+        "SELECT tier_reached, COUNT(*) FROM scraping_jobs WHERE status='success' GROUP BY 1 ORDER BY 1"
     )).fetchall())
 
-    sources = dict(conn.execute(text(
-        "SELECT fajr_iqama_source, COUNT(DISTINCT mosque_id) FROM prayer_schedules GROUP BY fajr_iqama_source ORDER BY COUNT(DISTINCT mosque_id) DESC"
-    )).fetchall())
+    # ── Real data: mosques with website that reached tier 2/3/4 ──
+    real_scraped = c.execute(text("""
+        SELECT COUNT(*) FROM mosques m JOIN scraping_jobs j ON j.mosque_id=m.id
+        WHERE m.website IS NOT NULL AND m.website!='' AND m.is_active=true
+          AND j.tier_reached IN (2,3,4) AND j.status='success'
+    """)).scalar()
 
-    real_iqama  = sources.get('mosque_website_html', 0) + sources.get('mosque_website_js', 0)
-    custom_ext  = sources.get('mosque_website_html', 0)  # Tier 2c results also appear as html
-    total_sched = sum(sources.values())
-    pct_real    = 100 * real_iqama / total_sched if total_sched else 0
+    # ── Stuck: website + tier 5 ──
+    stuck = c.execute(text("""
+        SELECT COUNT(*) FROM mosques m JOIN scraping_jobs j ON j.mosque_id=m.id
+        WHERE m.website IS NOT NULL AND m.website!='' AND m.is_active=true
+          AND j.tier_reached=5
+    """)).scalar()
 
-    # Count custom extractor hits (Tier 2c logged source = mosque_website_html but tier=2)
-    tier2c_hits = conn.execute(text(
-        "SELECT COUNT(*) FROM scraping_jobs WHERE tier_reached=2 AND status='success'"
-    )).scalar()
+    # ── Adaptive extractor stats ──
+    base = os.path.dirname(os.path.abspath(__file__))
+    analyzed_file   = os.path.join(base, "pipeline", "adaptive_analyzed.json")
+    extractors_file = os.path.join(base, "pipeline", "custom_extractors.py")
 
-    # Adaptive extractor stats
-    import os, json
-    analyzed_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pipeline", "adaptive_analyzed.json")
     analyzed_count = 0
+    cooldown_count = 0
     if os.path.exists(analyzed_file):
         with open(analyzed_file) as f:
-            analyzed_count = len(json.load(f))
+            data = json.load(f)
+        analyzed_count = len(data) if isinstance(data, dict) else len(data)
+        cooldown_count = analyzed_count  # all entries are cooldown entries
 
-    extractors_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pipeline", "custom_extractors.py")
     extractor_count = 0
     if os.path.exists(extractors_file):
         with open(extractors_file) as f:
             extractor_count = f.read().count("CUSTOM_EXTRACTORS.append(")
 
-    from datetime import datetime
-    print(f"\n{'='*50}")
-    print(f"  SCRAPING STATUS  —  {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    print(f"{'='*50}")
-    print(f"  Mosques:   {total} total  ({with_sites} with websites)")
-    print(f"  Progress:  {success}/{total_jobs} done  ({pct_done:.1f}%)   {pending} pending")
+    pct_done   = 100 * done / total_jobs if total_jobs else 0
+    pct_real   = 100 * real_scraped / with_web if with_web else 0
+    pct_stuck  = 100 * stuck / with_web if with_web else 0
+    remaining  = with_web - real_scraped
+
+    print(f"\n{'='*54}")
+    print(f"  SCRAPING METRICS  —  {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"{'='*54}")
     print()
-    print(f"  Tier breakdown:")
-    tier_labels = {1: 'IslamicFinder/Aladhan', 2: 'HTML / custom extractor', 3: 'JS render', 4: 'Vision/PDF', 5: 'calculated'}
+
+    # Primary metric — the number we're optimizing for
+    bar_filled = int(pct_real / 2)
+    bar = '█' * bar_filled + '░' * (50 - bar_filled)
+    print(f"  🎯 REAL SCRAPE RATE (% of mosques with website)")
+    print(f"     {bar}")
+    print(f"     {real_scraped} / {with_web} mosques  =  {pct_real:.1f}%")
+    print(f"     Target: 100% — {remaining} still to recover")
+    print()
+
+    print(f"  Mosque breakdown:")
+    print(f"    Total mosques:           {total}")
+    print(f"    With website:            {with_web}  ← scraping target")
+    print(f"    No website (floor):      {no_web}  (can't scrape without URL)")
+    print()
+
+    print(f"  Jobs progress:  {done}/{total_jobs}  ({pct_done:.1f}% done, {pending} pending)")
+    print()
+
+    print(f"  Tier breakdown  (website mosques):")
+    tier_labels = {1:'IslamicFinder/Aladhan', 2:'HTML / custom extractor',
+                   3:'JS render', 4:'Vision/PDF', 5:'calculated (stuck)'}
     for t, cnt in sorted(tiers.items()):
-        print(f"    Tier {t}  {tier_labels.get(t, f'tier{t}'):<28} {cnt:>5}")
+        marker = " ✓" if t in (2,3,4) else " ✗"
+        pct = 100*cnt/with_web if with_web else 0
+        print(f"    Tier {t}  {tier_labels.get(t,''):<28} {cnt:>5}  ({pct:.1f}%){marker}")
     print()
-    print(f"  Iqama sources  ({total_sched} mosques with schedules):")
-    for src, cnt in sources.items():
-        marker = " ✓" if src in ('mosque_website_html', 'mosque_website_js') else ""
-        print(f"    {src:<32} {cnt:>5}{marker}")
-    print(f"  → Real data: {real_iqama} mosques  ({pct_real:.1f}%)")
-    print()
+
     print(f"  Adaptive extractor:")
     print(f"    Custom extractors generated:  {extractor_count}")
-    print(f"    Domains analyzed:             {analyzed_count}")
-    print(f"{'='*50}\n")
+    print(f"    Domains sent to Claude:       {cooldown_count}")
+    print(f"    Mosques still stuck (T5+web): {stuck}  ({pct_stuck:.1f}% of websites)")
+    print(f"{'='*54}\n")
 PYEOF
 }
 
@@ -93,11 +118,9 @@ MODE=${1:-metrics}
 
 case "$MODE" in
     metrics|"")
-        # Default: print current metrics once and exit
         print_metrics_now
         ;;
     watch)
-        # Auto-refresh metrics every 30s
         while true; do
             clear
             print_metrics_now
@@ -105,19 +128,15 @@ case "$MODE" in
         done
         ;;
     tail)
-        # Tail the live scraping log
         echo "Tailing $LOG_FILE  (Ctrl-C to stop)"
-        echo "Tip: run './monitor_scraping.sh watch' in another terminal for live metrics."
+        echo "Run './monitor_scraping.sh watch' for live metrics."
         if [ ! -f "$LOG_FILE" ]; then
-            echo "Log file not found yet — waiting for run_scraping_loop.sh to start..."
+            echo "Waiting for log file..."
             until [ -f "$LOG_FILE" ]; do sleep 1; done
         fi
         tail -f "$LOG_FILE"
         ;;
     *)
         echo "Usage: $0 [metrics|watch|tail]"
-        echo "  metrics  — print current DB metrics once (default)"
-        echo "  watch    — refresh metrics every 30s"
-        echo "  tail     — follow the live scraping log"
         ;;
 esac
