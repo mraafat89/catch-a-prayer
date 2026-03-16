@@ -74,6 +74,18 @@ const WEBSITE_SOURCES = new Set([
   'static_html', 'playwright_html', 'vision_ai',
 ]);
 
+const IS_IOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
+
+function buildGoogleMapsUrl(points: Array<[number, number]>): string {
+  return 'https://www.google.com/maps/dir/' + points.map(([lat, lng]) => `${lat},${lng}`).join('/');
+}
+
+function buildAppleMapsUrl(points: Array<[number, number]>): string {
+  const [origin, ...rest] = points;
+  const destPoints = rest.map(([lat, lng]) => `daddr=${lat},${lng}`).join('&');
+  return `https://maps.apple.com/?saddr=${origin[0]},${origin[1]}&${destPoints}&dirflg=d`;
+}
+
 function haversineKm(lat1: number, lng1: number, lat2: number, lng2: number): number {
   const R = 6371;
   const dLat = (lat2 - lat1) * Math.PI / 180;
@@ -1506,7 +1518,11 @@ function TravelItineraryCard({ itinerary, index }: { itinerary: TripItinerary; i
   const setSelectedMosqueId = useStore((s) => s.setSelectedMosqueId);
   const setMapCollapsed     = useStore((s) => s.setMapCollapsed);
   const setMapFocusCoords   = useStore((s) => s.setMapFocusCoords);
+  const travelOrigin        = useStore((s) => s.travelOrigin);
+  const travelDestination   = useStore((s) => s.travelDestination);
+  const userLocation        = useStore((s) => s.userLocation);
   const [expanded, setExpanded] = useState(true);
+  const [copied, setCopied] = useState(false);
 
   const optionIcons: Record<string, string> = {
     pray_before:    '📍',
@@ -1580,6 +1596,81 @@ function TravelItineraryCard({ itinerary, index }: { itinerary: TripItinerary; i
               </div>
             );
           })}
+
+          {/* Open in Maps — builds multi-stop route */}
+          {(() => {
+            const originLat = travelOrigin?.lat ?? userLocation?.latitude;
+            const originLng = travelOrigin?.lng ?? userLocation?.longitude;
+            const destLat   = travelDestination?.lat;
+            const destLng   = travelDestination?.lng;
+            if (!originLat || !originLng || !destLat || !destLng) return null;
+
+            // Collect all mosque stops sorted by position in trip, deduplicated by mosque_id
+            const seenIds = new Set<string>();
+            const waystops = itinerary.pair_choices
+              .flatMap((pc: PairChoice) => pc.option.stops)
+              .sort((a: TravelStop, b: TravelStop) => a.minutes_into_trip - b.minutes_into_trip)
+              .filter((s: TravelStop) => {
+                if (seenIds.has(s.mosque_id)) return false;
+                seenIds.add(s.mosque_id);
+                return true;
+              });
+
+            const points: Array<[number, number]> = [
+              [originLat, originLng],
+              ...waystops.map((s: TravelStop) => [s.mosque_lat, s.mosque_lng] as [number, number]),
+              [destLat, destLng],
+            ];
+
+            const googleUrl = buildGoogleMapsUrl(points);
+            const appleUrl  = buildAppleMapsUrl(points);
+
+            const shareTitle = `Prayer route — Option ${index + 1}`;
+            const shareText  = itinerary.summary;
+
+            async function handleShare() {
+              if (navigator.share) {
+                try {
+                  await navigator.share({ title: shareTitle, text: shareText, url: googleUrl });
+                  return;
+                } catch { /* user cancelled */ }
+              }
+              // Fallback: copy to clipboard
+              try {
+                await navigator.clipboard.writeText(googleUrl);
+                setCopied(true);
+                setTimeout(() => setCopied(false), 2500);
+              } catch {
+                window.open(googleUrl, '_blank');
+              }
+            }
+
+            return (
+              <div className="flex gap-2 pt-2 border-t border-gray-100">
+                <button
+                  onClick={() => window.open(googleUrl, '_blank')}
+                  className="flex-1 flex items-center justify-center gap-1.5 text-xs font-semibold text-white bg-teal-600 hover:bg-teal-700 rounded-lg py-2 transition-colors"
+                >
+                  🗺 Google Maps
+                </button>
+                {IS_IOS && (
+                  <button
+                    onClick={() => window.open(appleUrl, '_blank')}
+                    className="flex-1 flex items-center justify-center gap-1.5 text-xs font-semibold text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-lg py-2 transition-colors"
+                  >
+                    🍎 Apple Maps
+                  </button>
+                )}
+                <button
+                  onClick={handleShare}
+                  className="flex items-center justify-center gap-1 text-xs font-semibold text-gray-600 bg-gray-100 hover:bg-gray-200 rounded-lg px-3 py-2 transition-colors"
+                  title="Share route link"
+                >
+                  {copied ? '✓ Copied' : '📤'}
+                </button>
+              </div>
+            );
+          })()}
         </div>
       )}
     </div>

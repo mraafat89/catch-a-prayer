@@ -783,6 +783,18 @@ Key rules:
 - **Ta'kheer**: feasible from any point until the second prayer's period ends — the first prayer is NOT missed
 - Both use `travel_combinations` from `/api/nearby` when `travel_mode=true`
 
+### Share Route (Open in Maps)
+
+Each trip itinerary card has an **"Open in Maps"** button at the bottom that builds a multi-stop navigation URL and opens it in Google Maps or Apple Maps.
+
+**URL structure:**
+- Google Maps: `https://www.google.com/maps/dir/{origin}/{stop1}/{stop2}/{destination}` — supports unlimited waypoints, opens turn-by-turn navigation in the app
+- Apple Maps: `https://maps.apple.com/?saddr={origin}&daddr={stop1}&daddr={stop2}&daddr={destination}` — shown as alternative on iOS devices
+
+Stops are collected from the itinerary's `pair_choices[].option.stops`, sorted by `minutes_into_trip`, deduplicated by mosque ID. Origin is `travelOrigin` if set, otherwise the user's GPS location. Destination is `travelDestination`.
+
+The button is shown in every expanded itinerary card. On devices with the Web Share API (`navigator.share`), tapping "Share Route" invokes the native share sheet so the user can send the link to a friend or save it.
+
 ### Trip Planner Form
 
 Always shown at the top of the list. When no trip is active it renders as a small collapsed row:
