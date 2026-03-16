@@ -131,13 +131,13 @@ export interface SpotVerifyRequest {
 }
 
 // Status → display mapping
-export const STATUS_CONFIG: Record<string, { dot: string; bg: string; text: string; border: string }> = {
-  can_catch_with_imam:          { dot: '🟢', bg: 'bg-green-50',  text: 'text-green-800',  border: 'border-green-200' },
-  can_catch_with_imam_in_progress: { dot: '🟡', bg: 'bg-yellow-50', text: 'text-yellow-800', border: 'border-yellow-200' },
-  can_pray_solo_at_mosque:      { dot: '🔵', bg: 'bg-blue-50',   text: 'text-blue-800',   border: 'border-blue-200' },
-  pray_at_nearby_location:      { dot: '🟠', bg: 'bg-orange-50', text: 'text-orange-800', border: 'border-orange-200' },
-  missed_make_up:               { dot: '⚪', bg: 'bg-gray-50',   text: 'text-gray-600',   border: 'border-gray-200' },
-  upcoming:                     { dot: '⚪', bg: 'bg-gray-50',   text: 'text-gray-600',   border: 'border-gray-200' },
+export const STATUS_CONFIG: Record<string, { dot: string; icon: string; bg: string; text: string; border: string }> = {
+  can_catch_with_imam:             { dot: '🟢', icon: '/icons/icon_pray_imam.png',   bg: 'bg-green-50',  text: 'text-green-800',  border: 'border-green-200' },
+  can_catch_with_imam_in_progress: { dot: '🟡', icon: '/icons/icon_pray_imam.png',   bg: 'bg-yellow-50', text: 'text-yellow-800', border: 'border-yellow-200' },
+  can_pray_solo_at_mosque:         { dot: '🔵', icon: '/icons/icon_pray_solo.png',   bg: 'bg-blue-50',   text: 'text-blue-800',   border: 'border-blue-200' },
+  pray_at_nearby_location:         { dot: '🟠', icon: '/icons/icon_pray_nearby.png', bg: 'bg-orange-50', text: 'text-orange-800', border: 'border-orange-200' },
+  missed_make_up:                  { dot: '⚪', icon: '/icons/icon_mosque_nav.png',   bg: 'bg-gray-50',   text: 'text-gray-600',   border: 'border-gray-200' },
+  upcoming:                        { dot: '⚪', icon: '/icons/icon_mosque_nav.png',   bg: 'bg-gray-50',   text: 'text-gray-600',   border: 'border-gray-200' },
 };
 
 export const SPOT_TYPE_LABELS: Record<string, string> = {

@@ -107,7 +107,7 @@ function MosqueCard({ mosque }: { mosque: Mosque }) {
             {mosque.travel_time_minutes ? ` · ${mosque.travel_time_minutes} min drive` : ''}
           </p>
         </div>
-        <span className="text-lg flex-shrink-0">{cfg.dot}</span>
+        <img src={cfg.icon} alt="" className="w-10 h-10 flex-shrink-0 object-contain" />
       </div>
 
       <div className="mt-2 space-y-1">
@@ -178,7 +178,10 @@ function MosqueDetailSheet({ mosque }: { mosque: Mosque }) {
 
       {nc && (
         <div className={`rounded-lg border px-3 py-2 mb-4 ${cfg.bg} ${cfg.border}`}>
-          <p className={`text-sm font-semibold ${cfg.text}`}>{cfg.dot} {nc.status_label}</p>
+          <div className={`flex items-center gap-2 text-sm font-semibold ${cfg.text}`}>
+            <img src={cfg.icon} alt="" className="w-7 h-7 object-contain flex-shrink-0" />
+            {nc.status_label}
+          </div>
           <p className={`text-sm mt-0.5 ${cfg.text}`}>{nc.message}</p>
           {nc.iqama_time && (
             <p className="text-xs text-gray-500 mt-1">Iqama: {fmtTime(nc.iqama_time)}</p>
@@ -456,7 +459,7 @@ function SpotSubmitSheet() {
   if (done) {
     return (
       <div className="text-center py-6">
-        <div className="text-4xl mb-3">🕌</div>
+        <img src="/icons/icon_mosque_nav.png" alt="" className="w-16 h-16 object-contain mx-auto mb-3" />
         <h3 className="text-lg font-bold text-gray-900 mb-2">Spot Submitted!</h3>
         <p className="text-sm text-gray-600 mb-4">
           Your spot is pending community verification. Once 3 users confirm it, it will become active.
@@ -724,7 +727,10 @@ function PrayedBanner({ mosques }: { mosques: Mosque[] }) {
                 : 'bg-white border-gray-200 text-gray-700'
             }`}
           >
-            <span>{prayed ? `✓ Already prayed ${prayer.charAt(0).toUpperCase() + prayer.slice(1)} today` : `${prayer.charAt(0).toUpperCase() + prayer.slice(1)} time — did you already pray?`}</span>
+            <span className="flex items-center gap-1.5">
+              {prayed && <img src="/icons/icon_prayed.png" alt="" className="w-5 h-5 object-contain" />}
+              {prayed ? `Already prayed ${prayer.charAt(0).toUpperCase() + prayer.slice(1)} today` : `${prayer.charAt(0).toUpperCase() + prayer.slice(1)} time — did you already pray?`}
+            </span>
             <button
               onClick={() => togglePrayed(prayer)}
               className={`ml-3 text-xs font-medium px-2 py-1 rounded-full border transition-colors ${
@@ -850,22 +856,24 @@ function App() {
   return (
     <div className="min-h-screen bg-gray-100 flex flex-col">
       {/* Header */}
-      <header className="bg-white border-b border-gray-200 px-4 py-3 flex items-center justify-between z-10">
-        <div>
-          <h1 className="text-lg font-bold text-gray-900">🕌 Catch a Prayer</h1>
-          {topMosque && topMosque.next_catchable && (
-            <p className="text-xs text-green-700 font-medium leading-tight">{topMosque.next_catchable.message}</p>
-          )}
-          {!topMosque && userLocation && !mosquesLoading && (
-            <p className="text-xs text-gray-500 leading-tight">{mosques.length} mosques nearby</p>
-          )}
+      <header className="bg-white border-b border-gray-200 px-4 py-2 flex items-center justify-between z-10">
+        <div className="flex items-center gap-2 min-w-0">
+          <img src="/icons/logo_full.png" alt="Catch a Prayer" className="h-9 object-contain" />
+          <div className="min-w-0">
+            {topMosque && topMosque.next_catchable && (
+              <p className="text-xs text-green-700 font-medium leading-tight truncate">{topMosque.next_catchable.message}</p>
+            )}
+            {!topMosque && userLocation && !mosquesLoading && (
+              <p className="text-xs text-gray-500 leading-tight">{mosques.length} mosques nearby</p>
+            )}
+          </div>
         </div>
         <button
           onClick={() => openSheet({ type: 'settings' })}
-          className="text-gray-500 hover:text-gray-800 p-1"
+          className="p-1 hover:opacity-70 flex-shrink-0"
           aria-label="Settings"
         >
-          ⚙️
+          <img src="/icons/icon_settings.png" alt="Settings" className="w-7 h-7 object-contain" />
         </button>
       </header>
 
