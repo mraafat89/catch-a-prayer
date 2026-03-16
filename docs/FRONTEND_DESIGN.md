@@ -55,7 +55,7 @@ The header uses a teal gradient (`from-teal-700 to-teal-600`) with a drop shadow
 
 - **Left**: `logo_pin.png` (teal pin, white-inverted) + app name bold + one-line subtitle (top mosque status or mosque count)
 - **Right**: Travel mode quick-toggle pill + settings icon button
-- **Travel toggle**: Pill button in header — grey outline when off, solid white with teal text when active. Toggling immediately re-fetches mosques with `travel_mode: true`.
+- **Travel toggle**: Pill button in header showing **current mode** — `🏠 Muqeem` (grey outline, off) or `✈️ Musafir` (solid white with teal text, on). Tap to switch. Toggling immediately re-fetches mosques with `travel_mode: true/false`. "Muqeem" (مقيم) = resident/home mode; "Musafir" (مسافر) = traveler mode that enables prayer combining (Jam').
 - **Settings icon**: `icon_settings.png` with `brightness-0 invert` CSS to render white on the teal background
 
 ### Desktop (secondary — two column)
@@ -686,7 +686,7 @@ Accessible from the ⚙ icon in the header. Opens as a bottom sheet.
 └──────────────────────────────────────────────────────┘
 ```
 
-**Travel mode** also has a quick-access pill toggle in the header (🚗 Travel / 🚗 Traveling) so the user can toggle it without opening Settings. Both toggles share the same `travelMode` store state.
+**Travel mode** also has a quick-access pill toggle in the header (`🏠 Muqeem` when off / `✈️ Musafir` when on) so the user can toggle it without opening Settings. Both toggles share the same `travelMode` store state.
 
 When travel mode is enabled without a destination, the API receives `travel_mode: true` and may return `travel_combinations` on each mosque — pairs of prayers that can be combined (Dhuhr+Asr, Maghrib+Isha) with a shared window.
 
@@ -696,14 +696,16 @@ When a destination is set, the app switches to Route Mode (see Travel Mode secti
 
 ## Travel Mode
 
-### Global ✈️ Musafir Toggle
+### Global Muqeem / Musafir Toggle
 
-The global ✈️ **Musafir** toggle (header pill) indicates the user is a traveler (Musafir / Safar) — away from their home city. It controls **whether prayer combining (Jam') is allowed** across the whole app:
+The header pill shows the **current mode** and taps to switch:
 
-| ✈️ Toggle | Effect |
-|---|---|
-| **OFF** | Normal mode — no combining, nearby mosque list only |
-| **ON** | Musafir mode — Jam' Taqdeem / Ta'kheer shown on nearby mosque cards AND as the default for any trip plan |
+| Pill label | Mode | Effect |
+|---|---|---|
+| `🏠 Muqeem` | Resident (default) | Normal mode — no combining, nearby mosque list only |
+| `✈️ Musafir` | Traveler | Jam' Taqdeem / Ta'kheer shown on nearby mosque cards AND as the default for any trip plan |
+
+**Muqeem** (مقيم) = resident, home. **Musafir** (مسافر) = traveler, safar. The toggle controls whether prayer combining (Jam') is allowed across the whole app.
 
 The toggle does **not** require a destination to be set. When ON without a destination, the user is stationary in another city and sees combination options on mosque cards.
 

@@ -130,6 +130,13 @@ def minutes_to_hhmm(total: int) -> str:
     return f"{total // 60:02d}:{total % 60:02d}"
 
 
+def fmt_dur(m: int) -> str:
+    """Format a duration in minutes as '1h 5m' or '45 min'."""
+    if m >= 60:
+        return f"{m // 60}h {m % 60}m"
+    return f"{m} min"
+
+
 def add_minutes(t: str, delta: int) -> str:
     return minutes_to_hhmm(hhmm_to_minutes(t) + delta)
 
@@ -372,7 +379,7 @@ def calculate_catching_status(
             "prayer": prayer,
             "status": "upcoming",
             "status_label": STATUS_LABELS["upcoming"],
-            "message": f"{prayer.title()} in {minutes_until_adhan} min — {action_msg}",
+            "message": f"{prayer.title()} in {fmt_dur(minutes_until_adhan)} — {action_msg}",
             "urgency": "high" if minutes_until_adhan <= 15 else "normal" if minutes_until_adhan <= 45 else "low",
             "adhan_time": adhan,
             "iqama_time": iqama,
@@ -391,7 +398,7 @@ def calculate_catching_status(
                 "prayer": prayer,
                 "status": "can_catch_with_imam_in_progress",
                 "status_label": STATUS_LABELS["can_catch_with_imam_in_progress"],
-                "message": f"Congregation started {minutes_in} min ago — leave now to join",
+                "message": f"Congregation started {fmt_dur(minutes_in)} ago — leave now to join",
                 "urgency": "high",
                 "adhan_time": adhan,
                 "iqama_time": iqama,
@@ -408,7 +415,7 @@ def calculate_catching_status(
         if arrival_min <= iqama_min:
             # Can arrive before iqama
             if leave_by_min <= current_minutes:
-                message = f"Leave now for {prayer.title()} — Iqama in {minutes_until_iqama} min"
+                message = f"Leave now for {prayer.title()} — Iqama in {fmt_dur(minutes_until_iqama)}"
             else:
                 message = f"Can catch {prayer.title()} with Imam — leave by {minutes_to_hhmm(leave_by_min)}"
             return {

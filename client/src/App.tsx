@@ -1009,8 +1009,14 @@ function SettingsSheet() {
         {/* Travel mode */}
         <div className="flex items-center justify-between">
           <div>
-            <p className="text-sm font-medium text-gray-700">✈️ Musafir (Traveling) mode</p>
-            <p className="text-xs text-gray-500">You are away from home (safar). Shows prayer combining options (Dhuhr+Asr, Maghrib+Isha). For driving trips, also set a destination above.</p>
+            <p className="text-sm font-medium text-gray-700">
+              {travelMode ? '✈️ Musafir mode' : '🏠 Muqeem mode'}
+            </p>
+            <p className="text-xs text-gray-500">
+              {travelMode
+                ? 'You are a traveler (Musafir / Safar). Prayer combining options (Dhuhr+Asr, Maghrib+Isha) are shown on mosque cards.'
+                : 'You are a resident (Muqeem). Tap to activate Musafir mode when you are away from home.'}
+            </p>
           </div>
           <button
             onClick={() => setTravelMode(!travelMode)}
@@ -1334,9 +1340,14 @@ function DestinationInput() {
       {/* Musafir / combining toggle for this trip */}
       <div className="flex items-center justify-between bg-gray-50 rounded-lg px-2.5 py-2">
         <div className="min-w-0">
-          <p className="text-xs font-medium text-gray-700">✈️ Apply Musafir rules (combine prayers)</p>
+          <p className="text-xs font-medium text-gray-700">
+            {tripCombine ? '✈️ Musafir trip' : '🏠 Muqeem trip'}
+          </p>
           {tripCombine && (
             <p className="text-xs text-teal-600 mt-0.5">Jam' Taqdeem / Ta'kheer allowed along route</p>
+          )}
+          {!tripCombine && (
+            <p className="text-xs text-gray-400 mt-0.5">Tap to enable prayer combining (Musafir)</p>
           )}
         </div>
         <button
@@ -1672,9 +1683,11 @@ function App() {
                 ? 'bg-white text-teal-700 border-white'
                 : 'bg-transparent text-teal-100 border-teal-400 hover:border-white hover:text-white'
             }`}
-            title="Musafir mode — away from home, enables prayer combining options (Dhuhr+Asr, Maghrib+Isha)"
+            title={travelModeStore
+              ? 'Musafir mode ON — prayer combining enabled. Tap to switch to Muqeem (resident) mode.'
+              : 'Muqeem mode — tap to activate Musafir (traveler) mode and enable prayer combining (Dhuhr+Asr, Maghrib+Isha)'}
           >
-            ✈️ {travelModeStore ? 'Musafir' : 'Traveling'}
+            {travelModeStore ? '✈️ Musafir' : '🏠 Muqeem'}
           </button>
           <button
             onClick={() => openSheet({ type: 'settings' })}
