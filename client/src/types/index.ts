@@ -199,9 +199,26 @@ export interface TravelRouteInfo {
   destination_name: string;
 }
 
+export interface PairChoice {
+  pair: string;
+  label: string;
+  emoji: string;
+  option: TravelOption;
+}
+
+export interface TripItinerary {
+  label: string;
+  summary: string;
+  pair_choices: PairChoice[];
+  total_detour_minutes: number;
+  stop_count: number;
+  feasible: boolean;
+}
+
 export interface TravelPlan {
   route: TravelRouteInfo;
   prayer_pairs: TravelPairPlan[];
+  itineraries: TripItinerary[];
   departure_time: string;
   estimated_arrival_time: string;
 }

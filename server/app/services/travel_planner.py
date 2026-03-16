@@ -739,6 +739,161 @@ def _pair_relevant(p1: str, p2: str, schedule: dict, dep_min: int, arr_min: int)
 
 
 # ---------------------------------------------------------------------------
+# Complete trip itinerary builder
+# ---------------------------------------------------------------------------
+
+def _itinerary_label(pair_choices: list[dict]) -> str:
+    """Short label describing each pair's strategy, e.g. '🕌 Dhuhr+Asr early · 🌙 Maghrib+Isha late'"""
+    type_words = {
+        "pray_before":    "before leaving",
+        "combine_early":  "early (Taqdeem)",
+        "combine_late":   "late (Ta'kheer)",
+        "at_destination": "at destination",
+        "separate":       "separate stops",
+        "stop_for_fajr":  "Fajr stop",
+        "no_option":      "no mosque",
+    }
+    parts = []
+    for pc in pair_choices:
+        ot = pc["option"]["option_type"]
+        parts.append(f"{pc['emoji']} {pc['label']} {type_words.get(ot, ot)}")
+    return " · ".join(parts)
+
+
+def _itinerary_summary(pair_choices: list[dict]) -> str:
+    """One-sentence description of the full plan."""
+    parts = []
+    for pc in pair_choices:
+        opt = pc["option"]
+        ot = opt["option_type"]
+        label = pc["label"]
+        stops = opt.get("stops", [])
+        if ot == "pray_before":
+            parts.append(f"Pray {label} before leaving")
+        elif ot in ("combine_early", "combine_late"):
+            combo = "Jam' Taqdeem" if ot == "combine_early" else "Jam' Ta'kheer"
+            mosque = stops[0]["mosque_name"] if stops else "a mosque en route"
+            t = stops[0]["minutes_into_trip"] if stops else 0
+            parts.append(f"Combine {label} at {mosque} ({combo}, ~{t} min into trip)")
+        elif ot == "at_destination":
+            parts.append(f"Pray {label} near your destination")
+        elif ot == "separate":
+            if len(stops) >= 2:
+                parts.append(f"{label}: {stops[0]['mosque_name']} then {stops[1]['mosque_name']}")
+            elif stops:
+                parts.append(f"{label} at {stops[0]['mosque_name']}")
+            else:
+                parts.append(f"{label} separately")
+        elif ot == "stop_for_fajr":
+            mosque = stops[0]["mosque_name"] if stops else "a mosque"
+            parts.append(f"Fajr at {mosque}")
+        else:
+            parts.append(f"{label}: no option found")
+    return " → ".join(parts)
+
+
+def build_itineraries(prayer_pairs: list[dict]) -> list[dict]:
+    """
+    Build 3-5 complete trip itineraries from the per-pair option sets.
+    Each itinerary is one cohesive plan covering ALL prayers for the whole trip.
+
+    Templates tried (in order):
+      1. All early  — pray before leaving or Taqdeem for every pair
+      2. Early then late — Taqdeem for first pair, Ta'kheer/destination for last
+      3. All late   — Ta'kheer or at-destination for every pair
+      4. All at destination
+      5. Separate stops (no combining)
+    Duplicate combos are skipped.
+    """
+    if not prayer_pairs:
+        return []
+
+    # Per-pair map: option_type -> first feasible option of that type
+    pair_maps: list[dict] = []
+    for pair in prayer_pairs:
+        omap: dict[str, dict] = {}
+        for opt in pair["options"]:
+            t = opt["option_type"]
+            if t not in omap:
+                omap[t] = opt
+        pair_maps.append({"pair": pair["pair"], "label": pair["label"], "emoji": pair["emoji"], "omap": omap})
+
+    def pick(pm: dict, *types: str):
+        for t in types:
+            if t in pm["omap"]:
+                return (pm, pm["omap"][t])
+        return None
+
+    FALLBACK = ["at_destination", "combine_late", "combine_early", "separate", "no_option"]
+
+    n = len(pair_maps)
+    templates: list[list[list[str]]] = [
+        # 1. All early
+        [["pray_before", "combine_early"] + FALLBACK] * n,
+        # 2. Early first pair, late rest (only meaningful if ≥2 pairs)
+        (
+            [["pray_before", "combine_early"] + FALLBACK] +
+            [["combine_late", "at_destination"] + FALLBACK] * (n - 1)
+        ) if n >= 2 else [],
+        # 3. All late
+        [["combine_late", "at_destination", "separate"] + FALLBACK] * n,
+        # 4. All at destination
+        [["at_destination", "combine_late"] + FALLBACK] * n,
+        # 5. Separate stops
+        [["separate", "combine_early", "combine_late", "at_destination"] + FALLBACK] * n,
+    ]
+
+    seen: set[tuple] = set()
+    itineraries: list[dict] = []
+
+    for template in templates:
+        if not template:
+            continue
+        choices = [pick(pair_maps[i], *template[i]) for i in range(n)]
+        if any(c is None for c in choices):
+            continue
+
+        combo_key = tuple(opt["option_type"] for _, opt in choices)  # type: ignore[index]
+        if combo_key in seen:
+            continue
+        seen.add(combo_key)
+
+        # Temporal consistency: stops should be in roughly chronological order
+        stop_times = [
+            s["minutes_into_trip"]
+            for _, opt in choices  # type: ignore[misc]
+            for s in opt.get("stops", [])
+        ]
+        if stop_times != sorted(stop_times):
+            continue
+
+        pair_choices_out = []
+        total_detour = 0
+        all_feasible = True
+        for pm, opt in choices:  # type: ignore[misc]
+            pair_choices_out.append({
+                "pair": pm["pair"],
+                "label": pm["label"],
+                "emoji": pm["emoji"],
+                "option": opt,
+            })
+            total_detour += sum(s["detour_minutes"] for s in opt.get("stops", []))
+            if not opt.get("feasible", True):
+                all_feasible = False
+
+        itineraries.append({
+            "label": _itinerary_label(pair_choices_out),
+            "summary": _itinerary_summary(pair_choices_out),
+            "pair_choices": pair_choices_out,
+            "total_detour_minutes": total_detour,
+            "stop_count": sum(len(opt.get("stops", [])) for _, opt in choices),  # type: ignore[misc]
+            "feasible": all_feasible,
+        })
+
+    return itineraries
+
+
+# ---------------------------------------------------------------------------
 # Main entry point
 # ---------------------------------------------------------------------------
 
@@ -883,6 +1038,8 @@ async def build_travel_plan(
             "options": fajr_options,
         })
 
+    itineraries = build_itineraries(prayer_pairs)
+
     return {
         "route": {
             "distance_meters": route.get("distance", 0),
@@ -891,6 +1048,7 @@ async def build_travel_plan(
             "destination_name": destination_name,
         },
         "prayer_pairs": prayer_pairs,
+        "itineraries": itineraries,
         "departure_time": departure_dt.isoformat(),
         "estimated_arrival_time": arrival_dt.isoformat(),
     }

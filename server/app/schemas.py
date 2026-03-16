@@ -200,8 +200,23 @@ class RouteInfo(BaseModel):
     origin_name: str        # "Current location" or user-provided name
     destination_name: str
 
+class PairChoice(BaseModel):
+    pair: str
+    label: str
+    emoji: str
+    option: TravelOption
+
+class TripItinerary(BaseModel):
+    label: str
+    summary: str
+    pair_choices: list[PairChoice]
+    total_detour_minutes: int
+    stop_count: int
+    feasible: bool
+
 class TravelPlanResponse(BaseModel):
     route: RouteInfo
     prayer_pairs: list[TravelPairPlan]
+    itineraries: list[TripItinerary]
     departure_time: str   # ISO
     estimated_arrival_time: str  # ISO
