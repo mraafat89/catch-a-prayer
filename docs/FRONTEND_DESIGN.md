@@ -743,24 +743,45 @@ When "Plan My Prayers" is tapped in Muqeem mode and the trip distance exceeds ~1
 
 ### Mode: Musafir, Static (No Route)
 
-When ✈️ toggle is ON and **no destination is set**, the nearby mosque list shows combination options (Dhuhr+Asr, Maghrib+Isha) as chips on each mosque card:
+When ✈️ toggle is ON and **no destination is set**, each mosque card gains a combining section below the normal prayer status. The display is **context-sensitive** — it shows the relevant option(s) for the current time, not a generic list.
 
+**Case A — Before Asr adhan (Taqdeem only):**
 ```
 ┌──────────────────────────────────────────────────────┐
 │ 🟢  Masjid Al-Noor                      12 min away │
 │     Dhuhr — Iqama 1:05 PM — catch with Imam now     │
 │     ────────────────────────────────────────────     │
-│     ✈️ Combination options:                          │
-│     🟢 Combine Dhuhr+Asr now (Jam' Taqdeem)         │  ← only if before Asr adhan
-│     🔵 Wait for Asr, pray both then (Jam' Ta'kheer) │  ← only if before Asr ends
+│  ✈️ 🕌 Dhuhr + Asr — Musafir combining              │
+│  ┌─────────────────────────────────────────────┐    │
+│  │ Pray both Dhuhr and Asr now, during Dhuhr   │    │
+│  │ time (iqama 1:05 PM).                       │    │
+│  │ [Jam' Taqdeem — pray now]                   │    │
+│  └─────────────────────────────────────────────┘    │
 └──────────────────────────────────────────────────────┘
 ```
 
-Combination options are computed per mosque from today's schedule:
-- **Taqdeem**: feasible before the second prayer's adhan (combine early, during first prayer's window)
-- **Ta'kheer**: feasible before the second prayer's period ends (delay first into second's window)
+**Case B — After Asr adhan (Ta'kheer only — the critical case):**
+```
+┌──────────────────────────────────────────────────────┐
+│ 🟢  Masjid Al-Noor                      12 min away │
+│     ────────────────────────────────────────────     │
+│  ✈️ 🕌 Dhuhr + Asr — Musafir combining              │
+│  ┌─────────────────────────────────────────────┐    │
+│  │ Dhuhr is not missed ✓                       │    │  ← key message
+│  │ As Musafir, pray both Dhuhr + Asr together  │    │
+│  │ during Asr time (iqama 4:30 PM)             │    │
+│  │ [Jam' Ta'kheer]                             │    │
+│  └─────────────────────────────────────────────┘    │
+└──────────────────────────────────────────────────────┘
+```
 
-Uses the `travel_combinations` field returned by `/api/nearby` when `travel_mode=true`.
+**Case C — Both options feasible (Taqdeem primary, Ta'kheer secondary):**
+Shows Taqdeem card first ("pray now") then Ta'kheer card ("or wait until Asr").
+
+Key rules:
+- **Taqdeem**: feasible while still in the first prayer's time (before p2 adhan)
+- **Ta'kheer**: feasible from any point until the second prayer's period ends — the first prayer is NOT missed
+- Both use `travel_combinations` from `/api/nearby` when `travel_mode=true`
 
 ### Trip Planner Form
 

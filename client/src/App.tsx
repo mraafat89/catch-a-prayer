@@ -278,27 +278,52 @@ function MosqueCard({ mosque }: { mosque: Mosque }) {
         </div>
       )}
 
-      {/* Combination options (Musafir / traveling mode, no route) */}
+      {/* Combination options (Musafir mode, no route) */}
       {travelMode && mosque.travel_combinations.length > 0 && (
-        <div className="px-3 py-2 bg-indigo-50 border-t border-indigo-100">
-          <p className="text-xs font-semibold text-indigo-700 mb-1">✈️ Combining options (Musafir)</p>
-          <div className="flex flex-wrap gap-1">
-            {mosque.travel_combinations.flatMap((pair) =>
-              pair.options.map((opt, i) => (
-                <span
-                  key={`${pair.pair}-${i}`}
-                  className={`text-xs px-2 py-0.5 rounded-full border font-medium ${
-                    opt.option_type === 'combine_early'
-                      ? 'bg-green-50 border-green-300 text-green-700'
-                      : 'bg-blue-50 border-blue-300 text-blue-700'
-                  }`}
-                  title={opt.description}
-                >
-                  {pair.emoji} {opt.combination_label}
-                </span>
-              ))
-            )}
-          </div>
+        <div className="px-3 pt-2 pb-3 bg-indigo-50 border-t border-indigo-100 space-y-2">
+          {mosque.travel_combinations.map((pair: TravelPairPlan) => {
+            const taqdeem = pair.options.find((o: TravelOption) => o.option_type === 'combine_early');
+            const takheer = pair.options.find((o: TravelOption) => o.option_type === 'combine_late');
+            const takheerOnly = !taqdeem && !!takheer;
+            return (
+              <div key={pair.pair}>
+                <p className="text-xs font-semibold text-indigo-700 mb-1.5">
+                  ✈️ {pair.emoji} {pair.label} — Musafir
+                </p>
+
+                {/* Ta'kheer only: p1 time passed but NOT missed */}
+                {takheerOnly && (
+                  <div className="bg-white rounded-lg border border-blue-200 px-2.5 py-2 space-y-1">
+                    <p className="text-xs font-semibold text-blue-800">{pair.label.split(' + ')[0]} is not missed ✓</p>
+                    <p className="text-xs text-blue-700">{takheer!.description}</p>
+                    <span className="inline-block text-xs bg-blue-50 text-blue-700 border border-blue-200 px-1.5 py-0.5 rounded-full">
+                      Jam' Ta'kheer
+                    </span>
+                  </div>
+                )}
+
+                {/* Taqdeem — primary when both available or only Taqdeem */}
+                {taqdeem && (
+                  <div className={`bg-white rounded-lg border border-green-200 px-2.5 py-2 space-y-1 ${takheer ? 'mb-1.5' : ''}`}>
+                    <p className="text-xs text-green-800">{taqdeem.description}</p>
+                    <span className="inline-block text-xs bg-green-50 text-green-700 border border-green-200 px-1.5 py-0.5 rounded-full">
+                      Jam' Taqdeem — pray now
+                    </span>
+                  </div>
+                )}
+
+                {/* Ta'kheer as secondary when Taqdeem also available */}
+                {taqdeem && takheer && (
+                  <div className="bg-white rounded-lg border border-blue-100 px-2.5 py-2 space-y-1">
+                    <p className="text-xs text-blue-700">{takheer.description}</p>
+                    <span className="inline-block text-xs bg-blue-50 text-blue-600 border border-blue-200 px-1.5 py-0.5 rounded-full">
+                      Jam' Ta'kheer — or wait
+                    </span>
+                  </div>
+                )}
+              </div>
+            );
+          })}
         </div>
       )}
 

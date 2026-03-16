@@ -112,7 +112,49 @@ Fajr Adhan ──────────────── Sunrise ────
 - **After sunrise**: Fajr is **missed** — Status 5 (Make Up) applies
 - The label "Can Catch Delayed" does **not** apply to post-sunrise Fajr. After sunrise, it is a missed prayer, not a delayed one.
 
-### 2. Jumuah (Friday Prayer) Exception
+### 2. Asr — Discouraged Near Sunset
+
+Asr is valid from its adhan until Maghrib, but praying it when the sun has turned visibly yellow/orange (roughly the last **15 minutes before Maghrib**) is considered **makruh (disliked)** by the majority of scholars, even though the prayer remains valid.
+
+```
+Asr adhan ──────────────[preferred window]──────[makruh zone]── Maghrib adhan
+                                                  ↑ ~15 min before Maghrib
+```
+
+The app should show a discouragement note whenever the user's status is `can_pray_solo_at_mosque` or `pray_at_nearby_location` for Asr **and** the current time is within 15 minutes of Maghrib adhan. The note should read something like: _"Note: delaying Asr this close to Maghrib is discouraged — pray as soon as possible."_
+
+The Asr period does not end early — this is purely a note, not a status change.
+
+### 3. Isha Prayer — Midnight Wraparound
+
+Isha is the only prayer whose period **crosses midnight**. This requires careful time arithmetic in implementation.
+
+The Isha window is divided into three sub-cases based on `current_time`:
+
+```
+[Isha adhan]──[iqama]──[congregation ends]────────[midnight]────────[Fajr adhan]
+     8:30 PM   8:45 PM      9:00 PM                 12:00 AM          5:15 AM
+                                                                          ↑
+                                                              Isha period ends here
+```
+
+| Current time | Situation | Correct behaviour |
+|---|---|---|
+| **After Isha adhan (e.g. 8:30 PM+)** | Normal evening window | Status 1–4 computed normally |
+| **After midnight, before Fajr (e.g. 1:30 AM)** | Still valid but **discouraged** — praying after midnight is considered makruh (disliked) | Status 3: Can pray solo until Fajr, with a note that praying before midnight is preferred |
+| **After Fajr, before tonight's Isha (e.g. 9 AM)** | Yesterday's Isha has ended | Status 5: Missed — make it up |
+
+**Implementation note** (`mosque_search.py`): When `current_time < isha_adhan_time` (i.e. we're before tonight's Isha), check `current_time` against `fajr_time`:
+- If `current_time < fajr_time` → post-midnight carry-over: bump `current_minutes += 1440` so it compares correctly against the +24h-adjusted `period_end_min`
+- If `current_time ≥ fajr_time` → daytime after Fajr: return `missed_make_up` immediately
+
+The displayed `period_ends_at` value is always **today's Fajr time** (e.g. `05:15`), which is:
+- Correct when shown before midnight ("can pray solo until 5:15 AM")
+- Correct when shown after midnight ("can pray solo until 5:15 AM" — same calendar day)
+
+**Never** use an arbitrary cutoff like `isha_iqama + 6 hours` — Isha is valid all the way to Fajr regardless of how late it is.
+
+### 3. Jumuah (Friday Prayer) Exception
 
 Jumuah replaces Dhuhr on Fridays. It has two components in sequence:
 1. **Khutba (Sermon)**: 30–45 minutes
@@ -210,21 +252,34 @@ Islam allows travelers to **combine certain prayers** for convenience. Travel Mo
 
 Both early and late combinations are equally valid in Islam.
 
-### Standard Travel Mode (No Destination Set)
+### Standard Travel Mode (No Destination Set — Musafir at Current Location)
 
-When travel mode is on but the user has no specific destination, show combination options in addition to the normal per-mosque status:
+The user has already traveled to a location and is staying there for a while. They activate Musafir mode to enable prayer combining. The app shows the normal nearby-mosque list **plus** a combining section on each card.
 
-**Example — User in Dhuhr period**:
-- Normal: "Can catch Dhuhr with Imam at Masjid Al-Noor"
-- Travel addition: "+ Can also combine Dhuhr + Asr here (Early Combination — Jam' Taqdeem)"
+Each pair section shows the contextually correct option based on the current time:
 
-**Example — User in Asr period, missed Dhuhr**:
-- Normal: "Can catch Asr with Imam"
-- Travel addition: "+ Can combine missed Dhuhr + Asr here (Late Combination — Jam' Ta'kheer)"
+**Case A — Currently in first prayer's time (e.g., Dhuhr time, Asr hasn't started)**
+> Only Jam' Taqdeem is shown:
+> "Pray Dhuhr + Asr together now (during Dhuhr time)"
+> → User can advance Asr into the current Dhuhr window
 
-Combinations are shown **in addition to** the normal status — they never replace it.
+**Case B — First prayer's time has passed (e.g., Asr adhan has happened)**
+> Only Jam' Ta'kheer is shown, with a prominent note:
+> **"Dhuhr is not missed ✓"**
+> "As Musafir, you can still pray Dhuhr + Asr together during Asr time"
+> → The user must know the earlier prayer is NOT missed — they have until the end of Asr
+
+**Case C — Both options still feasible (e.g., Dhuhr time, Asr adhan is soon)**
+> Both shown: Taqdeem as primary ("pray now"), Ta'kheer as alternative ("or wait")
+
+**Critical rule**: A Musafir's window for the first prayer effectively extends until the end of the second prayer's time. Dhuhr is not missed at Asr adhan; it can still be prayed (combined with Asr) until the end of Asr time. Same for Maghrib — not missed at Isha adhan for a Musafir.
 
 ### Route-Based Travel Mode (Destination Set)
+
+When the user has a travel destination (entered in the `DestinationInput` bar that appears when travel mode is ON), the app enters **Route Mode**. In Route Mode:
+- The normal mosque list is **replaced** by a **Travel Prayer Plan**.
+- The plan is grouped into prayer pair sections (Fajr if applicable, Dhuhr+Asr, Maghrib+Isha).
+- Each section shows all valid catching options so the user can choose the one that fits their schedule.
 
 When the user has a travel destination, the app knows their **route** and can calculate arrival times at mosques along the way. This enables intelligent route-aware prayer planning.
 
@@ -272,12 +327,70 @@ Each option should show:
 - **Whether it's a combination** and what type
 - **How far off the main route** the mosque detour adds
 
+#### Option Types (Route Mode)
+
+| `option_type` | Label | Description |
+|---|---|---|
+| `pray_before` | Pray Before Leaving | One or both prayers are active at departure time — no road stop needed |
+| `combine_early` | Jam' Taqdeem | Both prayers combined during the first prayer's time window (e.g. Dhuhr + Asr during Dhuhr) |
+| `combine_late` | Jam' Ta'kheer | Both prayers combined during the second prayer's time window (e.g. Dhuhr + Asr during Asr) |
+| `separate` | Separate Stops | Two stops: one for each prayer at the best available mosque |
+| `at_destination` | Pray Near Destination | Prayer(s) still active upon arrival — find a mosque near the destination |
+| `stop_for_fajr` | Stop for Fajr | Fajr-specific stop along the route |
+| `no_option` | No Mosque Found | No mosque option feasible — pray at a clean rest stop |
+
+#### Pseudocode: `build_combination_plan`
+
+```
+FUNCTION build_combination_plan(prayer1, prayer2, origin_schedule, route_mosques, departure_dt, arrival_dt, dest_schedule, timezone):
+
+    dep_min = departure_dt in local minutes
+    arr_min = arrival_dt in local minutes
+
+    options = []
+
+    // Pray before leaving
+    s1 = prayer_status_at_arrival(prayer1, origin_schedule, dep_min)
+    s2 = prayer_status_at_arrival(prayer2, origin_schedule, dep_min)
+    IF s1 AND s2:
+        options.append({ type: pray_before, prayers: [prayer1, prayer2], stops: [] })
+    ELSE IF s1 only:
+        options.append({ type: pray_before, prayers: [prayer1], stops: [] })
+
+    // Combine Early (Jam' Taqdeem) — best mosque catchable during prayer1's window
+    FOR mosque IN route_mosques sorted by minutes_into_trip:
+        s = prayer_status_at_arrival(prayer1, mosque.schedule, mosque.local_arrival_minutes)
+        IF s: options.append({ type: combine_early, stops: [mosque], prayers: [prayer1, prayer2] }); BREAK
+
+    // Combine Late (Jam' Ta'kheer) — best mosque catchable during prayer2's window
+    FOR mosque IN route_mosques sorted by minutes_into_trip:
+        s = prayer_status_at_arrival(prayer2, mosque.schedule, mosque.local_arrival_minutes)
+        IF s: options.append({ type: combine_late, stops: [mosque], prayers: [prayer1, prayer2] }); BREAK
+
+    // Separate stops — find best mosque for each prayer independently
+    best_p1, best_p2 = find_best_mosques_for(prayer1, prayer2, route_mosques)
+    IF best_p1 AND best_p2:
+        options.append({ type: separate, stops: [best_p1, best_p2] if different mosques else [best_p1] })
+
+    // Pray near destination
+    s1_dest = prayer_status_at_arrival(prayer1, dest_schedule, arr_min)
+    s2_dest = prayer_status_at_arrival(prayer2, dest_schedule, arr_min)
+    IF s1_dest OR s2_dest:
+        options.append({ type: at_destination, prayers: [p for p in [prayer1, prayer2] if active at dest] })
+
+    IF options is empty:
+        options.append({ type: no_option, feasible: False })
+
+    RETURN { pair, label, emoji, options }
+```
+
 #### Edge Cases in Route Mode
 
 - If a prayer period will end before the user can reach any mosque on the route → show "Pray at nearby clean location before [time]"
 - If no mosques are on the route for a given prayer pair → show that combination as unavailable
 - If the user has already passed potential mosques → remove those options, update in real time
 - Fajr during a road trip: If user is driving through the Fajr period, show nearest mosque or "find a clean rest stop"
+- "Pray before leaving" (`pray_before`) is always checked first — it requires no detour
 
 ---
 
@@ -347,10 +460,15 @@ FUNCTION get_catching_status(mosque, current_time, travel_minutes, travel_mode):
     FOR each relevant_prayer IN get_relevant_prayers(current_time):
 
         iqama = relevant_prayer.iqama_time
-        period_end = relevant_prayer.period_end  // next prayer's adhan, or sunrise for Fajr
+        period_end = relevant_prayer.period_end  // see get_period_end() below
         congregation_end = iqama + 15 minutes
 
-        // Single prayer status
+        // Adjust times for Isha midnight wraparound (see special case)
+        adjusted_current = adjust_for_isha_midnight(prayer, current_time, iqama, period_end)
+        IF adjusted_current == MISSED:
+            RETURN { status: MISSED_MAKE_UP }  // past Fajr — yesterday's Isha ended
+
+        // Single prayer status (all comparisons use adjusted times)
         IF arrival_time <= iqama:
             status = CAN_CATCH_WITH_IMAM
 
@@ -369,9 +487,30 @@ FUNCTION get_catching_status(mosque, current_time, travel_minutes, travel_mode):
         // Travel mode additions (never replace the status above)
         IF travel_mode AND relevant_prayer.supports_combination:
             combination_options = get_combination_options(relevant_prayer, arrival_time, current_time)
-            // Append to result alongside status — not instead of it
 
     RETURN highest_priority_status + combination_options
+
+
+FUNCTION get_period_end(prayer, schedule):
+    Fajr    → schedule.sunrise
+    Dhuhr   → schedule.asr_adhan
+    Asr     → schedule.maghrib_adhan
+    Maghrib → schedule.isha_adhan
+    Isha    → schedule.fajr_adhan   // next day's Fajr; midnight wraparound applied separately
+
+
+FUNCTION adjust_for_isha_midnight(prayer, current_minutes, adhan_min, period_end_min):
+    // Only applies to Isha. For other prayers, return current_minutes unchanged.
+    IF prayer != "isha" OR current_minutes >= adhan_min:
+        RETURN current_minutes  // normal evening case, no adjustment needed
+
+    fajr_min = schedule.fajr_adhan
+    IF current_minutes < fajr_min:
+        // Post-midnight, before Fajr — still valid Isha window
+        RETURN current_minutes + 1440   // bump to "yesterday's" frame of reference
+    ELSE:
+        // After today's Fajr — yesterday's Isha has ended
+        RETURN MISSED
 
 
 FUNCTION get_relevant_prayers(current_time):
@@ -387,18 +526,33 @@ FUNCTION get_relevant_prayers(current_time):
 
 ## Testing Scenarios
 
+### General
+
 | Time | Condition | Expected Recommendation |
 |---|---|---|
 | 4:14 AM | Before Fajr adhan | Next prayer: Fajr at 5:30 AM |
 | 6:30 AM | After Fajr adhan, before sunrise | Fajr — Status 1, 2, or 3 depending on travel time |
 | 7:30 AM | After sunrise | Fajr is **missed** — Status 5: Make up missed Fajr |
-| 9:00 PM | Isha iqama was 8:41 PM (19 min ago) | Status 3: Can pray Isha solo at mosque (period active until Fajr) |
-| 9:30 PM | Isha iqama was 8:41 PM (49 min ago) | Status 3: Can still pray Isha solo at mosque (period active until Fajr) |
+| 9:00 PM | Isha iqama was 8:45 PM (15 min ago) | Status 3: Can pray Isha solo (period active until Fajr at 5:15 AM) |
+| 9:30 PM | Isha iqama was 8:45 PM (45 min ago) | Status 3: Can still pray Isha solo (period active until Fajr at 5:15 AM) |
+| 11:08 PM | Isha congregation long ended | Status 3: Can pray Isha solo until Fajr at 5:15 AM |
 | Friday 12:45 PM | Jumuah khutba started 12:30 PM | Can catch Jumuah (partial sermon + prayer) |
 | Friday 1:30 PM | Jumuah prayer ended | Missed Jumuah — can pray Dhuhr solo |
 | Travel mode, 1:30 PM | Dhuhr period | "Can catch Dhuhr with Imam" + "Can combine Dhuhr+Asr (Early)" |
 | Travel mode, 4:30 PM | Asr period, missed Dhuhr | "Can catch Asr with Imam" + "Can combine Dhuhr+Asr (Late)" |
 | Route LA→SF, 11 AM | Dhuhr upcoming | Show multiple mosques along route with combination options |
+
+### Isha Midnight Wraparound (Fajr 5:15 AM, Isha iqama 8:45 PM)
+
+| Current time | Expected status | Reason |
+|---|---|---|
+| 8:30 PM | `can_catch_with_imam` | Before iqama |
+| 9:10 PM | `can_pray_solo_at_mosque` — until 5:15 AM | Congregation ended, Isha period active |
+| 11:08 PM | `can_pray_solo_at_mosque` — until 5:15 AM | Before midnight, still valid |
+| 1:30 AM | `can_pray_solo_at_mosque` — until 5:15 AM, **with discouraged note** | After midnight, before Fajr — valid but makruh; note shown in message |
+| 5:10 AM | `pray_at_nearby_location` | 5 min before Fajr, can't reach mosque in time |
+| 5:20 AM | `missed_make_up` | Past Fajr adhan — Isha period has ended |
+| 9:00 AM | `missed_make_up` | Daytime — yesterday's Isha long ended |
 
 ---
 
