@@ -172,6 +172,7 @@ export interface TravelStop {
   status: string;
   iqama_time: string | null;
   adhan_time: string | null;
+  google_place_id?: string | null;
 }
 
 export interface TravelOption {

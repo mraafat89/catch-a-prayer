@@ -177,6 +177,7 @@ class TravelStop(BaseModel):
     status: str                       # can_catch_with_imam / can_pray_solo_at_mosque
     iqama_time: Optional[str]
     adhan_time: Optional[str]
+    google_place_id: Optional[str] = None
 
 class TravelOption(BaseModel):
     option_type: str  # combine_early / combine_late / separate / pray_before / at_destination

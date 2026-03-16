@@ -76,14 +76,34 @@ const WEBSITE_SOURCES = new Set([
 
 const IS_IOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
 
-function buildGoogleMapsUrl(points: Array<[number, number]>): string {
-  return 'https://www.google.com/maps/dir/' + points.map(([lat, lng]) => `${lat},${lng}`).join('/');
+interface MapPoint {
+  lat: number;
+  lng: number;
+  name?: string;
+  place_id?: string | null;
 }
 
-function buildAppleMapsUrl(points: Array<[number, number]>): string {
+function buildGoogleMapsUrl(points: MapPoint[]): string {
+  // Use the directions URL format: /maps/dir/origin/.../destination
+  // With Google Place IDs where available: "place_id:ChIJ..."
+  // Otherwise use encoded name or lat,lng
+  const segments = points.map(p => {
+    if (p.place_id) return `place_id:${p.place_id}`;
+    if (p.name) return encodeURIComponent(p.name);
+    return `${p.lat},${p.lng}`;
+  });
+  return 'https://www.google.com/maps/dir/' + segments.join('/');
+}
+
+function buildAppleMapsUrl(points: MapPoint[]): string {
+  // Apple Maps: saddr=Name@lat,lng  daddr=Name@lat,lng (repeated)
+  function applePoint(p: MapPoint): string {
+    if (p.name) return `${encodeURIComponent(p.name)}@${p.lat},${p.lng}`;
+    return `${p.lat},${p.lng}`;
+  }
   const [origin, ...rest] = points;
-  const destPoints = rest.map(([lat, lng]) => `daddr=${lat},${lng}`).join('&');
-  return `https://maps.apple.com/?saddr=${origin[0]},${origin[1]}&${destPoints}&dirflg=d`;
+  const destParts = rest.map(p => `daddr=${applePoint(p)}`).join('&');
+  return `https://maps.apple.com/?saddr=${applePoint(origin)}&${destParts}&dirflg=d`;
 }
 
 function haversineKm(lat1: number, lng1: number, lat2: number, lng2: number): number {
@@ -1616,10 +1636,20 @@ function TravelItineraryCard({ itinerary, index }: { itinerary: TripItinerary; i
                 return true;
               });
 
-            const points: Array<[number, number]> = [
-              [originLat, originLng],
-              ...waystops.map((s: TravelStop) => [s.mosque_lat, s.mosque_lng] as [number, number]),
-              [destLat, destLng],
+            const originName = travelOrigin?.place_name ?? undefined;
+            const destName   = travelDestination?.place_name ?? undefined;
+
+            const points: MapPoint[] = [
+              { lat: originLat, lng: originLng, name: originName },
+              ...waystops.map((s: TravelStop) => ({
+                lat: s.mosque_lat,
+                lng: s.mosque_lng,
+                name: s.mosque_address
+                  ? `${s.mosque_name}, ${s.mosque_address}`
+                  : s.mosque_name,
+                place_id: s.google_place_id,
+              })),
+              { lat: destLat, lng: destLng, name: destName },
             ];
 
             const googleUrl = buildGoogleMapsUrl(points);

@@ -330,7 +330,7 @@ async def find_route_mosques(
         "lng_max": max(lngs) + lng_buf,
     }
     result = await db.execute(text("""
-        SELECT id::text, name, lat, lng, address, city, state, timezone
+        SELECT id::text, name, lat, lng, address, city, state, timezone, google_place_id
         FROM mosques
         WHERE is_active = true
           AND lat BETWEEN :lat_min AND :lat_max
@@ -398,6 +398,7 @@ async def find_route_mosques(
             "address": row["address"],
             "city": row["city"],
             "state": row["state"],
+            "google_place_id": row.get("google_place_id"),
             "detour_minutes": round(detour_min),
             "estimated_arrival": estimated_arrival,
             "minutes_into_trip": round(minutes_into_trip),
@@ -473,6 +474,7 @@ def _make_stop(m: dict, prayer: str, status_info: dict) -> dict:
         "mosque_lat": m["lat"],
         "mosque_lng": m["lng"],
         "mosque_address": f"{m.get('city') or ''}, {m.get('state') or ''}".strip(", ") or m.get("address"),
+        "google_place_id": m.get("google_place_id"),
         "prayer": prayer,
         "estimated_arrival_time": m["local_arrival_time_fmt"],
         "minutes_into_trip": m["minutes_into_trip"],
