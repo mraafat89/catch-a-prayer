@@ -228,47 +228,67 @@ def calculate_catching_status(
             "period_ends_at": period_end,
         }
 
-    # Arrives at or before iqama
-    if arrival_min <= iqama_min:
-        minutes_until = iqama_min - current_minutes
-        urgency = "high" if minutes_until <= 15 else "normal"
-        if leave_by_min <= current_minutes:
-            # Must leave now or already past leave-by time
-            message = f"Leave now for {prayer.title()} — Iqama in {iqama_min - current_minutes} min"
-        else:
-            leave_by_fmt = minutes_to_hhmm(leave_by_min)
-            message = f"Can catch {prayer.title()} with Imam — leave by {leave_by_fmt}"
-        return {
-            "prayer": prayer,
-            "status": "can_catch_with_imam",
-            "status_label": STATUS_LABELS["can_catch_with_imam"],
-            "message": message,
-            "urgency": urgency,
-            "adhan_time": adhan,
-            "iqama_time": iqama,
-            "arrival_time": minutes_to_hhmm(arrival_min),
-            "minutes_until_iqama": max(0, iqama_min - current_minutes),
-            "leave_by": minutes_to_hhmm(leave_by_min),
-            "period_ends_at": period_end,
-        }
-
-    # Arrives during congregation window
     congregation_end_min = iqama_min + congregation_window
-    if arrival_min <= congregation_end_min:
-        minutes_in = current_minutes - iqama_min
-        urgency = "high"
-        return {
-            "prayer": prayer,
-            "status": "can_catch_with_imam_in_progress",
-            "status_label": STATUS_LABELS["can_catch_with_imam_in_progress"],
-            "message": f"Congregation started {minutes_in} min ago — you can still join",
-            "urgency": urgency,
-            "adhan_time": adhan,
-            "iqama_time": iqama,
-            "arrival_time": minutes_to_hhmm(arrival_min),
-            "minutes_until_iqama": -(current_minutes - iqama_min),
-            "period_ends_at": period_end,
-        }
+
+    # Congregation already started — check if user can still arrive in time
+    if current_minutes >= iqama_min:
+        if arrival_min <= congregation_end_min:
+            minutes_in = current_minutes - iqama_min
+            return {
+                "prayer": prayer,
+                "status": "can_catch_with_imam_in_progress",
+                "status_label": STATUS_LABELS["can_catch_with_imam_in_progress"],
+                "message": f"Congregation started {minutes_in} min ago — leave now to join",
+                "urgency": "high",
+                "adhan_time": adhan,
+                "iqama_time": iqama,
+                "arrival_time": minutes_to_hhmm(arrival_min),
+                "minutes_until_iqama": -minutes_in,
+                "period_ends_at": period_end,
+            }
+        # Congregation ended — fall through to solo/missed checks below
+    else:
+        # Congregation hasn't started yet (current_minutes < iqama_min)
+        minutes_until_iqama = iqama_min - current_minutes
+        urgency = "high" if minutes_until_iqama <= 15 else "normal"
+
+        if arrival_min <= iqama_min:
+            # Can arrive before iqama
+            if leave_by_min <= current_minutes:
+                message = f"Leave now for {prayer.title()} — Iqama in {minutes_until_iqama} min"
+            else:
+                message = f"Can catch {prayer.title()} with Imam — leave by {minutes_to_hhmm(leave_by_min)}"
+            return {
+                "prayer": prayer,
+                "status": "can_catch_with_imam",
+                "status_label": STATUS_LABELS["can_catch_with_imam"],
+                "message": message,
+                "urgency": urgency,
+                "adhan_time": adhan,
+                "iqama_time": iqama,
+                "arrival_time": minutes_to_hhmm(arrival_min),
+                "minutes_until_iqama": minutes_until_iqama,
+                "leave_by": minutes_to_hhmm(leave_by_min),
+                "period_ends_at": period_end,
+            }
+
+        if arrival_min <= congregation_end_min:
+            # Would arrive after iqama but congregation still active — leave NOW
+            mins_late = arrival_min - iqama_min
+            return {
+                "prayer": prayer,
+                "status": "can_catch_with_imam",
+                "status_label": STATUS_LABELS["can_catch_with_imam"],
+                "message": f"Leave now for {prayer.title()} — arrive {mins_late} min after iqama, congregation still active",
+                "urgency": "high",
+                "adhan_time": adhan,
+                "iqama_time": iqama,
+                "arrival_time": minutes_to_hhmm(arrival_min),
+                "minutes_until_iqama": minutes_until_iqama,
+                "leave_by": minutes_to_hhmm(leave_by_min),
+                "period_ends_at": period_end,
+            }
+        # Would arrive after congregation ends — fall through to solo/missed
 
     # Congregation over but prayer period still active
     if current_minutes <= period_end_min:

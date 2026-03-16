@@ -121,7 +121,8 @@ class PrayerTimes:
         return sum(1 for p in PRAYER_NAMES if getattr(self, f"{p}_iqama"))
 
     def is_complete(self) -> bool:
-        return self.adhan_count() == 5
+        """True only if we have all 5 adhans AND at least 4 iqamas (mosque-specific data)."""
+        return self.adhan_count() == 5 and self.iqama_count() >= 4
 
 
 @dataclass
@@ -143,10 +144,13 @@ class MosqueRecord:
 _TIME_RE = re.compile(r"\b(\d{1,2}:\d{2})\s*(AM|PM|am|pm)?\b")
 
 
-def normalize_time(raw: Optional[str]) -> Optional[str]:
+def normalize_time(raw: Optional[str], prayer: Optional[str] = None) -> Optional[str]:
     """
     Convert any time string to HH:MM (24h). Returns None if unparseable.
     Handles: "3:45 PM", "15:45", "3:45PM", "03:45 am", "3:45\u202fPM".
+
+    When AM/PM is absent and `prayer` is provided, uses expected prayer time ranges
+    to disambiguate (e.g. "1:18" for dhuhr → 13:18).
     """
     if not raw:
         return None
@@ -164,6 +168,16 @@ def normalize_time(raw: Optional[str]) -> Optional[str]:
         h += 12
     elif ampm == "AM" and h == 12:
         h = 0
+    elif ampm is None and prayer:
+        # No AM/PM — use prayer ranges to disambiguate 12h vs 24h
+        # Prayers that are always PM (never AM): dhuhr, asr, maghrib, isha
+        # Fajr is AM; anything 1-9 for PM prayers needs +12
+        pm_prayers = {"dhuhr", "asr", "maghrib", "isha"}
+        if prayer in pm_prayers and 1 <= h <= 9:
+            h += 12  # "1:18" for dhuhr → 13:18
+        elif prayer == "isha" and h == 10 or h == 11:
+            h += 12  # late isha
+        # For fajr with no AM/PM: leave as-is (fajr is naturally < 8)
 
     if not (0 <= h <= 23 and 0 <= mn <= 59):
         return None
@@ -206,11 +220,13 @@ def validate_prayer_times(times: PrayerTimes) -> tuple[bool, str]:
         adhan = getattr(times, f"{p}_adhan")
         iqama = getattr(times, f"{p}_iqama")
         if adhan and iqama:
-            if iqama < adhan:
-                return False, f"{p} iqama ({iqama}) before adhan ({adhan})"
             gap = hhmm_to_minutes(iqama) - hhmm_to_minutes(adhan)
-            if gap > 45:
-                return False, f"{p} iqama gap {gap} min > 45 min max"
+            # Iqama can be before adhan (e.g. Ramadan Fajr iqama before astronomical adhan)
+            # but reject if gap is absurdly large in either direction (extraction error)
+            if gap < -60:
+                return False, f"{p} iqama ({iqama}) is >60 min before adhan ({adhan}) — likely wrong"
+            if gap > 90:
+                return False, f"{p} iqama gap {gap} min > 90 min — likely wrong"
 
     return True, "ok"
 
@@ -274,12 +290,12 @@ def extract_times_from_table(soup: BeautifulSoup) -> Optional[PrayerTimes]:
             # Extract times
             adhan_t = iqama_t = None
             if adhan_col is not None and adhan_col < len(texts):
-                adhan_t = normalize_time(texts[adhan_col])
+                adhan_t = normalize_time(texts[adhan_col], prayer)
             if iqama_col is not None and iqama_col < len(texts):
-                iqama_t = normalize_time(texts[iqama_col])
+                iqama_t = normalize_time(texts[iqama_col], prayer)
 
             if not adhan_t:
-                all_t = [normalize_time(t) for t in texts if normalize_time(t)]
+                all_t = [normalize_time(t, prayer) for t in texts if normalize_time(t, prayer)]
                 if all_t:
                     adhan_t = all_t[0]
                     if len(all_t) >= 2:
@@ -324,15 +340,150 @@ def extract_times_from_text(text: str) -> Optional[PrayerTimes]:
     return result if found >= 3 else None
 
 
+def extract_times_from_divs(soup: BeautifulSoup) -> Optional[PrayerTimes]:
+    """
+    Handle div/flex/grid layouts where prayer names and times are in separate elements.
+    Looks for a container that has all 5 prayer names in close proximity with time patterns.
+    """
+    result = PrayerTimes()
+    found = 0
+
+    # Strategy: find any element that contains a prayer name, then look at siblings/nearby text for times
+    # Walk all elements and build a flat list of (text, element) pairs
+    flat: list[str] = []
+    for el in soup.find_all(True):
+        if el.find(True):  # skip parents, only leaf-like nodes
+            continue
+        t = el.get_text(strip=True)
+        if t:
+            flat.append(t)
+
+    # Sliding window: look for prayer name followed within 5 tokens by time(s)
+    i = 0
+    while i < len(flat):
+        token = flat[i].lower()
+        matched_prayer = None
+        for alias, prayer in PRAYER_ALIASES.items():
+            if re.search(r"\b" + re.escape(alias) + r"\b", token):
+                matched_prayer = prayer
+                break
+
+        if matched_prayer and not getattr(result, f"{matched_prayer}_adhan"):
+            # Look at next 5 tokens for times
+            times = []
+            for j in range(i + 1, min(i + 6, len(flat))):
+                m = _TIME_RE.search(flat[j])
+                if m:
+                    t = normalize_time(f"{m.group(1)} {m.group(2) or ''}")
+                    if t:
+                        times.append(t)
+                # Stop if we hit another prayer name
+                if any(re.search(r"\b" + re.escape(a) + r"\b", flat[j].lower())
+                       for a in PRAYER_ALIASES):
+                    if j > i + 1:
+                        break
+            if times:
+                setattr(result, f"{matched_prayer}_adhan", times[0])
+                if len(times) >= 2:
+                    setattr(result, f"{matched_prayer}_iqama", times[1])
+                found += 1
+        i += 1
+
+    return result if found >= 3 else None
+
+
 def _extract_from_soup(soup: BeautifulSoup) -> Optional[PrayerTimes]:
-    """Run table + text extraction, return whichever is more complete."""
+    """Run table + div + text extraction, return whichever is most complete."""
     table_result = extract_times_from_table(soup)
+    div_result = extract_times_from_divs(soup)
     text_result = extract_times_from_text(soup.get_text("\n"))
 
-    candidates = [r for r in [table_result, text_result] if r]
+    candidates = [r for r in [table_result, div_result, text_result] if r]
     if not candidates:
         return None
     return max(candidates, key=lambda r: r.adhan_count() * 10 + r.iqama_count())
+
+
+# Known prayer widget iframe patterns: (url_pattern, label)
+IFRAME_WIDGET_PATTERNS = [
+    (r"timing\.athanplus\.com", "athanplus"),
+    (r"masjidal\.com", "masjidal"),
+    (r"salahmate\.com", "salahmate"),
+    (r"salattimes\.com", "salattimes"),
+    (r"prayer-times.*widget", "generic_widget"),
+    (r"muslimpro\.com/embed", "muslimpro"),
+    (r"masjid\.us/widget", "masjid_us"),
+]
+
+
+def discover_prayer_iframes(soup: BeautifulSoup, base_url: str) -> list[tuple[str, str]]:
+    """Return list of (iframe_url, widget_type) for iframes likely containing prayer times."""
+    results = []
+    base = urlparse(base_url)
+
+    for iframe in soup.find_all("iframe", src=True):
+        src = iframe.get("src", "")
+        if not src or src.startswith("//"):
+            src = "https:" + src if src.startswith("//") else src
+        if not src.startswith("http"):
+            src = urljoin(f"{base.scheme}://{base.netloc}", src)
+
+        src_lower = src.lower()
+        # Skip YouTube, Google Maps, etc.
+        if any(skip in src_lower for skip in ["youtube", "maps.google", "facebook.com/plugins",
+                                               "twitter", "instagram", "vimeo"]):
+            continue
+
+        widget_type = "unknown_iframe"
+        for pattern, label in IFRAME_WIDGET_PATTERNS:
+            if re.search(pattern, src_lower):
+                widget_type = label
+                break
+
+        # Include if it's a known widget OR if the surrounding context mentions prayer times
+        surrounding = ""
+        parent = iframe.parent
+        if parent:
+            surrounding = parent.get_text(" ", strip=True).lower()
+
+        if widget_type != "unknown_iframe" or any(
+            kw in surrounding for kw in ["prayer", "iqama", "salah", "adhan", "namaz"]
+        ):
+            results.append((src, widget_type))
+
+    return results[:5]
+
+
+async def fetch_iframe_prayer_times(
+    iframe_url: str, widget_type: str, client: httpx.AsyncClient
+) -> Optional[PrayerTimes]:
+    """Fetch an iframe URL and extract prayer times from its HTML."""
+    try:
+        resp = await client.get(
+            iframe_url, follow_redirects=True,
+            headers={
+                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                              "AppleWebKit/537.36 (KHTML, like Gecko) "
+                              "Chrome/120.0.0.0 Safari/537.36",
+                "Referer": iframe_url,
+            },
+            timeout=20,
+        )
+        if resp.status_code != 200:
+            return None
+
+        soup = BeautifulSoup(resp.text, "lxml")
+        result = _extract_from_soup(soup)
+        if result and result.adhan_count() >= 3:
+            result.source = "mosque_website_html"
+            result.confidence = "high" if result.is_complete() else "medium"
+            result.source_url = iframe_url
+            logger.info(f"    Iframe ({widget_type}): {result.adhan_count()} adhans, "
+                        f"{result.iqama_count()} iqamas")
+            return result
+    except Exception as e:
+        logger.debug(f"    Iframe fetch error ({widget_type}): {e}")
+    return None
 
 
 def discover_prayer_subpages(soup: BeautifulSoup, base_url: str) -> list[str]:
@@ -391,8 +542,7 @@ def get_pending_jobs(session: Session, batch_size: int) -> list[MosqueRecord]:
         WHERE j.status IN ('pending', 'failed')
           AND j.next_attempt_at <= NOW()
           AND m.is_active = true
-          AND m.website IS NOT NULL
-        ORDER BY j.priority ASC, j.next_attempt_at ASC
+        ORDER BY (m.website IS NOT NULL) DESC, j.priority ASC, j.next_attempt_at ASC
         LIMIT :batch_size
     """), {"batch_size": batch_size}).mappings().all()
 
@@ -598,7 +748,9 @@ async def _fetch_soup(url: str, client: httpx.AsyncClient) -> Optional[tuple[Bea
 
 
 async def tier2_static_html(mosque: MosqueRecord) -> Optional[PrayerTimes]:
-    """Fetch mosque website with httpx and extract prayer times."""
+    """Fetch mosque website with httpx and extract prayer times.
+    Also checks iframes (AthanPlus, Masjidal, etc.) and prayer sub-pages.
+    """
     if not mosque.website:
         return None
 
@@ -618,12 +770,30 @@ async def tier2_static_html(mosque: MosqueRecord) -> Optional[PrayerTimes]:
             result.tier, result.source_url = 2, final_url
             return result
 
-        # Discover sub-pages with prayer times
-        subpages = discover_prayer_subpages(homepage_soup, final_url)
         best = result
         best_count = result.adhan_count() if result else 0
 
-        for sub_url in subpages[:3]:
+        # Check iframes (catches AthanPlus, Masjidal, custom prayer widgets)
+        iframes = discover_prayer_iframes(homepage_soup, final_url)
+        for iframe_url, widget_type in iframes:
+            iframe_result = await fetch_iframe_prayer_times(iframe_url, widget_type, client)
+            if iframe_result and iframe_result.adhan_count() > best_count:
+                best_count = iframe_result.adhan_count()
+                best = iframe_result
+                if best.is_complete():
+                    break
+
+        if best and best.is_complete():
+            best.source = "mosque_website_html"
+            best.confidence = "high"
+            best.tier = 2
+            logger.info(f"    Tier 2 (iframe): {best.adhan_count()} adhans, "
+                        f"{best.iqama_count()} iqamas")
+            return best
+
+        # Discover sub-pages with prayer times
+        subpages = discover_prayer_subpages(homepage_soup, final_url)
+        for sub_url in subpages[:4]:
             sub = await _fetch_soup(sub_url, client)
             if not sub:
                 continue
@@ -634,6 +804,19 @@ async def tier2_static_html(mosque: MosqueRecord) -> Optional[PrayerTimes]:
                 best.source_url = sub[1]
                 if best.is_complete():
                     break
+
+            # Also check iframes on sub-pages
+            if not (best and best.is_complete()):
+                sub_iframes = discover_prayer_iframes(sub[0], sub[1])
+                for iframe_url, widget_type in sub_iframes:
+                    iframe_result = await fetch_iframe_prayer_times(
+                        iframe_url, widget_type, client
+                    )
+                    if iframe_result and iframe_result.adhan_count() > best_count:
+                        best_count = iframe_result.adhan_count()
+                        best = iframe_result
+                        if best.is_complete():
+                            break
 
         if best and best.adhan_count() >= 3:
             best.source = "mosque_website_html"
@@ -1002,12 +1185,14 @@ async def scrape_mosque(mosque: MosqueRecord, target_date: date,
     result: Optional[PrayerTimes] = None
     tier_reached = 0
 
-    # Tier 1
-    try:
-        result = await tier1_islamicfinder(mosque)
-        tier_reached = 1
-    except Exception as e:
-        logger.debug(f"  Tier 1 exception: {e}")
+    # Tier 1 — IslamicFinder (city-level times, only useful for mosques without websites)
+    # Skip if mosque has a website — tier 2 gives real mosque-specific iqama times
+    if not mosque.website:
+        try:
+            result = await tier1_islamicfinder(mosque)
+            tier_reached = 1
+        except Exception as e:
+            logger.debug(f"  Tier 1 exception: {e}")
 
     # Tier 2
     if not (result and result.is_complete()):

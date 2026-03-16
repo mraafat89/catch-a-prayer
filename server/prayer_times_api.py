@@ -38,7 +38,7 @@ class PrayerTimesAPI:
     """
     
     def __init__(self):
-        self.timeout = 10.0
+        self.timeout = 5.0  # Reduced timeout for faster response
         
     async def get_prayer_times(self, latitude: float, longitude: float, date_obj: Optional[date] = None) -> Optional[PrayerTimesResponse]:
         """

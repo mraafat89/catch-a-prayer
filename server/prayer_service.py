@@ -18,12 +18,77 @@ class PrayerTimeService:
         self.fallback_service = PrayerTimesFallbackService(self.scraper)
     
     async def get_mosque_prayers(self, mosque: Mosque) -> List[Prayer]:
-        """Get today's prayer times for a mosque using fast processing"""
+        """Get today's prayer times for a mosque with fast response and background scraping"""
         print(f"DEBUG: get_mosque_prayers called for {mosque.name} with website: {mosque.website}")
         
-        # For now, use fast fallback prayers to ensure browser responsiveness
-        # Scraping can be re-enabled later with better performance optimization
-        return self._get_fast_fallback_prayers(mosque.location.latitude, mosque.location.longitude)
+        # Fast path: Check if we have recent scraped data in cache
+        if mosque.website:
+            cache_key = f"{mosque.website}_{datetime.now().date()}"
+            if cache_key in self.cache:
+                cached_prayers, cached_time = self.cache[cache_key]
+                if datetime.now() - cached_time < self.cache_expiry:
+                    print(f"DEBUG: Using cached scraped prayers for {mosque.website}")
+                    return cached_prayers
+        
+        # Fast fallback: Return API-based prayer times immediately for responsiveness
+        # This ensures the frontend gets a fast response while background scraping can happen later
+        api_prayers = await self._get_enhanced_fallback_prayers(mosque.location.latitude, mosque.location.longitude)
+        
+        # Background task: Try to scrape and cache for future requests (don't wait for this)
+        if mosque.website and api_prayers:
+            # Schedule background scraping task but don't wait for it
+            import asyncio
+            asyncio.create_task(self._background_scrape_and_cache(mosque.website, cache_key))
+            print(f"DEBUG: Background scraping scheduled for {mosque.website}")
+        
+        return api_prayers
+    
+    async def _background_scrape_and_cache(self, website_url: str, cache_key: str):
+        """Background task to scrape mosque website and cache results"""
+        try:
+            print(f"DEBUG: Background scraping started for {website_url}")
+            scraped_prayers = await self.scraper.scrape_mosque_prayers(website_url)
+            if scraped_prayers and len(scraped_prayers) >= 3:
+                # Filter out invalid Jumaa prayers (common scraping error)
+                filtered_prayers = self._filter_invalid_jumaa_prayers(scraped_prayers)
+                # Cache the successful scraping result
+                self.cache[cache_key] = (filtered_prayers, datetime.now())
+                print(f"DEBUG: Background scraping successful for {website_url} - cached {len(filtered_prayers)} prayers (filtered from {len(scraped_prayers)})")
+            else:
+                print(f"DEBUG: Background scraping failed for {website_url} - insufficient prayers ({len(scraped_prayers) if scraped_prayers else 0})")
+        except Exception as e:
+            print(f"DEBUG: Background scraping error for {website_url}: {e}")
+    
+    def _filter_invalid_jumaa_prayers(self, prayers: List[Prayer]) -> List[Prayer]:
+        """Filter out invalid Jumaa prayers that are scraping errors"""
+        from models import PrayerName
+        from datetime import datetime
+        
+        # Remove multiple Jumaa prayers (scraping error)
+        # Valid: Only 1-3 Jumaa sessions on Friday, replacing Dhuhr
+        jumaa_prayers = [p for p in prayers if p.prayer_name == PrayerName.JUMAA]
+        other_prayers = [p for p in prayers if p.prayer_name != PrayerName.JUMAA]
+        
+        if len(jumaa_prayers) > 3:
+            # Too many Jumaa prayers - likely scraping error, remove all
+            print(f"DEBUG: Removed {len(jumaa_prayers)} invalid Jumaa prayers (too many)")
+            return other_prayers
+        elif len(jumaa_prayers) > 0:
+            # Check if today is Friday (Jumaa should only be on Friday)
+            today = datetime.now().weekday()  # Monday=0, Sunday=6
+            is_friday = today == 4  # Friday=4
+            
+            if not is_friday:
+                # Remove Jumaa prayers on non-Friday days
+                print(f"DEBUG: Removed {len(jumaa_prayers)} Jumaa prayers (not Friday)")
+                return other_prayers
+            else:
+                # Keep reasonable Jumaa prayers on Friday
+                print(f"DEBUG: Kept {len(jumaa_prayers)} Jumaa prayers (Friday)")
+                return other_prayers + jumaa_prayers
+        else:
+            # No Jumaa prayers to filter
+            return prayers
     
     async def get_monthly_prayers(self, mosque: Mosque, year: int, month: int) -> Optional[Dict]:
         """Get monthly prayer schedule for a mosque"""
@@ -53,19 +118,43 @@ class PrayerTimeService:
         
         return prayers
     
-    def _get_fast_fallback_prayers(self, latitude: float, longitude: float) -> List[Prayer]:
-        """Get fallback prayers quickly - use cached API call or defaults"""
+    async def _get_enhanced_fallback_prayers(self, latitude: float, longitude: float) -> List[Prayer]:
+        """Get fallback prayers using prayer times API, then defaults"""
         
-        # Check if we have a cached API result for this location today
-        cache_key = f"api_prayers_{int(latitude * 1000)}_{int(longitude * 1000)}_{datetime.now().date()}"
+        # Use regional caching - round coordinates to reduce cache misses
+        rounded_lat = round(latitude * 10) / 10  # 0.1 degree precision (~11km)
+        rounded_lng = round(longitude * 10) / 10
+        cache_key = f"api_prayers_{int(rounded_lat * 10)}_{int(rounded_lng * 10)}_{datetime.now().date()}"
         
         if cache_key in self.cache:
             cached_result = self.cache[cache_key]
             if datetime.now() - cached_result['timestamp'] < self.cache_expiry:
-                print(f"DEBUG: Using cached API prayers for {latitude}, {longitude}")
+                print(f"DEBUG: Using cached regional API prayers for ~{latitude}, {longitude}")
                 return cached_result['prayers']
         
-        # If no cached result, use defaults (very fast)
+        # Try to get prayer times from API with timeout
+        print(f"DEBUG: Attempting to get API prayers for {latitude}, {longitude}")
+        try:
+            # Use a shorter timeout for faster response
+            import asyncio
+            api_prayers, source_info = await asyncio.wait_for(
+                self.fallback_service.get_prayers_with_fallback(None, latitude, longitude),
+                timeout=6.0  # Max 6 seconds for API call
+            )
+            if api_prayers and len(api_prayers) >= 5:
+                print(f"DEBUG: Successfully got {len(api_prayers)} prayers from API: {source_info}")
+                # Cache the result for the region
+                self.cache[cache_key] = {
+                    'prayers': api_prayers,
+                    'timestamp': datetime.now()
+                }
+                return api_prayers
+        except asyncio.TimeoutError:
+            print(f"DEBUG: API prayer times timed out for {latitude}, {longitude}")
+        except Exception as e:
+            print(f"DEBUG: API prayer times failed: {e}")
+        
+        # If API fails, use defaults (last resort)
         print(f"DEBUG: Using default prayers for {latitude}, {longitude}")
         return self._get_default_prayers()
     
@@ -210,8 +299,15 @@ class PrayerTimeService:
     
     def _find_best_prayer_opportunity(self, prayers: List[Prayer], user_current_mosque_tz: datetime, arrival_time_mosque_tz: datetime, user_travel_minutes: int) -> Optional[NextPrayer]:
         """
-        Find the best prayer opportunity following Islamic timing rules.
+        Find the best prayer opportunity using Smart Prayer Recommendation Strategy.
         All calculations done in mosque's timezone.
+        
+        Priority Order:
+        1. Current Prayer in Progress (Highest Priority)
+        2. Recently Ended Prayer (High Priority) 
+        3. Next Prayer Today (Medium Priority)
+        4. Make-Up Prayer Opportunity (Medium Priority)
+        5. Tomorrow's First Prayer (Low Priority)
         """
         from models import PrayerStatus
         
@@ -219,21 +315,41 @@ class PrayerTimeService:
         arrival_time = arrival_time_mosque_tz.time()
         current_date = user_current_mosque_tz.date()
         
-        print(f"DEBUG: Finding prayer for current time: {current_time}, arrival time: {arrival_time}")
+        print(f"DEBUG: Smart prayer selection for current time: {current_time}, arrival time: {arrival_time}")
         
-        # 1. Check if we can catch any prayer that's currently happening
+        # 1. HIGHEST PRIORITY: Check if we can catch any prayer that's currently happening
         current_prayer = self._find_current_prayer_in_progress(prayers, user_current_mosque_tz, arrival_time_mosque_tz, user_travel_minutes)
         if current_prayer:
+            print(f"DEBUG: Smart recommendation: Current prayer in progress")
             return current_prayer
         
-        # 2. Find next upcoming prayer (including next day if needed)
-        upcoming_prayer = self._find_next_upcoming_prayer(prayers, user_current_mosque_tz, arrival_time_mosque_tz, user_travel_minutes)
+        # 2. HIGH PRIORITY: Check for active prayer periods (congregation ended but prayer period continues)
+        active_prayer = self._find_active_prayer_period(prayers, user_current_mosque_tz, arrival_time_mosque_tz, user_travel_minutes)
+        if active_prayer:
+            print(f"DEBUG: Smart recommendation: Active prayer period (can pray solo)")
+            return active_prayer
+        
+        # 3. MEDIUM PRIORITY: Find next upcoming prayer today
+        upcoming_prayer = self._find_next_upcoming_prayer_today_only(prayers, user_current_mosque_tz, arrival_time_mosque_tz, user_travel_minutes)
         if upcoming_prayer:
+            print(f"DEBUG: Smart recommendation: Next prayer today")
             return upcoming_prayer
         
-        # 3. Check for make-up prayer opportunities (missed prayers)
+        # 4. MEDIUM PRIORITY: Check for make-up prayer opportunities
         makeup_prayer = self._find_makeup_prayer_opportunity(prayers, user_current_mosque_tz, arrival_time_mosque_tz, user_travel_minutes)
-        return makeup_prayer
+        if makeup_prayer:
+            print(f"DEBUG: Smart recommendation: Make-up prayer opportunity")
+            return makeup_prayer
+        
+        # 5. LOW PRIORITY: Consider tomorrow's Fajr only if it's late night
+        if self._is_late_night_for_tomorrow_fajr(user_current_mosque_tz):
+            tomorrow_fajr = self._find_tomorrow_fajr(prayers, user_current_mosque_tz, arrival_time_mosque_tz, user_travel_minutes)
+            if tomorrow_fajr:
+                print(f"DEBUG: Smart recommendation: Tomorrow's Fajr (late night)")
+                return tomorrow_fajr
+        
+        print(f"DEBUG: Smart recommendation: No suitable prayer found")
+        return None
     
     def _find_current_prayer_in_progress(self, prayers: List[Prayer], user_current_mosque_tz: datetime, arrival_time_mosque_tz: datetime, user_travel_minutes: int) -> Optional[NextPrayer]:
         """Check for prayers currently in progress that can still be joined"""
@@ -249,18 +365,26 @@ class PrayerTimeService:
             iqama_end_time = (datetime.combine(user_current_mosque_tz.date(), iqama_time) + timedelta(minutes=congregation_window_minutes)).time()
             
             if iqama_time <= current_time <= iqama_end_time:
-                print(f"DEBUG: {prayer.prayer_name.value} is currently in progress")
+                print(f"DEBUG: {prayer.prayer_name.value} congregation is currently in progress")
                 
                 # Check if user can arrive within congregation window
                 arrival_time = arrival_time_mosque_tz.time()
                 if arrival_time <= iqama_end_time:
                     can_catch = True
-                    status = PrayerStatus.CAN_CATCH_AFTER_IMAM if arrival_time > iqama_time else PrayerStatus.CAN_CATCH_WITH_IMAM
-                    message = f"Can join {prayer.prayer_name.value} in progress (arrives at {arrival_time_mosque_tz.strftime('%I:%M %p')})"
+                    
+                    if arrival_time <= iqama_time:
+                        # Can catch with Imam from beginning (best case)
+                        status = PrayerStatus.CAN_CATCH_WITH_IMAM
+                        message = f"🕌 Can catch {prayer.prayer_name.value} WITH congregation - arrive by {iqama_time.strftime('%I:%M %p')}"
+                    else:
+                        # Can join congregation in progress
+                        status = PrayerStatus.CAN_CATCH_AFTER_IMAM
+                        minutes_left = int((iqama_end_datetime_tz - user_current_mosque_tz).total_seconds() / 60)
+                        message = f"🕌 Can join {prayer.prayer_name.value} congregation in progress - hurry! {minutes_left} minutes left"
                 else:
                     can_catch = False
                     status = PrayerStatus.CANNOT_CATCH
-                    message = f"Cannot catch {prayer.prayer_name.value} - congregation will end before arrival"
+                    message = f"⚠️ Cannot reach mosque before {prayer.prayer_name.value} congregation ends - pray at nearby clean location"
                 
                 # Ensure both datetimes have same timezone info for calculation
                 iqama_end_datetime_tz = datetime.combine(user_current_mosque_tz.date(), iqama_end_time)
@@ -278,6 +402,176 @@ class PrayerTimeService:
                     prayer_time=prayer.iqama_time or prayer.adhan_time,
                     message=message
                 )
+        
+        return None
+    
+    def _find_active_prayer_period(self, prayers: List[Prayer], user_current_mosque_tz: datetime, arrival_time_mosque_tz: datetime, user_travel_minutes: int) -> Optional[NextPrayer]:
+        """Check for prayers whose period is currently active (congregation ended but prayer period continues)"""
+        from models import PrayerStatus, PrayerName
+        
+        current_time = user_current_mosque_tz.time()
+        current_date = user_current_mosque_tz.date()
+        
+        for prayer in prayers:
+            adhan_time = time.fromisoformat(prayer.adhan_time)
+            iqama_time = time.fromisoformat(prayer.iqama_time or prayer.adhan_time)
+            
+            # Calculate congregation end time (Iqama + ~15 minutes)
+            congregation_end_time = (datetime.combine(current_date, iqama_time) + timedelta(minutes=15)).time()
+            
+            # Determine prayer period end time
+            if prayer.prayer_name == PrayerName.FAJR:
+                # Fajr period ends at sunrise (approximate: Dhuhr - 6 hours)
+                dhuhr_prayer = next((p for p in prayers if p.prayer_name == PrayerName.DHUHR), None)
+                if dhuhr_prayer:
+                    dhuhr_time = time.fromisoformat(dhuhr_prayer.adhan_time)
+                    # Approximate sunrise as 6 hours before Dhuhr
+                    sunrise_dt = datetime.combine(current_date, dhuhr_time) - timedelta(hours=6)
+                    prayer_period_end_time = sunrise_dt.time()
+                else:
+                    prayer_period_end_time = time(6, 30)  # Default sunrise
+            else:
+                # For other prayers, period ends at next prayer's Adhan time
+                next_prayer_idx = None
+                for i, p in enumerate(prayers):
+                    if p.prayer_name == prayer.prayer_name:
+                        next_prayer_idx = (i + 1) % len(prayers)
+                        break
+                
+                if next_prayer_idx is not None:
+                    next_prayer = prayers[next_prayer_idx]
+                    next_adhan_time = time.fromisoformat(next_prayer.adhan_time)
+                    
+                    # Handle day boundary (e.g., Isha until next day's Fajr)
+                    if next_adhan_time < adhan_time:
+                        # Next prayer is tomorrow
+                        tomorrow = current_date + timedelta(days=1)
+                        prayer_period_end_dt = datetime.combine(tomorrow, next_adhan_time)
+                        
+                        # Check if we're within the prayer period
+                        if current_time >= adhan_time:
+                            # We're in today's prayer period
+                            prayer_period_end_time = time(23, 59)  # Until end of day
+                        else:
+                            prayer_period_end_time = next_adhan_time
+                    else:
+                        prayer_period_end_time = next_adhan_time
+                else:
+                    continue
+            
+            # Check if congregation ended but prayer period is still active
+            if (adhan_time <= current_time and  # Prayer period has started
+                congregation_end_time < current_time and  # Congregation has ended
+                current_time < prayer_period_end_time):  # Prayer period still active
+                
+                print(f"DEBUG: {prayer.prayer_name.value} prayer period active (congregation ended but can pray solo)")
+                
+                arrival_time = arrival_time_mosque_tz.time()
+                
+                # Calculate time remaining in prayer period
+                if prayer_period_end_time == time(23, 59):
+                    # Handle day boundary case
+                    prayer_period_end_dt = datetime.combine(current_date + timedelta(days=1), time.fromisoformat(prayers[0].adhan_time))  # Next day's Fajr
+                else:
+                    prayer_period_end_dt = datetime.combine(current_date, prayer_period_end_time)
+                
+                if user_current_mosque_tz.tzinfo:
+                    prayer_period_end_dt = prayer_period_end_dt.replace(tzinfo=user_current_mosque_tz.tzinfo)
+                
+                minutes_remaining = int((prayer_period_end_dt - user_current_mosque_tz).total_seconds() / 60)
+                
+                if arrival_time < prayer_period_end_time:
+                    can_catch = True
+                    status = PrayerStatus.CAN_CATCH_AFTER_IMAM  # Solo prayer
+                    hours_remaining = minutes_remaining // 60
+                    
+                    if hours_remaining > 2:
+                        message = f"🤲 Can catch {prayer.prayer_name.value} at mosque (pray solo) - congregation ended but prayer period active ({hours_remaining}+ hours left)"
+                    else:
+                        message = f"🤲 Can catch {prayer.prayer_name.value} at mosque (pray solo) - congregation ended but {minutes_remaining} min left in prayer period"
+                else:
+                    can_catch = False
+                    status = PrayerStatus.CANNOT_CATCH
+                    
+                    # Calculate time remaining in prayer period for user guidance
+                    time_left_hours = minutes_remaining // 60
+                    if time_left_hours > 2:
+                        message = f"⚠️ Cannot reach mosque in time - pray {prayer.prayer_name.value} at nearby clean location ({time_left_hours}+ hours left in prayer period)"
+                    else:
+                        message = f"⚠️ Cannot reach mosque in time - pray {prayer.prayer_name.value} at nearby clean location ({minutes_remaining} min left in prayer period)"
+                
+                return NextPrayer(
+                    prayer=prayer.prayer_name,
+                    status=status,
+                    can_catch=can_catch,
+                    travel_time_minutes=user_travel_minutes,
+                    time_remaining_minutes=minutes_remaining,
+                    arrival_time=arrival_time_mosque_tz,
+                    prayer_time=prayer.iqama_time or prayer.adhan_time,
+                    message=message
+                )
+        
+        return None
+    
+    def _find_next_upcoming_prayer_today_only(self, prayers: List[Prayer], user_current_mosque_tz: datetime, arrival_time_mosque_tz: datetime, user_travel_minutes: int) -> Optional[NextPrayer]:
+        """Find the next upcoming prayer today only (don't jump to tomorrow)"""
+        from models import PrayerStatus
+        
+        current_time = user_current_mosque_tz.time()
+        
+        # Check remaining prayers today
+        for prayer in prayers:
+            iqama_time = time.fromisoformat(prayer.iqama_time or prayer.adhan_time)
+            
+            if iqama_time > current_time:
+                print(f"DEBUG: Found next prayer today: {prayer.prayer_name.value} at {iqama_time}")
+                return self._evaluate_prayer_catchability(prayer, user_current_mosque_tz, arrival_time_mosque_tz, user_travel_minutes)
+        
+        return None
+    
+    def _is_late_night_for_tomorrow_fajr(self, user_current_mosque_tz: datetime) -> bool:
+        """Determine if it's late enough at night to recommend tomorrow's Fajr"""
+        current_time = user_current_mosque_tz.time()
+        
+        # Consider it "late night" after 10:30 PM or before 4:00 AM
+        late_night_start = time(22, 30)  # 10:30 PM
+        early_morning_end = time(4, 0)   # 4:00 AM
+        
+        is_late_night = current_time >= late_night_start or current_time <= early_morning_end
+        print(f"DEBUG: Current time {current_time}, is late night: {is_late_night}")
+        return is_late_night
+    
+    def _find_tomorrow_fajr(self, prayers: List[Prayer], user_current_mosque_tz: datetime, arrival_time_mosque_tz: datetime, user_travel_minutes: int) -> Optional[NextPrayer]:
+        """Find tomorrow's Fajr prayer"""
+        from models import PrayerStatus
+        
+        fajr_prayer = next((p for p in prayers if p.prayer_name == PrayerName.FAJR), None)
+        if fajr_prayer:
+            print("DEBUG: Considering tomorrow's Fajr")
+            # Calculate for tomorrow
+            tomorrow = user_current_mosque_tz.date() + timedelta(days=1)
+            tomorrow_fajr_dt = datetime.combine(tomorrow, time.fromisoformat(fajr_prayer.iqama_time or fajr_prayer.adhan_time))
+            
+            # Calculate travel time to tomorrow's prayer
+            # Ensure both datetimes have same timezone info
+            tomorrow_fajr_dt_tz = tomorrow_fajr_dt.replace(tzinfo=user_current_mosque_tz.tzinfo) if user_current_mosque_tz.tzinfo and not tomorrow_fajr_dt.tzinfo else tomorrow_fajr_dt
+            time_until_fajr = (tomorrow_fajr_dt_tz - user_current_mosque_tz).total_seconds() / 60
+            
+            # For tomorrow's prayers, assume user will travel closer to prayer time
+            can_catch = True  # Tomorrow's prayers are generally catchable
+            status = PrayerStatus.CAN_CATCH_WITH_IMAM
+            message = f"All today's prayers completed. Next: Tomorrow's Fajr at {fajr_prayer.iqama_time or fajr_prayer.adhan_time}"
+            
+            return NextPrayer(
+                prayer=fajr_prayer.prayer_name,
+                status=status,
+                can_catch=can_catch,
+                travel_time_minutes=user_travel_minutes,
+                time_remaining_minutes=int(time_until_fajr - user_travel_minutes),
+                arrival_time=arrival_time_mosque_tz,  # This would be today's arrival time, but not relevant for tomorrow
+                prayer_time=fajr_prayer.iqama_time or fajr_prayer.adhan_time,
+                message=message
+            )
         
         return None
     
@@ -356,7 +650,7 @@ class PrayerTimeService:
             if arrival_time_mosque_tz.tzinfo:
                 arrival_datetime = arrival_datetime.replace(tzinfo=arrival_time_mosque_tz.tzinfo)
             minutes_before = int((iqama_datetime - arrival_datetime).total_seconds() / 60)
-            message = f"Can catch {prayer.prayer_name.value} with Imam (arrives {minutes_before} min before Iqama)"
+            message = f"🕌 Next prayer: {prayer.prayer_name.value} WITH congregation (arrive {minutes_before} min before Iqama)"
         elif arrival_time <= congregation_end_time:
             status = PrayerStatus.CAN_CATCH_AFTER_IMAM
             can_catch = True
@@ -365,18 +659,18 @@ class PrayerTimeService:
             if arrival_time_mosque_tz.tzinfo:
                 arrival_datetime = arrival_datetime.replace(tzinfo=arrival_time_mosque_tz.tzinfo)
             minutes_after = int((arrival_datetime - iqama_datetime).total_seconds() / 60)
-            message = f"Can catch {prayer.prayer_name.value} after Imam started (arrives {minutes_after} min after Iqama)"
+            message = f"🕌 Can join {prayer.prayer_name.value} congregation (arrive {minutes_after} min after Iqama starts)"
         else:
             # Check if can catch solo within prayer period
             next_prayer_adhan = self._get_next_prayer_adhan_time(prayer, prayers)
             if next_prayer_adhan and arrival_time < next_prayer_adhan:
                 status = PrayerStatus.CAN_CATCH_AFTER_IMAM  # Solo prayer
                 can_catch = True
-                message = f"Can catch {prayer.prayer_name.value} solo (arrives after congregation)"
+                message = f"🤲 Can catch {prayer.prayer_name.value} at mosque (pray solo) - will miss congregation"
             else:
                 status = PrayerStatus.CANNOT_CATCH
                 can_catch = False
-                message = f"Cannot catch {prayer.prayer_name.value} - prayer period will end before arrival"
+                message = f"⚠️ Cannot reach mosque for {prayer.prayer_name.value} - pray at nearby clean location when time comes"
         
         return NextPrayer(
             prayer=prayer.prayer_name,

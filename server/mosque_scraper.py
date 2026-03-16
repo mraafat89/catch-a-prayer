@@ -34,7 +34,7 @@ class MosqueScraper:
     def __init__(self):
         self.cache = {}
         self.cache_expiry = timedelta(hours=6)
-        self.timeout = 15.0
+        self.timeout = 8.0  # Reduced timeout for faster response
         
     async def scrape_mosque_prayers(self, website_url: str) -> List[Prayer]:
         """
@@ -172,8 +172,8 @@ class MosqueScraper:
     
     async def _scrape_page(self, client: httpx.AsyncClient, url: str) -> List[Prayer]:
         """Enhanced page scraping with retry logic and multiple content detection"""
-        max_retries = 3
-        retry_delay = 2
+        max_retries = 2  # Reduced retries for faster response
+        retry_delay = 1  # Reduced delay
         
         for attempt in range(max_retries):
             try:
@@ -814,7 +814,7 @@ class MosqueScraper:
                 driver.get(website_url)
                 
                 # Wait for potential dynamic content to load
-                await asyncio.sleep(3)
+                await asyncio.sleep(1)  # Reduced wait time
                 
                 # Try to find prayer-related elements that might have been loaded
                 prayer_selectors = [
