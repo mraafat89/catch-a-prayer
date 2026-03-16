@@ -1586,38 +1586,55 @@ async def tier3_playwright(mosque: MosqueRecord, target_date: Optional[date] = N
 
     async with _playwright_semaphore:
         try:
-            ctx = await _get_playwright_context()
-            page = await ctx.new_page()
+            return await asyncio.wait_for(_tier3_inner(url, target_date), timeout=90)
+        except asyncio.TimeoutError:
+            logger.warning(f"  Tier 3 hard timeout (90s) for {url}")
+            return None
+        except Exception as e:
+            logger.debug(f"  Tier 3 outer exception: {e}")
+            return None
 
-            # Capture prayer API JSON responses during page load
-            intercepted_result: list[PrayerTimes] = []
 
-            async def _on_response(response):
-                if intercepted_result:
-                    return  # already got one
-                resp_url = response.url
-                if not any(pat in resp_url for pat in _PRAYER_API_PATTERNS):
-                    return
-                try:
-                    body = await response.text()
-                    parsed = _parse_intercepted_response(resp_url, body, target_date)
-                    if parsed and parsed.adhan_count() >= 3:
-                        intercepted_result.append(parsed)
-                        logger.info(f"    Tier 3 API intercept ({resp_url[:60]}): "
-                                    f"{parsed.adhan_count()} adhans")
-                except Exception:
-                    pass
+async def _tier3_inner(url: str, target_date) -> Optional["PrayerTimes"]:
+    """Inner Playwright logic, wrapped by tier3_playwright with a hard asyncio timeout."""
+    try:
+        ctx = await _get_playwright_context()
+        page = await ctx.new_page()
+        # Hard page-level timeout: prevents any single operation from blocking forever
+        page.set_default_timeout(20000)
 
-            page.on("response", _on_response)
+        # Capture prayer API JSON responses during page load
+        intercepted_result: list[PrayerTimes] = []
 
+        async def _on_response(response):
+            if intercepted_result:
+                return  # already got one
+            resp_url = response.url
+            if not any(pat in resp_url for pat in _PRAYER_API_PATTERNS):
+                return
             try:
-                await page.goto(url, wait_until="networkidle", timeout=25000)
+                body = await response.text()
+                parsed = _parse_intercepted_response(resp_url, body, target_date)
+                if parsed and parsed.adhan_count() >= 3:
+                    intercepted_result.append(parsed)
+                    logger.info(f"    Tier 3 API intercept ({resp_url[:60]}): "
+                                f"{parsed.adhan_count()} adhans")
             except Exception:
-                try:
-                    await page.goto(url, wait_until="load", timeout=20000)
-                except Exception:
-                    await page.close()
-                    return None
+                pass
+
+        page.on("response", _on_response)
+
+        try:
+            # Use domcontentloaded (not networkidle) — networkidle hangs on sites
+            # with persistent polling/websockets (e.g. countdown pages) and can
+            # block the entire process in an uninterruptible kernel I/O wait.
+            await page.goto(url, wait_until="domcontentloaded", timeout=20000)
+        except Exception:
+            try:
+                await page.goto(url, wait_until="load", timeout=15000)
+            except Exception:
+                await page.close()
+                return None
 
             # If we captured a complete result via API interception, return it immediately
             if intercepted_result:
@@ -1643,7 +1660,7 @@ async def tier3_playwright(mosque: MosqueRecord, target_date: Optional[date] = N
 
             for sub_url in subpages[:3]:
                 try:
-                    await page.goto(sub_url, wait_until="networkidle", timeout=20000)
+                    await page.goto(sub_url, wait_until="domcontentloaded", timeout=15000)
                     sub_soup = BeautifulSoup(await page.content(), "lxml")
                     sub_result = _extract_from_soup(sub_soup)
                     if sub_result and sub_result.adhan_count() > best_count:
@@ -1671,8 +1688,8 @@ async def tier3_playwright(mosque: MosqueRecord, target_date: Optional[date] = N
                             f"{best.iqama_count()} iqamas")
                 return best
 
-        except Exception as e:
-            logger.debug(f"    Tier 3 error: {e}")
+    except Exception as e:
+        logger.debug(f"    Tier 3 error: {e}")
 
     return None
 
