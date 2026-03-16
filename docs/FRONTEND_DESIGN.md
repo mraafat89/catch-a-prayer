@@ -707,18 +707,22 @@ The header pill shows the **current mode** and taps to switch:
 
 **Muqeem** (مقيم) = resident, home. **Musafir** (مسافر) = traveler, safar. The toggle controls whether prayer combining (Jam') is allowed across the whole app.
 
-The toggle does **not** require a destination to be set. When ON without a destination, the user is stationary in another city and sees combination options on mosque cards.
+The toggle works independently of the trip planner:
+- **Musafir ON, no destination** — user is stationary away from home; nearby mosque cards show combination options
+- **Musafir OFF, no destination** — normal local mode; nearby mosque cards show standard prayer times only
 
-### Trip Planner (Separate from Global Toggle)
+### Trip Planner (Always Accessible, Inherits Global Mode)
 
-Trip planning is available whenever ✈️ is ON or a destination is already set. The trip planner has its own **"✈️ Apply Musafir rules (combine prayers)"** toggle inside the form, which **defaults to the global toggle state** but can be overridden per trip.
+Trip planning is **always available** — always shown collapsed as a "🗺 Plan a trip →" tap target at the top of the list regardless of mode. Expanding it opens the form.
 
-| Global ✈️ | Trip form toggle | `trip_mode` sent | Use case |
-|---|---|---|---|
-| OFF | OFF (default) | `"driving"` | Local commute — route mosques, no combining |
-| ON | ON (default) | `"travel"` | Safar road trip — route mosques + combining |
-| ON | OFF (user override) | `"driving"` | Driving but chose not to combine for this trip |
-| OFF | ON (user override) | `"travel"` | User turned off global toggle but wants combining for this specific trip |
+The trip planner has **no separate combining toggle** — it always uses the current global mode:
+
+| Global mode | `trip_mode` sent | Trip result |
+|---|---|---|
+| 🏠 Muqeem | `"driving"` | Route mosques, standard times only |
+| ✈️ Musafir | `"travel"` | Route mosques + combining options (Jam') |
+
+The active mode is shown as a badge inside the form header so the user knows which rules apply.
 
 ### Mode: Musafir, Static (No Route)
 
@@ -743,15 +747,20 @@ Uses the `travel_combinations` field returned by `/api/nearby` when `travel_mode
 
 ### Trip Planner Form
 
-Shown when ✈️ toggle is ON or a destination is set.
+Always shown at the top of the list. When no trip is active it renders as a small collapsed row:
 
 ```
 ┌──────────────────────────────────────────────────────┐
-│  PLAN YOUR TRIP                                      │  teal-700 uppercase label
+│  🗺 Plan a trip →                                    │  taps to expand form
+└──────────────────────────────────────────────────────┘
+```
+
+Tapping it expands the full form:
+
+```
+┌──────────────────────────────────────────────────────┐
+│  PLAN YOUR TRIP              [🏠 Muqeem / ✈️ Musafir]│  mode badge, read-only — reflects global mode
 │                                                      │
-│  ✈️ Apply Musafir rules (combine prayers)   [● ON]   │  toggle — defaults to global ✈️ state
-│  ℹ️ Allows combining Dhuhr+Asr, Maghrib+Isha        │  shown only when toggle ON
-│     (Jam' Taqdeem / Ta'kheer).                       │
 │                                                      │
 │  📍  From: Current location                   [⌖]   │  optional — geocode search
 │  🏁  To: Destination *                               │  required — geocode search

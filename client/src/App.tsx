@@ -1217,9 +1217,11 @@ function DestinationInput() {
   const [originQuery, setOriginQuery] = useState(travelOrigin?.place_name ?? '');
   const [originSugg, setOriginSugg]  = useState<GeocodeSuggestion[]>([]);
   const [originLoading, setOriginLoading] = useState(false);
-  // Trip mode: defaults to global travel toggle but user can override per trip
-  const [tripCombine, setTripCombine] = useState<boolean>(() => travelModeStore);
-  const tripMode = tripCombine ? 'travel' : 'driving';
+  // Trip mode always follows global Muqeem/Musafir toggle — no per-trip override
+  const tripMode = travelModeStore ? 'travel' : 'driving';
+
+  // Whether the trip planner form is expanded (starts collapsed unless a destination/plan exists)
+  const [formExpanded, setFormExpanded] = useState(() => !!travelDestination);
 
   // Default departure time = right now in local time (datetime-local needs YYYY-MM-DDTHH:mm)
   const defaultDeparture = (() => {
@@ -1274,6 +1276,7 @@ function DestinationInput() {
     setDestQuery(''); setDestSugg([]);
     setOriginQuery(''); setOriginSugg([]);
     setDepartureInput(defaultDeparture);
+    setFormExpanded(false);
   }
 
   const [chipExpanded, setChipExpanded] = useState(false);
@@ -1308,7 +1311,7 @@ function DestinationInput() {
 
   // Compact chip when plan is active and not expanded for editing
   if (travelDestination && useStore.getState().travelPlan && !chipExpanded) {
-    const modeLabel = tripCombine ? '✈️ Musafir trip' : '🚗 Driving trip';
+    const modeLabel = travelModeStore ? '✈️ Musafir trip' : '🚗 Muqeem trip';
     const originLabel = travelOrigin?.place_name ?? 'Current location';
     return (
       <div
@@ -1333,30 +1336,31 @@ function DestinationInput() {
     );
   }
 
+  // Collapsed "Plan a trip" entry row
+  if (!formExpanded && !travelDestination) {
+    return (
+      <button
+        onClick={() => setFormExpanded(true)}
+        className="mx-3 mb-2 w-[calc(100%-1.5rem)] flex items-center justify-between bg-white border border-gray-200 rounded-xl px-3 py-2.5 text-sm text-gray-500 hover:border-teal-300 hover:text-teal-700 transition-colors shadow-sm"
+      >
+        <span>🗺 Plan a trip</span>
+        <span className="text-xs text-gray-400">→</span>
+      </button>
+    );
+  }
+
   return (
     <div className="mx-3 mb-2 bg-white border border-teal-200 rounded-xl p-3 shadow-sm space-y-2">
-      <p className="text-xs font-bold text-teal-700 uppercase tracking-wider">Plan Your Trip</p>
-
-      {/* Musafir / combining toggle for this trip */}
-      <div className="flex items-center justify-between bg-gray-50 rounded-lg px-2.5 py-2">
-        <div className="min-w-0">
-          <p className="text-xs font-medium text-gray-700">
-            {tripCombine ? '✈️ Musafir trip' : '🏠 Muqeem trip'}
-          </p>
-          {tripCombine && (
-            <p className="text-xs text-teal-600 mt-0.5">Jam' Taqdeem / Ta'kheer allowed along route</p>
-          )}
-          {!tripCombine && (
-            <p className="text-xs text-gray-400 mt-0.5">Tap to enable prayer combining (Musafir)</p>
-          )}
-        </div>
-        <button
-          onClick={() => setTripCombine((v) => !v)}
-          className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors flex-shrink-0 ml-3 ${tripCombine ? 'bg-teal-600' : 'bg-gray-300'}`}
-        >
-          <span className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white transition-transform ${tripCombine ? 'translate-x-4' : 'translate-x-0.5'}`} />
-        </button>
+      {/* Header with mode badge */}
+      <div className="flex items-center justify-between">
+        <p className="text-xs font-bold text-teal-700 uppercase tracking-wider">Plan Your Trip</p>
+        <span className={`text-xs font-semibold px-2 py-0.5 rounded-full ${travelModeStore ? 'bg-teal-100 text-teal-700' : 'bg-gray-100 text-gray-600'}`}>
+          {travelModeStore ? '✈️ Musafir' : '🏠 Muqeem'}
+        </span>
       </div>
+      {travelModeStore && (
+        <p className="text-xs text-teal-600">Prayer combining (Jam') enabled along route</p>
+      )}
 
       {/* From */}
       <div className="relative">
@@ -1721,8 +1725,8 @@ function App() {
       {/* Scrollable list */}
       <div className="flex-1 overflow-y-auto px-3 pt-4 pb-24 space-y-4">
 
-        {/* Destination input — shown when ✈️ Musafir is ON or a destination is already set */}
-        {(travelModeStore || travelDestination) && <DestinationInput />}
+        {/* Trip planner — always shown (collapsed by default) */}
+        <DestinationInput />
 
         {/* Loading */}
         {mosquesLoading && (
