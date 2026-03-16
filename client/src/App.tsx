@@ -73,6 +73,15 @@ const WEBSITE_SOURCES = new Set([
   'static_html', 'playwright_html', 'vision_ai',
 ]);
 
+function haversineKm(lat1: number, lng1: number, lat2: number, lng2: number): number {
+  const R = 6371;
+  const dLat = (lat2 - lat1) * Math.PI / 180;
+  const dLng = (lng2 - lng1) * Math.PI / 180;
+  const a = Math.sin(dLat / 2) ** 2 +
+    Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * Math.sin(dLng / 2) ** 2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
 function dataSourceBadge(prayers: { adhan_source?: string | null; iqama_source?: string | null; data_freshness?: string | null }[]): {
   label: string; color: string; title?: string;
 } {
@@ -1280,13 +1289,17 @@ function DestinationInput() {
   }
 
   const [chipExpanded, setChipExpanded] = useState(false);
+  // Non-null = long-trip warning is showing; value = distance in km
+  const [longTripKm, setLongTripKm] = useState<number | null>(null);
+  const setTravelMode = useStore((s) => s.setTravelMode);
 
-  async function handlePlan() {
+  async function executePlan(mode: 'travel' | 'driving') {
     if (!travelDestination) return;
     const originLat = travelOrigin?.lat ?? userLocation?.latitude;
     const originLng = travelOrigin?.lng ?? userLocation?.longitude;
     if (!originLat || !originLng) return;
 
+    setLongTripKm(null);
     const depIso = departureInput ? new Date(departureInput).toISOString() : undefined;
     setTravelDepartureTime(depIso || null);
     setTravelPlanLoading(true);
@@ -1299,7 +1312,7 @@ function DestinationInput() {
         travelDestination.place_name,
         travelOrigin?.place_name,
         depIso,
-        tripMode,
+        mode,
       );
       setTravelPlan(plan);
     } catch {
@@ -1307,6 +1320,22 @@ function DestinationInput() {
     } finally {
       setTravelPlanLoading(false);
     }
+  }
+
+  function handlePlan() {
+    if (!travelDestination) return;
+    const originLat = travelOrigin?.lat ?? userLocation?.latitude;
+    const originLng = travelOrigin?.lng ?? userLocation?.longitude;
+    if (!originLat || !originLng) return;
+
+    // Long-trip check: >160 km (~100 miles) in Muqeem mode → prompt
+    const distKm = haversineKm(originLat, originLng, travelDestination.lat, travelDestination.lng);
+    if (distKm > 160 && !travelModeStore) {
+      setLongTripKm(Math.round(distKm));
+      return;
+    }
+
+    executePlan(tripMode);
   }
 
   // Compact chip when plan is active and not expanded for editing
@@ -1398,13 +1427,42 @@ function DestinationInput() {
         />
       </div>
 
-      <button
-        onClick={handlePlan}
-        disabled={!travelDestination}
-        className="w-full bg-teal-600 text-white text-sm font-semibold py-2 rounded-lg hover:bg-teal-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-      >
-        Plan My Prayers
-      </button>
+      {/* Long-trip Musafir suggestion */}
+      {longTripKm !== null && (
+        <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 space-y-2">
+          <p className="text-xs font-semibold text-amber-800">
+            Long trip — ~{Math.round(longTripKm / 1.609)} miles
+          </p>
+          <p className="text-xs text-amber-700">
+            As Musafir you can combine prayers along the route (Dhuhr+Asr, Maghrib+Isha).
+            Consider switching to Musafir mode.
+          </p>
+          <div className="flex gap-2">
+            <button
+              onClick={() => { setTravelMode(true); executePlan('travel'); }}
+              className="flex-1 bg-teal-600 text-white text-xs font-semibold py-1.5 rounded-lg hover:bg-teal-700 transition-colors"
+            >
+              ✈️ Switch to Musafir & Plan
+            </button>
+            <button
+              onClick={() => executePlan('driving')}
+              className="flex-1 bg-white border border-gray-300 text-gray-600 text-xs font-semibold py-1.5 rounded-lg hover:bg-gray-50 transition-colors"
+            >
+              Plan as Muqeem
+            </button>
+          </div>
+        </div>
+      )}
+
+      {longTripKm === null && (
+        <button
+          onClick={handlePlan}
+          disabled={!travelDestination}
+          className="w-full bg-teal-600 text-white text-sm font-semibold py-2 rounded-lg hover:bg-teal-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+        >
+          Plan My Prayers
+        </button>
+      )}
     </div>
   );
 }

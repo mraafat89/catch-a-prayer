@@ -724,6 +724,23 @@ The trip planner has **no separate combining toggle** — it always uses the cur
 
 The active mode is shown as a badge inside the form header so the user knows which rules apply.
 
+#### Long-trip suggestion (Muqeem + >100 miles)
+
+When "Plan My Prayers" is tapped in Muqeem mode and the trip distance exceeds ~160 km (100 miles), the form shows an inline banner before fetching the plan:
+
+```
+┌──────────────────────────────────────────────────────┐
+│  ⚠️ Long trip — ~X miles                             │
+│  As Musafir you could combine prayers along the      │
+│  route (Dhuhr+Asr, Maghrib+Isha).                    │
+│  [ Switch to Musafir & Plan ]  [ Plan as Muqeem ]    │
+└──────────────────────────────────────────────────────┘
+```
+
+- "Switch to Musafir & Plan" → activates global Musafir mode then fetches plan with `trip_mode=travel`
+- "Plan as Muqeem" → fetches plan with `trip_mode=driving` (no combining)
+- The warning is dismissed once a choice is made
+
 ### Mode: Musafir, Static (No Route)
 
 When ✈️ toggle is ON and **no destination is set**, the nearby mosque list shows combination options (Dhuhr+Asr, Maghrib+Isha) as chips on each mosque card:
