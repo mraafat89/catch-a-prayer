@@ -413,6 +413,10 @@ IFRAME_WIDGET_PATTERNS = [
     (r"prayer-times.*widget", "generic_widget"),
     (r"muslimpro\.com/embed", "muslimpro"),
     (r"masjid\.us/widget", "masjid_us"),
+    (r"mosqueprayertimes\.com/widget", "mosqueprayertimes"),
+    (r"prayertimeswidget\.com", "prayertimeswidget"),
+    (r"iqamah\.com/widget", "iqamah"),
+    (r"masjidbox\.com", "masjidbox"),
 ]
 
 
@@ -555,76 +559,79 @@ def get_pending_jobs(session: Session, batch_size: int) -> list[MosqueRecord]:
 
 def save_prayer_times(session: Session, mosque: MosqueRecord,
                       times: PrayerTimes, target_date: date, dry_run: bool = False):
-    """Upsert prayer schedule for a mosque on a given date."""
+    """Upsert prayer schedule for a mosque on a given date.
+    Uses INSERT ... ON CONFLICT DO UPDATE to avoid race-condition UniqueViolation errors.
+    """
     if dry_run:
         return
 
     iqama_src = times.source if times.iqama_count() > 0 else "estimated"
     iqama_conf = times.confidence if times.iqama_count() > 0 else "low"
 
-    from app.models import PrayerSchedule, new_uuid
+    from app.models import new_uuid
 
-    existing = session.execute(text("""
-        SELECT id FROM prayer_schedules
-        WHERE mosque_id = CAST(:mid AS uuid) AND date = :d
-    """), {"mid": mosque.id, "d": target_date}).fetchone()
+    params = _prayer_params(mosque.id, target_date, times, iqama_src, iqama_conf)
+    params["id"] = new_uuid()
 
-    if existing:
-        session.execute(text("""
-            UPDATE prayer_schedules SET
-                fajr_adhan=:fa, fajr_iqama=:fi,
-                fajr_adhan_source=:src, fajr_iqama_source=:isrc,
-                fajr_adhan_confidence=:conf, fajr_iqama_confidence=:iconf,
-                sunrise=:sunrise, sunrise_source=:src,
-                dhuhr_adhan=:da, dhuhr_iqama=:di,
-                dhuhr_adhan_source=:src, dhuhr_iqama_source=:isrc,
-                dhuhr_adhan_confidence=:conf, dhuhr_iqama_confidence=:iconf,
-                asr_adhan=:aa, asr_iqama=:ai,
-                asr_adhan_source=:src, asr_iqama_source=:isrc,
-                asr_adhan_confidence=:conf, asr_iqama_confidence=:iconf,
-                maghrib_adhan=:ma, maghrib_iqama=:mi,
-                maghrib_adhan_source=:src, maghrib_iqama_source=:isrc,
-                maghrib_adhan_confidence=:conf, maghrib_iqama_confidence=:iconf,
-                isha_adhan=:ia, isha_iqama=:ii,
-                isha_adhan_source=:src, isha_iqama_source=:isrc,
-                isha_adhan_confidence=:conf, isha_iqama_confidence=:iconf,
-                scraped_at=NOW(), updated_at=NOW()
-            WHERE mosque_id = CAST(:mid AS uuid) AND date = :d
-        """), _prayer_params(mosque.id, target_date, times, iqama_src, iqama_conf))
-    else:
-        params = _prayer_params(mosque.id, target_date, times, iqama_src, iqama_conf)
-        params["id"] = new_uuid()
-        session.execute(text("""
-            INSERT INTO prayer_schedules (
-                id, mosque_id, date,
-                fajr_adhan, fajr_iqama,
-                fajr_adhan_source, fajr_iqama_source,
-                fajr_adhan_confidence, fajr_iqama_confidence,
-                sunrise, sunrise_source,
-                dhuhr_adhan, dhuhr_iqama,
-                dhuhr_adhan_source, dhuhr_iqama_source,
-                dhuhr_adhan_confidence, dhuhr_iqama_confidence,
-                asr_adhan, asr_iqama,
-                asr_adhan_source, asr_iqama_source,
-                asr_adhan_confidence, asr_iqama_confidence,
-                maghrib_adhan, maghrib_iqama,
-                maghrib_adhan_source, maghrib_iqama_source,
-                maghrib_adhan_confidence, maghrib_iqama_confidence,
-                isha_adhan, isha_iqama,
-                isha_adhan_source, isha_iqama_source,
-                isha_adhan_confidence, isha_iqama_confidence,
-                scraped_at
-            ) VALUES (
-                :id, CAST(:mid AS uuid), :d,
-                :fa, :fi, :src, :isrc, :conf, :iconf,
-                :sunrise, :src,
-                :da, :di, :src, :isrc, :conf, :iconf,
-                :aa, :ai, :src, :isrc, :conf, :iconf,
-                :ma, :mi, :src, :isrc, :conf, :iconf,
-                :ia, :ii, :src, :isrc, :conf, :iconf,
-                NOW()
-            )
-        """), params)
+    session.execute(text("""
+        INSERT INTO prayer_schedules (
+            id, mosque_id, date,
+            fajr_adhan, fajr_iqama,
+            fajr_adhan_source, fajr_iqama_source,
+            fajr_adhan_confidence, fajr_iqama_confidence,
+            sunrise, sunrise_source,
+            dhuhr_adhan, dhuhr_iqama,
+            dhuhr_adhan_source, dhuhr_iqama_source,
+            dhuhr_adhan_confidence, dhuhr_iqama_confidence,
+            asr_adhan, asr_iqama,
+            asr_adhan_source, asr_iqama_source,
+            asr_adhan_confidence, asr_iqama_confidence,
+            maghrib_adhan, maghrib_iqama,
+            maghrib_adhan_source, maghrib_iqama_source,
+            maghrib_adhan_confidence, maghrib_iqama_confidence,
+            isha_adhan, isha_iqama,
+            isha_adhan_source, isha_iqama_source,
+            isha_adhan_confidence, isha_iqama_confidence,
+            scraped_at
+        ) VALUES (
+            :id, CAST(:mid AS uuid), :d,
+            :fa, :fi, :src, :isrc, :conf, :iconf,
+            :sunrise, :src,
+            :da, :di, :src, :isrc, :conf, :iconf,
+            :aa, :ai, :src, :isrc, :conf, :iconf,
+            :ma, :mi, :src, :isrc, :conf, :iconf,
+            :ia, :ii, :src, :isrc, :conf, :iconf,
+            NOW()
+        )
+        ON CONFLICT (mosque_id, date) DO UPDATE SET
+            fajr_adhan=EXCLUDED.fajr_adhan, fajr_iqama=EXCLUDED.fajr_iqama,
+            fajr_adhan_source=EXCLUDED.fajr_adhan_source,
+            fajr_iqama_source=EXCLUDED.fajr_iqama_source,
+            fajr_adhan_confidence=EXCLUDED.fajr_adhan_confidence,
+            fajr_iqama_confidence=EXCLUDED.fajr_iqama_confidence,
+            sunrise=EXCLUDED.sunrise, sunrise_source=EXCLUDED.sunrise_source,
+            dhuhr_adhan=EXCLUDED.dhuhr_adhan, dhuhr_iqama=EXCLUDED.dhuhr_iqama,
+            dhuhr_adhan_source=EXCLUDED.dhuhr_adhan_source,
+            dhuhr_iqama_source=EXCLUDED.dhuhr_iqama_source,
+            dhuhr_adhan_confidence=EXCLUDED.dhuhr_adhan_confidence,
+            dhuhr_iqama_confidence=EXCLUDED.dhuhr_iqama_confidence,
+            asr_adhan=EXCLUDED.asr_adhan, asr_iqama=EXCLUDED.asr_iqama,
+            asr_adhan_source=EXCLUDED.asr_adhan_source,
+            asr_iqama_source=EXCLUDED.asr_iqama_source,
+            asr_adhan_confidence=EXCLUDED.asr_adhan_confidence,
+            asr_iqama_confidence=EXCLUDED.asr_iqama_confidence,
+            maghrib_adhan=EXCLUDED.maghrib_adhan, maghrib_iqama=EXCLUDED.maghrib_iqama,
+            maghrib_adhan_source=EXCLUDED.maghrib_adhan_source,
+            maghrib_iqama_source=EXCLUDED.maghrib_iqama_source,
+            maghrib_adhan_confidence=EXCLUDED.maghrib_adhan_confidence,
+            maghrib_iqama_confidence=EXCLUDED.maghrib_iqama_confidence,
+            isha_adhan=EXCLUDED.isha_adhan, isha_iqama=EXCLUDED.isha_iqama,
+            isha_adhan_source=EXCLUDED.isha_adhan_source,
+            isha_iqama_source=EXCLUDED.isha_iqama_source,
+            isha_adhan_confidence=EXCLUDED.isha_adhan_confidence,
+            isha_iqama_confidence=EXCLUDED.isha_iqama_confidence,
+            scraped_at=NOW(), updated_at=NOW()
+    """), params)
 
 
 def _prayer_params(mosque_id: str, d: date, times: PrayerTimes,
@@ -731,6 +738,93 @@ async def tier1_islamicfinder(mosque: MosqueRecord) -> Optional[PrayerTimes]:
 
 
 # ---------------------------------------------------------------------------
+# Tier 1b — Aladhan.com mosque search
+# ---------------------------------------------------------------------------
+
+async def tier1_aladhan(mosque: MosqueRecord) -> Optional[PrayerTimes]:
+    """
+    Search Aladhan.com's mosque directory for mosque-specific prayer times.
+    Free API, no authentication required.
+    Only used when no other source is available (no website).
+    Returns mosque-specific iqama times if found — much better than estimates.
+    """
+    if not mosque.city or not mosque.name:
+        return None
+
+    try:
+        async with httpx.AsyncClient(timeout=15, follow_redirects=True) as client:
+            # Search Aladhan mosque directory by name + city
+            resp = await client.get(
+                "https://api.aladhan.com/v1/mosque/search",
+                params={"q": mosque.name, "city": mosque.city, "country": "US"},
+                headers={"User-Agent": "Mozilla/5.0 (compatible; CatchAPrayer/1.0)"},
+            )
+            if resp.status_code != 200:
+                return None
+
+            data = resp.json()
+            if not data.get("data") or not data["data"].get("data"):
+                return None
+
+            # Find closest match by coordinates
+            best_match = None
+            best_dist = float("inf")
+            for entry in data["data"]["data"][:5]:
+                try:
+                    mlat = float(entry.get("latitude", 0))
+                    mlng = float(entry.get("longitude", 0))
+                    dist = ((mlat - mosque.lat) ** 2 + (mlng - mosque.lng) ** 2) ** 0.5
+                    if dist < best_dist:
+                        best_dist = dist
+                        best_match = entry
+                except Exception:
+                    continue
+
+            # Accept only if within ~5km (0.05 degrees ≈ 5.5km)
+            if not best_match or best_dist > 0.05:
+                return None
+
+            timings = best_match.get("timings", {})
+            if not timings:
+                return None
+
+            def _parse(key: str, prayer: str) -> Optional[str]:
+                v = timings.get(key, "")
+                # Aladhan returns "HH:MM (timezone)" — strip timezone suffix
+                v = re.sub(r"\s*\(.*\)$", "", str(v)).strip()
+                return normalize_time(v, prayer)
+
+            pt = PrayerTimes(
+                fajr_adhan=_parse("Fajr", "fajr"),
+                dhuhr_adhan=_parse("Dhuhr", "dhuhr"),
+                asr_adhan=_parse("Asr", "asr"),
+                maghrib_adhan=_parse("Maghrib", "maghrib"),
+                isha_adhan=_parse("Isha", "isha"),
+                sunrise=_parse("Sunrise", "sunrise"),
+                # Aladhan mosque API also returns iqama times for some mosques
+                fajr_iqama=_parse("Fajr_Iqama", "fajr"),
+                dhuhr_iqama=_parse("Dhuhr_Iqama", "dhuhr"),
+                asr_iqama=_parse("Asr_Iqama", "asr"),
+                maghrib_iqama=_parse("Maghrib_Iqama", "maghrib"),
+                isha_iqama=_parse("Isha_Iqama", "isha"),
+                source="aladhan_mosque_db",
+                confidence="high" if timings.get("Fajr_Iqama") else "medium",
+                tier=1,
+                source_url=f"https://api.aladhan.com/v1/mosque/search?q={mosque.name}",
+            )
+
+            if pt.adhan_count() >= 5:
+                logger.info(f"    Tier 1b (Aladhan): {pt.adhan_count()} adhans, "
+                            f"{pt.iqama_count()} iqamas (dist={best_dist:.4f}°)")
+                return pt
+
+    except Exception as e:
+        logger.debug(f"    Tier 1b (Aladhan) error: {e}")
+
+    return None
+
+
+# ---------------------------------------------------------------------------
 # Tier 2 — Static HTML
 # ---------------------------------------------------------------------------
 
@@ -830,6 +924,115 @@ async def tier2_static_html(mosque: MosqueRecord) -> Optional[PrayerTimes]:
 
 
 # ---------------------------------------------------------------------------
+# Tier 2b — Facebook page scraping
+# ---------------------------------------------------------------------------
+
+def _facebook_mobile_url(url: str) -> Optional[str]:
+    """Convert any facebook.com URL to mbasic.facebook.com for plain-HTML access."""
+    import re
+    m = re.search(r'facebook\.com/(.+)', url)
+    if not m:
+        return None
+    path = m.group(1).rstrip("/")
+    return f"https://mbasic.facebook.com/{path}"
+
+
+async def tier2_facebook(mosque: MosqueRecord) -> Optional[PrayerTimes]:
+    """
+    Scrape a Facebook page for prayer times.
+    Uses mbasic.facebook.com (plain HTML, no JS required) first.
+    Looks in About section text and recent posts for prayer time patterns.
+    """
+    url = mosque.website or ""
+    if "facebook.com" not in url.lower():
+        return None
+
+    mobile_url = _facebook_mobile_url(url)
+    if not mobile_url:
+        return None
+
+    pages_to_try = [
+        mobile_url,
+        mobile_url.rstrip("/") + "/about",
+    ]
+
+    async with httpx.AsyncClient(timeout=20, follow_redirects=True,
+                                  headers={"User-Agent": (
+                                      "Mozilla/5.0 (compatible; CatchAPrayer/1.0)"
+                                  )}) as client:
+        for page_url in pages_to_try:
+            parsed = await _fetch_soup(page_url, client)
+            if not parsed:
+                continue
+            soup, _ = parsed
+            full_text = soup.get_text(" ", strip=True)
+
+            # Try structured extraction first
+            result = _extract_from_soup(soup)
+            if result and result.adhan_count() >= 3:
+                result.source = "mosque_website_html"
+                result.confidence = "medium"
+                result.tier = 2
+                result.source_url = page_url
+                logger.info(f"    Tier 2 (FB structured): {result.adhan_count()} adhans, "
+                            f"{result.iqama_count()} iqamas")
+                return result
+
+            # Fallback: regex scan of raw text for prayer-time lines
+            result = _extract_from_text(full_text)
+            if result and result.adhan_count() >= 3:
+                result.source = "mosque_website_html"
+                result.confidence = "medium"
+                result.tier = 2
+                result.source_url = page_url
+                logger.info(f"    Tier 2 (FB text): {result.adhan_count()} adhans, "
+                            f"{result.iqama_count()} iqamas")
+                return result
+
+    return None
+
+
+def _extract_from_text(text: str) -> Optional[PrayerTimes]:
+    """
+    Regex scan of a plain-text blob for prayer-time lines.
+    Handles formats like:
+      Fajr  5:30  6:00
+      Dhuhr: 1:15 PM / 1:30 PM
+      Asr – 4:45
+    """
+    pt = PrayerTimes()
+    found = 0
+    text_lower = text.lower()
+
+    for prayer, aliases in [
+        ("fajr",    ["fajr", "fajir", "subh"]),
+        ("dhuhr",   ["dhuhr", "zuhr", "zohr", "duhr"]),
+        ("asr",     ["asr", "asar"]),
+        ("maghrib", ["maghrib", "magrib", "sunset"]),
+        ("isha",    ["isha", "esha", "ishaa", "isha'"]),
+    ]:
+        for alias in aliases:
+            # Find the alias and grab up to 2 time tokens following it on the same line
+            pattern = re.compile(
+                rf'{alias}[^\n]{{0,60}}?(\d{{1,2}}:\d{{2}}\s*(?:AM|PM|am|pm)?)'
+                rf'(?:[^\n]{{0,30}}?(\d{{1,2}}:\d{{2}}\s*(?:AM|PM|am|pm)?))?',
+                re.IGNORECASE,
+            )
+            m = pattern.search(text)
+            if m:
+                t1 = normalize_time(m.group(1), prayer)
+                t2 = normalize_time(m.group(2), prayer) if m.group(2) else None
+                if t1:
+                    setattr(pt, f"{prayer}_adhan", t1)
+                    found += 1
+                    if t2 and t2 != t1:
+                        setattr(pt, f"{prayer}_iqama", t2)
+                break  # found this prayer, move to next
+
+    return pt if found >= 3 else None
+
+
+# ---------------------------------------------------------------------------
 # Tier 3 — Playwright
 # ---------------------------------------------------------------------------
 
@@ -868,10 +1071,152 @@ async def _get_playwright_context():
     return _playwright_context
 
 
-async def tier3_playwright(mosque: MosqueRecord) -> Optional[PrayerTimes]:
-    """Render JS-heavy mosque pages with Playwright."""
+# ---------------------------------------------------------------------------
+# Network API interception helpers (used by Tier 3)
+# ---------------------------------------------------------------------------
+
+# URL substrings that identify prayer time JSON API calls we want to capture
+_PRAYER_API_PATTERNS = [
+    "api.masjidbox.com",
+    "timing.athanplus.com",
+    "api.aladhan.com",
+    "prayertimes.app",
+    "salahmate.com/api",
+    "muslimpro.com/api",
+    "masjidal.com/api",
+    "athan.pro/api",
+]
+
+
+def _parse_masjidbox_response(data: dict, target_date: date) -> Optional[PrayerTimes]:
+    """Parse MasjidBox widget API response into PrayerTimes."""
+    try:
+        widget = data.get("widget") or data
+        # The API returns a list of days under "widget.days" or top-level "days"
+        days = widget.get("days") or data.get("days") or []
+        if not days:
+            # Some endpoints return a single day directly
+            days = [widget]
+
+        date_str = target_date.strftime("%Y-%m-%d")
+        day_data = None
+        for d in days:
+            if d.get("date", "").startswith(date_str):
+                day_data = d
+                break
+        if day_data is None and days:
+            day_data = days[0]  # fallback: use first available day
+
+        if not day_data:
+            return None
+
+        pt = PrayerTimes()
+        # MasjidBox field names vary; try both camelCase and snake_case
+        mapping = {
+            "fajr":    ["fajr",    "Fajr"],
+            "dhuhr":   ["dhuhr",   "Dhuhr",   "zuhr",   "Zuhr"],
+            "asr":     ["asr",     "Asr"],
+            "maghrib": ["maghrib", "Maghrib"],
+            "isha":    ["isha",    "Isha"],
+        }
+        found = 0
+        for prayer, keys in mapping.items():
+            for key in keys:
+                entry = day_data.get(key)
+                if not entry:
+                    continue
+                # Entry can be a dict {adhan, iqama} or a plain time string
+                if isinstance(entry, dict):
+                    adhan = normalize_time(entry.get("adhan") or entry.get("time"), prayer)
+                    iqama = normalize_time(entry.get("iqama") or entry.get("iqamah"), prayer)
+                elif isinstance(entry, str):
+                    adhan = normalize_time(entry, prayer)
+                    iqama = None
+                else:
+                    continue
+                if adhan:
+                    setattr(pt, f"{prayer}_adhan", adhan)
+                    found += 1
+                if iqama:
+                    setattr(pt, f"{prayer}_iqama", iqama)
+                break
+
+        if found >= 3:
+            pt.source = "masjidbox_api"
+            pt.confidence = "high"
+            pt.tier = 3
+            return pt
+    except Exception as e:
+        logger.debug(f"    MasjidBox parse error: {e}")
+    return None
+
+
+def _parse_athanplus_response(data: dict, target_date: date) -> Optional[PrayerTimes]:
+    """Parse AthanPlus timing API response into PrayerTimes."""
+    try:
+        # AthanPlus returns {data: [{date, fajr, sunrise, dhuhr, asr, maghrib, isha, ...}]}
+        entries = data.get("data") or (data if isinstance(data, list) else [data])
+        if not entries:
+            return None
+
+        date_str = target_date.strftime("%Y-%m-%d")
+        day_data = None
+        for entry in entries:
+            if str(entry.get("date", "")).startswith(date_str):
+                day_data = entry
+                break
+        if day_data is None:
+            day_data = entries[0]
+
+        pt = PrayerTimes()
+        found = 0
+        for prayer in PRAYER_NAMES:
+            adhan_raw = day_data.get(prayer) or day_data.get(prayer.capitalize())
+            iqama_raw = day_data.get(f"{prayer}_iqama") or day_data.get(f"{prayer}Iqama")
+            adhan = normalize_time(adhan_raw, prayer) if adhan_raw else None
+            iqama = normalize_time(iqama_raw, prayer) if iqama_raw else None
+            if adhan:
+                setattr(pt, f"{prayer}_adhan", adhan)
+                found += 1
+            if iqama:
+                setattr(pt, f"{prayer}_iqama", iqama)
+
+        if found >= 3:
+            pt.source = "athanplus_api"
+            pt.confidence = "high"
+            pt.tier = 3
+            return pt
+    except Exception as e:
+        logger.debug(f"    AthanPlus parse error: {e}")
+    return None
+
+
+def _parse_intercepted_response(url: str, body: str, target_date: date) -> Optional[PrayerTimes]:
+    """Dispatch intercepted network response to the right parser."""
+    try:
+        data = json.loads(body)
+    except Exception:
+        return None
+
+    if "masjidbox.com" in url:
+        return _parse_masjidbox_response(data, target_date)
+    if "athanplus.com" in url:
+        return _parse_athanplus_response(data, target_date)
+    # Generic fallback: try both parsers
+    for parser in [_parse_masjidbox_response, _parse_athanplus_response]:
+        result = parser(data, target_date)
+        if result:
+            return result
+    return None
+
+
+async def tier3_playwright(mosque: MosqueRecord, target_date: Optional[date] = None) -> Optional[PrayerTimes]:
+    """Render JS-heavy mosque pages with Playwright, intercepting prayer API calls."""
     if not mosque.website:
         return None
+
+    if target_date is None:
+        target_date = date.today()
 
     global _playwright_semaphore
     if _playwright_semaphore is None:
@@ -886,6 +1231,27 @@ async def tier3_playwright(mosque: MosqueRecord) -> Optional[PrayerTimes]:
             ctx = await _get_playwright_context()
             page = await ctx.new_page()
 
+            # Capture prayer API JSON responses during page load
+            intercepted_result: list[PrayerTimes] = []
+
+            async def _on_response(response):
+                if intercepted_result:
+                    return  # already got one
+                resp_url = response.url
+                if not any(pat in resp_url for pat in _PRAYER_API_PATTERNS):
+                    return
+                try:
+                    body = await response.text()
+                    parsed = _parse_intercepted_response(resp_url, body, target_date)
+                    if parsed and parsed.adhan_count() >= 3:
+                        intercepted_result.append(parsed)
+                        logger.info(f"    Tier 3 API intercept ({resp_url[:60]}): "
+                                    f"{parsed.adhan_count()} adhans")
+                except Exception:
+                    pass
+
+            page.on("response", _on_response)
+
             try:
                 await page.goto(url, wait_until="networkidle", timeout=25000)
             except Exception:
@@ -894,6 +1260,13 @@ async def tier3_playwright(mosque: MosqueRecord) -> Optional[PrayerTimes]:
                 except Exception:
                     await page.close()
                     return None
+
+            # If we captured a complete result via API interception, return it immediately
+            if intercepted_result:
+                api_result = intercepted_result[0]
+                api_result.source_url = url
+                await page.close()
+                return api_result
 
             content = await page.content()
             soup = BeautifulSoup(content, "lxml")
@@ -921,6 +1294,12 @@ async def tier3_playwright(mosque: MosqueRecord) -> Optional[PrayerTimes]:
                         best.source_url = sub_url
                         if best.is_complete():
                             break
+                    # Also check for API interception on sub-pages
+                    if intercepted_result:
+                        api_result = intercepted_result[0]
+                        api_result.source_url = sub_url
+                        await page.close()
+                        return api_result
                 except Exception:
                     continue
 
@@ -1188,81 +1567,133 @@ async def scrape_mosque(mosque: MosqueRecord, target_date: date,
 
     result: Optional[PrayerTimes] = None
     tier_reached = 0
+    # Track the best result that passed validation at each tier — used as fallback
+    # if a later tier returns bad data that corrupts the final result.
+    last_valid_result: Optional[PrayerTimes] = None
+    last_valid_tier: int = 0
 
-    # Tier 1 — IslamicFinder (city-level times, only useful for mosques without websites)
-    # Skip if mosque has a website — tier 2 gives real mosque-specific iqama times
+    def _accept(candidate: Optional[PrayerTimes], tier: int) -> bool:
+        """Accept candidate if it improves adhan count AND passes standalone validation."""
+        nonlocal result, tier_reached, last_valid_result, last_valid_tier
+        if not candidate or candidate.adhan_count() <= (result.adhan_count() if result else 0):
+            return False
+        ok, reason = validate_prayer_times(candidate)
+        if not ok:
+            logger.debug(f"  Tier {tier} result invalid ({reason}), skipping")
+            return False
+        result = candidate
+        tier_reached = tier
+        last_valid_result = candidate
+        last_valid_tier = tier
+        return True
+
+    # Tier 1 — IslamicFinder (only for mosques without a website)
     if not mosque.website:
         try:
-            result = await tier1_islamicfinder(mosque)
-            tier_reached = 1
+            t1 = await tier1_islamicfinder(mosque)
+            _accept(t1, 1)
         except Exception as e:
-            logger.debug(f"  Tier 1 exception: {e}")
+            logger.info(f"  Tier 1 (IF) exception: {e}")
 
-    # Tier 2
-    if not (result and result.is_complete()):
+    # Tier 1b — Aladhan mosque search (for no-website mosques, tries mosque-specific data)
+    if not mosque.website and not (result and result.is_complete()):
+        try:
+            t1b = await tier1_aladhan(mosque)
+            _accept(t1b, 1)
+        except Exception as e:
+            logger.info(f"  Tier 1b (Aladhan) exception: {e}")
+
+    # Tier 2 — Facebook pages get special handling
+    if not (result and result.is_complete()) and mosque.website:
+        if "facebook.com" in (mosque.website or "").lower():
+            try:
+                t2fb = await tier2_facebook(mosque)
+                _accept(t2fb, 2)
+            except Exception as e:
+                logger.info(f"  Tier 2 (FB) exception: {e}")
+
+    # Tier 2 — Static HTML for all non-Facebook websites
+    if not (result and result.is_complete()) and mosque.website and \
+            "facebook.com" not in (mosque.website or "").lower():
         try:
             t2 = await tier2_static_html(mosque)
-            if t2 and t2.adhan_count() > (result.adhan_count() if result else 0):
-                result = t2
-            tier_reached = 2
+            _accept(t2, 2)
         except Exception as e:
-            logger.debug(f"  Tier 2 exception: {e}")
+            logger.info(f"  Tier 2 exception: {e}")
 
-    # Tier 3
-    if not (result and result.is_complete()):
+    # Tier 3 — Playwright (JS-heavy sites, including Facebook fallback)
+    if not (result and result.is_complete()) and mosque.website:
         try:
-            t3 = await tier3_playwright(mosque)
-            if t3 and t3.adhan_count() > (result.adhan_count() if result else 0):
-                result = t3
-            tier_reached = 3
+            t3 = await tier3_playwright(mosque, target_date)
+            _accept(t3, 3)
         except Exception as e:
-            logger.debug(f"  Tier 3 exception: {e}")
+            logger.info(f"  Tier 3 exception: {e}")
 
     # Tier 4
     if not (result and result.is_complete()):
         try:
             t4 = await tier4_vision_and_pdf(mosque)
-            if t4 and t4.adhan_count() > (result.adhan_count() if result else 0):
-                result = t4
-            tier_reached = 4
+            _accept(t4, 4)
         except Exception as e:
-            logger.debug(f"  Tier 4 exception: {e}")
+            logger.info(f"  Tier 4 exception: {e}")
 
-    # Tier 5 — always fills gaps
-    if not result or result.adhan_count() < 5:
-        try:
-            t5 = tier5_calculated(mosque, target_date)
-            if result is None:
-                result = t5
-            else:
-                # Fill any missing adhan/iqama from Tier 5 (mark as calculated/estimated)
-                for p in PRAYER_NAMES:
-                    if not getattr(result, f"{p}_adhan"):
-                        setattr(result, f"{p}_adhan", getattr(t5, f"{p}_adhan"))
-                    if not getattr(result, f"{p}_iqama"):
-                        setattr(result, f"{p}_iqama", getattr(t5, f"{p}_iqama"))
-                if not result.sunrise:
-                    result.sunrise = t5.sunrise
+    # Tier 5 — fills gaps; tier_reached only set to 5 when it's the primary source
+    try:
+        t5 = tier5_calculated(mosque, target_date)
+        if result is None:
+            result = t5
             tier_reached = 5
-        except Exception as e:
+        else:
+            # Fill any missing adhan/iqama from Tier 5
+            for p in PRAYER_NAMES:
+                if not getattr(result, f"{p}_adhan"):
+                    setattr(result, f"{p}_adhan", getattr(t5, f"{p}_adhan"))
+                if not getattr(result, f"{p}_iqama"):
+                    setattr(result, f"{p}_iqama", getattr(t5, f"{p}_iqama"))
+            if not result.sunrise:
+                result.sunrise = t5.sunrise
+            # Only move tier_reached to 5 if we had nothing real before
+            if tier_reached == 0:
+                tier_reached = 5
+    except Exception as e:
+        if result is None:
             return False, tier_reached, f"Tier 5 failed: {e}"
 
     if not result:
         return False, tier_reached, "All tiers failed"
 
-    # Validate — on failure always fall back to a clean Tier 5 calculation
-    # (avoids mixed-source corruption where scraped iqama < scraped adhan)
+    # Final validation — filling Tier 5 gaps might create ordering issues
+    # (e.g. real iqama earlier than Tier 5's adhan). Use last_valid_result as fallback.
     is_valid, reason = validate_prayer_times(result)
     if not is_valid:
-        logger.warning(f"  Validation failed ({reason}), falling back to clean Tier 5")
-        try:
-            result = tier5_calculated(mosque, target_date)
-            tier_reached = 5
+        if last_valid_result:
+            logger.warning(f"  Final validation failed ({reason}), "
+                           f"reverting to last valid result (tier {last_valid_tier})")
+            # Re-fill gaps from Tier 5 into the last_valid_result
+            try:
+                t5 = tier5_calculated(mosque, target_date)
+                for p in PRAYER_NAMES:
+                    if not getattr(last_valid_result, f"{p}_adhan"):
+                        setattr(last_valid_result, f"{p}_adhan", getattr(t5, f"{p}_adhan"))
+                    if not getattr(last_valid_result, f"{p}_iqama"):
+                        setattr(last_valid_result, f"{p}_iqama", getattr(t5, f"{p}_iqama"))
+                if not last_valid_result.sunrise:
+                    last_valid_result.sunrise = t5.sunrise
+            except Exception:
+                pass
+            result = last_valid_result
+            tier_reached = last_valid_tier
             is_valid, reason = validate_prayer_times(result)
-        except Exception as e:
-            return False, tier_reached, f"Tier 5 fallback failed: {e}"
         if not is_valid:
-            return False, tier_reached, f"Validation failed even after Tier 5: {reason}"
+            logger.warning(f"  Validation failed ({reason}), falling back to clean Tier 5")
+            try:
+                result = tier5_calculated(mosque, target_date)
+                tier_reached = 5
+                is_valid, reason = validate_prayer_times(result)
+            except Exception as e:
+                return False, tier_reached, f"Tier 5 fallback failed: {e}"
+            if not is_valid:
+                return False, tier_reached, f"Validation failed even after Tier 5: {reason}"
 
     # Persist
     engine = get_sync_engine()

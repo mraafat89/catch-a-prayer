@@ -3,14 +3,31 @@
 ## Overview
 This document outlines our comprehensive approach to extracting prayer times from mosque websites. The goal is to achieve near-zero fallback to default times by handling all common mosque website architectures and designs, with special emphasis on Jumaa (Friday) prayer information.
 
-## 🎯 Scraping Strategy
+## 🎯 Scraping Strategy (Implemented)
+
+### 5-Tier Pipeline (`pipeline/scraping_worker.py`)
+
+| Tier | Method | Source tag | Coverage |
+|------|--------|-----------|----------|
+| 1 | IslamicFinder lookup (no-website mosques only) | `islamicfinder` | ~5% |
+| 1b | Aladhan.com mosque API (no-website mosques) | `aladhan_mosque_db` | ~2% |
+| 2 | Static HTML — httpx + BeautifulSoup | `mosque_website_html` | ~15% |
+| 2 (FB) | Facebook via mbasic.facebook.com | `mosque_website_facebook` | ~1% |
+| 3 | Playwright JS rendering + **API interception** | `mosque_website_js` / `masjidbox_api` / `athanplus_api` | ~5% |
+| 4 | Claude Haiku Vision AI (images) + pdfplumber (PDFs) | `mosque_website_image` / `mosque_website_pdf` | ~1% |
+| 5 | Calculated via praytimes (ISNA 15°/15°, maghrib=0 min) | `calculated` | fallback |
+
+Tier 5 always fills any missing gaps even when a real tier provides primary data.
+
+### Tier Validation
+Each tier result is validated **before** accepting it (prayer time range checks, ordering checks). If a later tier corrupts the result, the **last valid tier result** is used as fallback before dropping to Tier 5.
 
 ### Primary Approach: Multi-Level Discovery
 1. **Home Page Analysis** - Start with the main website URL
-2. **Link Discovery** - Find prayer/schedule related pages
-3. **Deep Content Extraction** - Multiple extraction methods per page
-4. **Jumaa-Specific Extraction** - Detailed Friday prayer information
-5. **Fallback Chain** - Graceful degradation to defaults
+2. **Link Discovery** - Find prayer/schedule related pages (`/prayer-times`, `/iqama`, etc.)
+3. **Deep Content Extraction** - Table → div → text regex extraction pipeline
+4. **API Interception** - Playwright captures MasjidBox/AthanPlus JSON during page load
+5. **Fallback Chain** - Graceful degradation to calculated times
 
 ### Website Architecture Patterns We Handle
 
@@ -365,21 +382,28 @@ Sanity checks:
 - Language code validation (ISO 639-1)
 ```
 
-## 📈 Success Metrics
+## 📈 Metrics
 
-### Target Performance
-- **Success Rate**: >95% accurate prayer time extraction
-- **Jumaa Success Rate**: >90% complete Jumaa information
-- **Fallback Rate**: <5% default time usage  
-- **Response Time**: <10s per mosque
-- **Cache Hit Rate**: >80% for repeat requests
+### Current Pipeline Stats (as of 2026-03-15)
+| Metric | Value |
+|--------|-------|
+| Total mosques in DB | ~1,520 (US + CA) |
+| With website | ~39% |
+| Tier 2 (real HTML) | ~6% |
+| Tier 3 (JS / API) | ~0.4% |
+| Tier 4 (Vision/PDF) | ~0.9% |
+| Tier 5 (calculated fallback) | ~92% |
 
-### Jumaa-Specific Quality Indicators
-- **Session Completeness**: Time + Imam + Topic + Language
-- **Multi-Session Detection**: All Friday sessions found
-- **Language Accuracy**: Correct language identification
-- **Topic Extraction**: Meaningful khutba subject extraction
-- **Imam Information**: Complete speaker details
+### Improving Hit Rate
+The main levers for improving above tier-5:
+1. **More mosques with websites** — Hartford + MosqueList enrichment adds website URLs
+2. **Better widget detection** — add new widget patterns to `IFRAME_WIDGET_PATTERNS`
+3. **API interception** — Playwright captures MasjidBox / AthanPlus / mosqueprayertimes.com
+4. **Playwright browsers installed** — required for Tier 3: `python3 -m playwright install chromium`
+
+### Target
+- **Real-data coverage**: >30% (from current 8%)
+- **Calculated fallback**: <70%
 
 ## 🧪 Testing Strategy
 
@@ -406,51 +430,86 @@ Sanity checks:
 
 ## 🔧 Implementation Architecture
 
-### Core Components
-```python
-PrayerScraper:
-├── WebsiteDiscoverer: Find prayer-related pages
-├── ContentExtractor: Parse HTML/JSON/PDF content  
-├── JumaaExtractor: Specialized Friday prayer handling
-├── ImamProfiler: Extract imam information
-├── TopicAnalyzer: Parse khutba subjects with NLP
-├── LanguageDetector: Identify content languages
-├── TimeNormalizer: Standardize time formats
-├── DataValidator: Verify extracted times
-└── CacheManager: Store results efficiently
+### Core Files
+```
+pipeline/
+├── scraping_worker.py      # 5-tier scraper (main)
+├── seed_mosques.py         # OSM / OpenStreetMap seeder
+├── seed_from_web_sources.py # Hartford + MosqueList seeder
+├── deduplicate_mosques.py  # Dedup pass (proximity + name)
+└── daily_pipeline.sh       # Cron entry: runs at 2am daily
 ```
 
-### Jumaa-Specific Configuration
+### Mosque Database Sources
+1. **OpenStreetMap** (via Overpass API) — primary, 1,400+ mosques US+CA
+2. **Hartford Institute** (hirr.hartfordinternational.edu) — 2,108 US mosques; enriches websites on existing records, geocodes+inserts new ones
+3. **MosqueList.top** — US mosques with accessibility info (wheelchair, parking)
+
+### Deduplication Strategy
+- **Name + city + state** match (≥50% token overlap) for web source enrichment
+- **200m proximity** check before inserting geocoded new mosques (prevents OSM duplicates)
+
+### Key Extraction Functions
 ```python
-JumaaConfig:
-- imam_title_patterns: ['Dr.', 'Sheikh', 'Imam', 'Ustaz']
-- language_indicators: multilingual detection rules  
-- topic_keywords: Islamic terminology recognition
-- session_time_ranges: realistic Jumaa scheduling
-- capacity_indicators: mosque size estimation
+# pipeline/scraping_worker.py
+
+_extract_from_soup(soup)       # Table → div → text regex pipeline
+extract_times_from_table(soup) # Header detection + row parsing
+extract_times_from_divs(soup)  # Div/span class-based extraction
+extract_times_from_text(text)  # Regex fallback on full page text
+_extract_from_text(text)       # Plain-text blob parser (Facebook About, PDFs)
+
+normalize_time(raw, prayer)    # Normalizes any time string to HH:MM 24h
+validate_prayer_times(result)  # Range + ordering checks
 ```
 
-### Enhanced Data Models
+### Prayer Time Calculation (Tier 5)
+Uses `praytimes` Python library with explicit ISNA settings:
+```python
+pt = PrayTimes("ISNA")
+pt.adjust({"maghrib": "0 min", "midnight": "Standard", "fajr": 15, "isha": 15})
+```
+`maghrib: "0 min"` ensures sunset time (not 4° angle which is Jafari default).
+
+### Network API Interception (Tier 3)
+Playwright response listener captures JSON from known prayer widget APIs:
+- `api.masjidbox.com` → `_parse_masjidbox_response()`
+- `timing.athanplus.com` → `_parse_athanplus_response()`
+- Other APIs → generic fallback parsers
+
+### Data Model
 ```python
 @dataclass
-class JumaaSession:
-    session_time: str
-    imam_name: Optional[str]
-    imam_title: Optional[str] 
-    khutba_topic: Optional[str]
-    language: Optional[str]
-    duration_minutes: Optional[int]
-    capacity: Optional[int]
-    booking_required: bool = False
-    special_notes: Optional[str] = None
-    series_info: Optional[str] = None  # "Part 2 of 5"
-    
-@dataclass 
-class Prayer:
-    prayer_name: PrayerName
-    adhan_time: str
-    iqama_time: Optional[str]
-    jumaa_sessions: List[JumaaSession] = field(default_factory=list)
+class PrayerTimes:
+    fajr_adhan / fajr_iqama
+    dhuhr_adhan / dhuhr_iqama
+    asr_adhan / asr_iqama
+    maghrib_adhan / maghrib_iqama
+    isha_adhan / isha_iqama
+    sunrise: Optional[str]
+    source: str           # e.g. "mosque_website_html", "masjidbox_api", "calculated"
+    confidence: str       # "high" | "medium" | "low"
+    tier: int             # 1–5
+    source_url: str
+
+# Saved to DB table: prayer_schedules (one row per mosque per date)
+# ON CONFLICT (mosque_id, date) DO UPDATE — atomic upsert prevents race conditions
 ```
 
-This comprehensive approach ensures we capture not just prayer times, but rich Jumaa prayer information including multiple sessions, imam details, khutba topics, languages, and special arrangements - providing users with complete Friday prayer planning information.
+### Running the Pipeline
+```bash
+# Full daily pipeline (cron at 2am)
+./pipeline/daily_pipeline.sh
+
+# Single scrape
+python -m pipeline.scraping_worker --mosque-id <uuid>
+
+# Batch
+python -m pipeline.scraping_worker --batch 100
+
+# Seed new mosques from web sources
+python -m pipeline.seed_from_web_sources --source hartford
+python -m pipeline.seed_from_web_sources --source mosquelist
+python -m pipeline.seed_from_web_sources             # both sources
+python -m pipeline.seed_from_web_sources --no-geocode # only enrich existing
+```
