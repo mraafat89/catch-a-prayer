@@ -167,7 +167,18 @@ function LocationButton() {
 
   return ReactDOM.createPortal(
     <button
-      onClick={() => map.flyTo([userLocation.latitude, userLocation.longitude], Math.max(map.getZoom(), 14), { animate: true, duration: 0.8 })}
+      onClick={() => {
+        const targetZoom = Math.max(map.getZoom(), 14);
+        const sheetVisible = parseFloat(
+          getComputedStyle(document.documentElement).getPropertyValue('--sheet-visible')
+        ) || 0;
+        // Shift target upward by half the sheet height so the pin lands in the
+        // center of the visible map area (above the sheet), not the screen center.
+        const offset = sheetVisible / 2;
+        const targetPoint = map.project([userLocation.latitude, userLocation.longitude], targetZoom);
+        const adjustedLatLng = map.unproject(targetPoint.subtract([0, offset]), targetZoom);
+        map.flyTo(adjustedLatLng, targetZoom, { animate: true, duration: 0.8 });
+      }}
       title="Go to my location"
       style={{
         position: 'fixed',
