@@ -2,23 +2,32 @@
 
 Find nearby mosques and never miss a prayer again. Shows whether you can catch a prayer with the Imam, pray solo, or need to find a nearby clean location — with real travel times and full source transparency.
 
-Designed for US and Canada. Mobile-first.
+Designed for US and Canada. Mobile-first PWA.
 
 ---
 
 ## Features
 
-- **Mosque Discovery**: Finds mosques near your location from a pre-built database of 2,400+ US/Canada mosques (OpenStreetMap + Hartford Institute + MosqueList — no per-request API cost)
+### Prayer Status
+- **5 catching statuses**: With Imam / Imam in progress / Solo at mosque / Pray nearby / Missed — make up
 - **Both Adhan and Iqama times**: Scraped from each mosque's own website — not just calculated
-- **5-level prayer catching status**: With Imam / Imam in progress / Solo at mosque / Pray nearby / Missed — make up
-- **Source transparency**: Every time shown includes where it came from (scraped, calculated, or estimated) and how fresh it is
-- **Jumuah details**: Friday prayer times, imam names, khutba topics, languages, multiple sessions
-- **Travel Mode**: Route-based prayer combination recommendations (Dhuhr+Asr, Maghrib+Isha) for travelers
-- **Push notifications**: Configurable reminders — pre-adhan, pre-iqama, leave-now alerts, Jumuah reminders
-- **Real travel times**: Mapbox routing with live traffic (not straight-line estimates)
-- **Navigation**: One tap to open directions in Google Maps, Apple Maps, or Waze — no API required
-- **Timezone-aware**: Correct calculations when user and mosque are in different timezones
-- **Mobile-first PWA**: Works on any phone browser, installable without app store
+- **Source transparency**: Every time shown includes provenance (scraped, calculated, estimated) and freshness date
+- **Jumuah details**: Friday prayer times, multiple sessions, imam names, khutba languages
+
+### Travel Mode (Musafir / Muqeem)
+- **Muqeem mode** (resident): Individual prayer stops, no combining — teal header
+- **Musafir mode** (traveler): Prayer combining enabled — indigo header. Dhuhr+Asr and Maghrib+Isha tracked as pairs (Jam' Taqdeem / Ta'kheer)
+- **Route-based trip planner**: Set a destination and get a complete prayer itinerary for the entire journey
+- **Complete trip itineraries**: 3–5 full plans covering every prayer along the route
+- **Pair-aware "have you prayed?" banner**: In Musafir mode asks about pairs, not individual prayers
+- **Color-coded mode indicator**: Teal header = Muqeem, Indigo header = Musafir — visible at a glance
+- **Segmented flip control**: Switch modes directly from the top bar
+
+### Mosque Discovery
+- 2,400+ US/Canada mosques (OpenStreetMap + Hartford Institute + MosqueList)
+- No per-request API cost — all pre-indexed in PostGIS
+- Real travel times via Mapbox (not straight-line estimates)
+- One-tap navigation to Google Maps, Apple Maps, or Waze
 
 ---
 
@@ -27,7 +36,7 @@ Designed for US and Canada. Mobile-first.
 ```
 User request → FastAPI → PostGIS query (pre-built mosque DB) → prayer calc → response
 
-Background (nightly): scraping pipeline (5 tiers) → prayer times → DB
+Background (continuous): self-improving scraping loop → prayer times + mosque info → DB
 One-time seed: OSM + Hartford Institute + MosqueList → 2,400+ mosques
 ```
 
@@ -37,16 +46,56 @@ Full architecture details: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
 
 ---
 
+## Self-Improving Scraping Pipeline
+
+Prayer times are scraped from each mosque's website through a 5-tier pipeline that continuously self-improves:
+
+```
+Tier 1: IslamicFinder / Aladhan APIs          (zero tokens — fastest)
+Tier 2: Static HTML + iframes + custom extractors
+Tier 3: Playwright JS rendering + API interception
+Tier 4: Claude Vision (images/PDFs with schedule tables)
+Tier 5: Astronomical calculation (fallback)
+           ↓
+Adaptive Extractor (runs after every batch):
+  • 7 automated zero-token approaches (JSON-LD, regex, data-attrs, API endpoint detection …)
+  • Claude Haiku HTML extractor for sites that defeat automation (batches of 5)
+  • New Python functions auto-appended to custom_extractors.py
+  • Tier-5-stuck mosques auto-requeued when new extractors are generated
+  • Loop exits only when no new extractors can be generated (convergence)
+  • Re-run with --fresh to clear cooldowns and retry all stuck domains
+```
+
+**Current scrape rate**: ~50% of mosques with websites have real scraped iqama times; 50% fall back to calculated. The self-improving loop continuously raises this floor.
+
+### Run the scraping loop
+
+```bash
+cd server
+
+# Start the self-improving loop (batches of 50, runs until convergence)
+./run_scraping_loop.sh
+
+# Force-clear stale cooldowns and retry all stuck domains
+./run_scraping_loop.sh 50 --fresh
+
+# Monitor in a second terminal
+./monitor_scraping.sh watch
+./monitor_scraping.sh tail
+```
+
+---
+
 ## Documentation
 
 | Document | Description |
 |---|---|
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | System architecture, tech stack, data flows |
-| [docs/DATABASE_SCHEMA.md](docs/DATABASE_SCHEMA.md) | Full PostgreSQL schema with all tables |
-| [docs/SCRAPING_PIPELINE.md](docs/SCRAPING_PIPELINE.md) | Offline scraping pipeline — all 5 tiers |
-| [docs/FRONTEND_DESIGN.md](docs/FRONTEND_DESIGN.md) | Mobile-first UI, Leaflet map, navigation |
-| [docs/NOTIFICATIONS.md](docs/NOTIFICATIONS.md) | Push notification types, scheduling, PWA |
-| [docs/TRAVEL_TIME.md](docs/TRAVEL_TIME.md) | Mapbox routing strategy and cost analysis |
+| [docs/DATABASE_SCHEMA.md](docs/DATABASE_SCHEMA.md) | Full PostgreSQL schema |
+| [docs/SCRAPING_PIPELINE.md](docs/SCRAPING_PIPELINE.md) | 5-tier scraping pipeline details |
+| [docs/FRONTEND_DESIGN.md](docs/FRONTEND_DESIGN.md) | Mobile-first UI, Leaflet map |
+| [docs/NOTIFICATIONS.md](docs/NOTIFICATIONS.md) | Push notification types and scheduling |
+| [docs/TRAVEL_TIME.md](docs/TRAVEL_TIME.md) | Mapbox routing strategy |
 | [docs/API_DESIGN.md](docs/API_DESIGN.md) | Full REST API reference |
 | [ISLAMIC_PRAYER_RULES.md](ISLAMIC_PRAYER_RULES.md) | Ground truth for all prayer timing logic |
 | [MOSQUE_SCRAPING_GUIDE.md](MOSQUE_SCRAPING_GUIDE.md) | Scraping patterns reference |
@@ -61,13 +110,13 @@ Full architecture details: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
 | Database | PostgreSQL 15 + PostGIS |
 | Prayer calculation | adhan-python (local, no API) |
 | Mosque discovery | Overpass API / OpenStreetMap (pre-indexed) |
-| Travel time | Mapbox Directions + Matrix API |
-| Map display | Leaflet.js + OpenStreetMap tiles (free) |
+| Travel time | Mapbox Directions API |
+| Map display | Leaflet.js + OpenStreetMap tiles |
 | Frontend | React 18 + TypeScript + Tailwind CSS |
 | Scraping (static) | httpx + BeautifulSoup |
 | Scraping (JS sites) | Playwright async |
-| Scraping (images) | Claude Vision API |
-| Push notifications | Firebase Cloud Messaging (FCM) |
+| Scraping (images/PDF) | Claude Vision (Haiku) |
+| Push notifications | Firebase Cloud Messaging |
 | Containerization | Docker + Docker Compose |
 
 ---
@@ -76,19 +125,13 @@ Full architecture details: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
 
 ### Prerequisites
 - Docker and Docker Compose
-- Mapbox API key (for travel times)
-- Anthropic API key (for image-based schedule extraction)
+- Mapbox API key (travel times and geocoding)
+- Anthropic API key (image schedule extraction + adaptive extractor)
 
-### Environment Setup
+### Environment
 
-```bash
-# Copy the example env files
-cp .env.example .env
-cp server/.env.example server/.env
-cp client/.env.example client/.env
-```
+Copy `.env.example` to `.env` and fill in:
 
-Edit `server/.env`:
 ```env
 DATABASE_URL=postgresql+asyncpg://user:pass@db:5432/catchaprayer
 MAPBOX_API_KEY=sk.eyJ1...
@@ -98,7 +141,7 @@ FCM_SERVER_KEY=...
 
 Edit `client/.env`:
 ```env
-REACT_APP_API_URL=          # leave empty — uses CRA proxy (works for localhost and ngrok)
+REACT_APP_API_URL=          # leave empty for localhost / ngrok proxy
 REACT_APP_GOOGLE_MAPS_API_KEY=...
 ```
 
@@ -112,17 +155,15 @@ docker-compose up --build
 # API docs: http://localhost:8000/docs
 ```
 
-### Seed the Mosque Database
+### Seed + Scrape
 
 ```bash
-# One-time: download US/Canada mosques from OpenStreetMap
+# One-time: seed US/Canada mosques
 python -m pipeline.seed_mosques
-
-# One-time: enrich/add mosques from Hartford Institute + MosqueList.top
 python -m pipeline.seed_from_web_sources
 
-# Run the scraping pipeline (processes pending jobs in batches)
-python -m pipeline.scraping_worker --batch-size 50
+# Run the self-improving scraping loop
+./run_scraping_loop.sh
 ```
 
 ---
@@ -135,35 +176,32 @@ See [docs/API_DESIGN.md](docs/API_DESIGN.md) for full reference.
 |---|---|---|
 | GET | `/health` | Health check |
 | POST | `/api/mosques/nearby` | Find nearby mosques with prayer status |
-| GET | `/api/mosques/{id}` | Mosque detail + full schedule |
-| GET | `/api/mosques/{id}/schedule` | Monthly prayer schedule |
-| POST | `/api/notifications/subscribe` | Register push notifications |
-| PUT | `/api/notifications/subscribe/{id}` | Update preferences |
-| DELETE | `/api/notifications/subscribe/{id}` | Unsubscribe |
-| GET | `/api/settings` | Default settings |
+| GET | `/api/mosques/{id}` | Mosque detail + today's schedule |
+| POST | `/api/travel/plan` | Route-based prayer trip plan |
+| GET | `/api/mosques/stats` | Database coverage statistics |
 
 ---
 
-## User Settings
+## Travel Mode — Islamic Rules
 
-- Search radius (1–50 km)
-- Travel buffer (minutes added to travel time for parking/walking)
-- Travel Mode (enables prayer combination options for travelers)
-- Congregation window (how long after iqama a congregation is still joinable, default 15 min)
-- Per-prayer notification preferences (timing, enable/disable, quiet hours)
+The app implements Jam' (prayer combination) rules for travelers per [ISLAMIC_PRAYER_RULES.md](ISLAMIC_PRAYER_RULES.md):
+
+| Mode | Behavior |
+|---|---|
+| **Muqeem** | Each prayer planned independently in its own time window. No combining. |
+| **Musafir** | Dhuhr+Asr and Maghrib+Isha tracked as pairs. Jam' Taqdeem (early) or Ta'kheer (late) combining options shown. |
+
+Key rules: combined window extends to end of second prayer's period (Dhuhr not missed at Asr adhan for Musafir) • Trip planner orders prayers chronologically from departure time • Fajr is always standalone.
 
 ---
 
 ## Prayer Data Sources
-
-The app is fully transparent about where every prayer time comes from:
 
 | Source | Label shown to user |
 |---|---|
 | Scraped from mosque website | "From mosque website" |
 | Extracted from schedule image | "From mosque schedule (image)" |
 | IslamicFinder database | "From IslamicFinder" |
-| Community submitted | "Community-submitted" |
 | Astronomically calculated | "Calculated — verify with mosque" |
 | Estimated from typical offset | "Estimated — congregation time not confirmed" |
 

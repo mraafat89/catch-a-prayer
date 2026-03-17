@@ -152,14 +152,23 @@ _PAIR_PERIOD_END_KEYS = {
     "isha": "fajr_adhan",
 }
 
-def compute_travel_combinations(schedule: dict, current_min: int) -> list:
+def compute_travel_combinations(
+    schedule: dict,
+    current_min: int,
+    prayed_prayers: Optional[set] = None,
+) -> list:
     """
     Compute Jam' (prayer combining) options for a Musafir at a given mosque.
     Called when travel_mode=True and no destination (mode 1: Musafir no route).
 
+    prayed_prayers: set of prayer names already performed (pair-level tracking in Musafir
+    mode means both prayers of a pair are passed together, e.g. {"dhuhr", "asr"}).
+    Pairs where both prayers are prayed (or prayer2 is prayed → sequential inference) are skipped.
+
     Returns a list of TravelPairPlan-compatible dicts — same shape as used
     by the route-based travel planner so the frontend can reuse the same renderer.
     """
+    prayed = prayed_prayers or set()
     PAIRS = [
         ("dhuhr",   "asr",  "dhuhr_asr",   "Dhuhr + Asr",   "🕌"),
         ("maghrib", "isha", "maghrib_isha", "Maghrib + Isha", "🌙"),
@@ -167,6 +176,11 @@ def compute_travel_combinations(schedule: dict, current_min: int) -> list:
     result = []
 
     for p1, p2, pair_key, label, emoji in PAIRS:
+        # Sequential inference: prayer2 prayed → prayer1 was also done → skip pair
+        # Also skip if both are explicitly in prayed set
+        if p2 in prayed or (p1 in prayed and p2 in prayed):
+            continue
+
         p1_adhan = schedule.get(f"{p1}_adhan")
         p1_iqama = schedule.get(f"{p1}_iqama")
         p2_adhan = schedule.get(f"{p2}_adhan")
@@ -225,10 +239,21 @@ def compute_travel_combinations(schedule: dict, current_min: int) -> list:
         # Ta'kheer: delay p1 to p2 time — only feasible if p2 period hasn't ended
         if cur < p2_end_m:
             if cur >= p2_adhan_m:
-                ta_kheer_desc = (
-                    f"Pray both {p1.title()} and {p2.title()} together during {p2.title()} time "
-                    f"(iqama ~{p2_iqama_fmt})."
-                )
+                # Congregation window: iqama + 15 min
+                p2_iqama_m = hhmm_to_minutes(p2_iqama) if p2_iqama else p2_adhan_m + 15
+                congregation_ended = cur >= p2_iqama_m + CONGREGATION_WINDOW_MINUTES
+                # Period end display (e.g. "Fajr at 05:15" for Isha)
+                p2_end_display = schedule.get(_PAIR_PERIOD_END_KEYS.get(p2, ""), p2_iqama_fmt)
+                if congregation_ended:
+                    ta_kheer_desc = (
+                        f"As a Musafir, pray {p1.title()} + {p2.title()} together now at this "
+                        f"mosque (solo, Jam' Ta'kheer — {p2.title()} period active until {p2_end_display})."
+                    )
+                else:
+                    ta_kheer_desc = (
+                        f"Pray both {p1.title()} and {p2.title()} together during {p2.title()} time "
+                        f"(iqama ~{p2_iqama_fmt})."
+                    )
             else:
                 ta_kheer_desc = (
                     f"Wait until {p2.title()} time and pray both {p1.title()} + {p2.title()} "
@@ -505,11 +530,37 @@ def calculate_catching_status(
     return None
 
 
+def _musafir_active_prayers(prayed: set) -> set:
+    """
+    In Musafir mode, return the set of prayer names that should be SKIPPED
+    in individual catchable_prayers because they're part of a prayed pair.
+    Also handles sequential inference (prayer2 prayed → prayer1 also done).
+    Fajr is handled individually (not part of a pair).
+    """
+    skip = set()
+    # Dhuhr+Asr pair
+    if "asr" in prayed or ("dhuhr" in prayed and "asr" in prayed):
+        skip.update({"dhuhr", "asr"})
+    elif "dhuhr" in prayed:
+        skip.add("dhuhr")  # solo Dhuhr prayed, Asr still pending — show Asr
+    # Maghrib+Isha pair
+    if "isha" in prayed or ("maghrib" in prayed and "isha" in prayed):
+        skip.update({"maghrib", "isha"})
+    elif "maghrib" in prayed:
+        skip.add("maghrib")  # solo Maghrib prayed, Isha still pending — show Isha
+    # Fajr
+    if "fajr" in prayed:
+        skip.add("fajr")
+    return skip
+
+
 def get_next_catchable(
     schedule: dict,
     current_minutes: int,
     travel_minutes: int,
     congregation_window: int = CONGREGATION_WINDOW_MINUTES,
+    travel_mode: bool = False,
+    prayed_prayers: Optional[set] = None,
 ) -> Optional[dict]:
     """Find the most relevant prayer status to show on the mosque card.
 
@@ -519,8 +570,12 @@ def get_next_catchable(
     3. can_pray_solo_at_mosque
     4. pray_at_nearby_location
     5. missed_make_up (only if nothing else)
+
+    In Musafir mode (travel_mode=True), prayers belonging to a prayed pair are skipped
+    (the pair is handled by travel_combinations instead).
     """
     priority_order = ["fajr", "dhuhr", "asr", "maghrib", "isha"]
+    skip = _musafir_active_prayers(prayed_prayers or set()) if travel_mode else set()
     UPCOMING_WINDOW_MINUTES = 120  # show upcoming if adhan within 2 hours
 
     STATUS_RANK = {
@@ -534,6 +589,8 @@ def get_next_catchable(
 
     candidates = []
     for prayer in priority_order:
+        if prayer in skip:
+            continue
         status = calculate_catching_status(
             prayer, schedule, current_minutes, travel_minutes, congregation_window
         )
@@ -554,6 +611,8 @@ def get_next_catchable(
         # Nothing active or imminent: show the soonest upcoming prayer regardless
         # of how far away it is (dead time — user needs to plan for Dhuhr etc.)
         for prayer in priority_order:
+            if prayer in skip:
+                continue
             status = calculate_catching_status(
                 prayer, schedule, current_minutes, travel_minutes, congregation_window
             )
@@ -561,6 +620,8 @@ def get_next_catchable(
                 return status
         # Truly nothing upcoming — return most recent missed prayer
         for prayer in reversed(priority_order):
+            if prayer in skip:
+                continue
             status = calculate_catching_status(
                 prayer, schedule, current_minutes, travel_minutes, congregation_window
             )
@@ -578,13 +639,22 @@ def get_catchable_prayers(
     current_minutes: int,
     travel_minutes: int,
     congregation_window: int = CONGREGATION_WINDOW_MINUTES,
+    travel_mode: bool = False,
+    prayed_prayers: Optional[set] = None,
 ) -> list[dict]:
-    """Return all prayers with an actionable status (for the multi-prayer card UI)."""
+    """Return all prayers with an actionable status (for the multi-prayer card UI).
+
+    In Musafir mode (travel_mode=True), prayers belonging to a prayed pair are skipped —
+    the pair is shown via travel_combinations instead of individual prayer statuses.
+    """
     priority_order = ["fajr", "dhuhr", "asr", "maghrib", "isha"]
     UPCOMING_WINDOW_MINUTES = 120
+    skip = _musafir_active_prayers(prayed_prayers or set()) if travel_mode else set()
 
     results = []
     for prayer in priority_order:
+        if prayer in skip:
+            continue
         status = calculate_catching_status(
             prayer, schedule, current_minutes, travel_minutes, congregation_window
         )
@@ -601,12 +671,16 @@ def get_catchable_prayers(
     # If nothing actionable, prefer the soonest upcoming prayer over missed
     if not results:
         for prayer in priority_order:
+            if prayer in skip:
+                continue
             status = calculate_catching_status(
                 prayer, schedule, current_minutes, travel_minutes, congregation_window
             )
             if status and status["status"] == "upcoming":
                 return [status]
         for prayer in reversed(priority_order):
+            if prayer in skip:
+                continue
             status = calculate_catching_status(
                 prayer, schedule, current_minutes, travel_minutes, congregation_window
             )
@@ -653,6 +727,7 @@ async def find_nearby_mosques(
     current_time: datetime,
     travel_mode: bool = False,
     congregation_window: int = CONGREGATION_WINDOW_MINUTES,
+    prayed_prayers: Optional[set] = None,
 ) -> list[dict]:
     """
     Find mosques within radius_km and calculate prayer catching status for each.
@@ -771,12 +846,16 @@ async def find_nearby_mosques(
                 "data_freshness": data_freshness,
             })
 
+        prayed = prayed_prayers or set()
+
         # Get next catchable prayer (single) and all catchable prayers (list)
         next_catchable = get_next_catchable(
-            schedule, current_min_mosque, travel_min, congregation_window
+            schedule, current_min_mosque, travel_min, congregation_window,
+            travel_mode=travel_mode, prayed_prayers=prayed,
         )
         catchable_prayers = get_catchable_prayers(
-            schedule, current_min_mosque, travel_min, congregation_window
+            schedule, current_min_mosque, travel_min, congregation_window,
+            travel_mode=travel_mode, prayed_prayers=prayed,
         )
 
         mosque_out = {
@@ -800,7 +879,7 @@ async def find_nearby_mosques(
             "next_catchable": next_catchable,
             "catchable_prayers": catchable_prayers,
             "travel_combinations": (
-                compute_travel_combinations(schedule, current_min_mosque)
+                compute_travel_combinations(schedule, current_min_mosque, prayed_prayers=prayed)
                 if travel_mode else []
             ),
             "prayers": prayers_out,

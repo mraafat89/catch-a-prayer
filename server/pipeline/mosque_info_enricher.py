@@ -55,7 +55,7 @@ _DENOM_PATTERNS: list[tuple[str, list[str]]] = [
     ("shafi",         ["shafi'i", "shafii", "shafi"]),
     ("hanafi",        ["hanafi"]),
     ("sunni",         ["sunni", "ahlus sunnah", "ahl al-sunnah", "sunni muslim"]),
-)
+]
 
 def detect_denomination(text: str) -> Optional[str]:
     t = text.lower()

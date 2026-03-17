@@ -81,13 +81,15 @@ interface MapPoint {
   lng: number;
   name?: string;
   place_id?: string | null;
+  is_gps?: boolean;  // true = use device current location instead of explicit coords
 }
 
 function buildGoogleMapsUrl(points: MapPoint[]): string {
   // Use the directions URL format: /maps/dir/origin/.../destination
+  // Empty first segment when origin is GPS — Google uses current device location
   // With Google Place IDs where available: "place_id:ChIJ..."
-  // Otherwise use encoded name or lat,lng
   const segments = points.map(p => {
+    if (p.is_gps) return '';
     if (p.place_id) return `place_id:${p.place_id}`;
     if (p.name) return encodeURIComponent(p.name);
     return `${p.lat},${p.lng}`;
@@ -97,12 +99,16 @@ function buildGoogleMapsUrl(points: MapPoint[]): string {
 
 function buildAppleMapsUrl(points: MapPoint[]): string {
   // Apple Maps: saddr=Name@lat,lng  daddr=Name@lat,lng (repeated)
+  // Omit saddr when origin is GPS — Apple Maps uses current device location
   function applePoint(p: MapPoint): string {
     if (p.name) return `${encodeURIComponent(p.name)}@${p.lat},${p.lng}`;
     return `${p.lat},${p.lng}`;
   }
   const [origin, ...rest] = points;
   const destParts = rest.map(p => `daddr=${applePoint(p)}`).join('&');
+  if (origin.is_gps) {
+    return `https://maps.apple.com/?${destParts}&dirflg=d`;
+  }
   return `https://maps.apple.com/?saddr=${applePoint(origin)}&${destParts}&dirflg=d`;
 }
 
@@ -1076,7 +1082,7 @@ function SettingsSheet() {
         {/* Travel mode */}
         <div className="flex items-center justify-between">
           <div>
-            <p className="text-sm font-medium text-gray-700">
+            <p className={`text-sm font-medium ${travelMode ? 'text-indigo-700' : 'text-gray-700'}`}>
               {travelMode ? '✈️ Musafir mode' : '🏠 Muqeem mode'}
             </p>
             <p className="text-xs text-gray-500">
@@ -1088,7 +1094,7 @@ function SettingsSheet() {
           <button
             onClick={() => setTravelMode(!travelMode)}
             className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors flex-shrink-0 ml-3 ${
-              travelMode ? 'bg-teal-600' : 'bg-gray-300'
+              travelMode ? 'bg-indigo-600' : 'bg-gray-300'
             }`}
           >
             <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
@@ -1156,9 +1162,19 @@ function BottomSheet() {
 
 // ─── Global Prayed Banner ────────────────────────────────────────────────────
 
+// Musafir pair mapping: if one of these prayers is active, show the pair instead
+const MUSAFIR_PAIR_MAP: Record<string, { p1: string; p2: string; label: string }> = {
+  isha:    { p1: 'maghrib', p2: 'isha', label: 'Maghrib + Isha' },
+  maghrib: { p1: 'maghrib', p2: 'isha', label: 'Maghrib + Isha' },
+  asr:     { p1: 'dhuhr',   p2: 'asr',  label: 'Dhuhr + Asr'   },
+  dhuhr:   { p1: 'dhuhr',   p2: 'asr',  label: 'Dhuhr + Asr'   },
+};
+
 function PrayedBanner({ mosques }: { mosques: Mosque[] }) {
-  const prayedToday  = useStore((s) => s.prayedToday);
-  const togglePrayed = useStore((s) => s.togglePrayed);
+  const prayedToday      = useStore((s) => s.prayedToday);
+  const togglePrayed     = useStore((s) => s.togglePrayed);
+  const togglePrayedPair = useStore((s) => s.togglePrayedPair);
+  const travelMode       = useStore((s) => s.travelMode);
 
   // Collect active (non-upcoming) prayers across all mosques
   const activePrayers = new Set<string>();
@@ -1171,25 +1187,77 @@ function PrayedBanner({ mosques }: { mosques: Mosque[] }) {
 
   if (activePrayers.size === 0) return null;
 
+  // In Musafir mode, group Dhuhr+Asr and Maghrib+Isha into pairs
+  type BannerItem =
+    | { kind: 'solo';  prayer: string }
+    | { kind: 'pair';  p1: string; p2: string; label: string };
+
+  const items: BannerItem[] = [];
+  const seen = new Set<string>();
+
+  for (const prayer of Array.from(activePrayers)) {
+    if (seen.has(prayer)) continue;
+    if (travelMode && MUSAFIR_PAIR_MAP[prayer]) {
+      const { p1, p2, label } = MUSAFIR_PAIR_MAP[prayer];
+      // Only show the pair if neither p1 nor p2 has been individually prayed
+      if (!prayedToday.has(p1) && !prayedToday.has(p2)) {
+        items.push({ kind: 'pair', p1, p2, label });
+        seen.add(p1); seen.add(p2);
+      }
+      // If one of the pair is already prayed, fall through to individual handling
+    } else {
+      items.push({ kind: 'solo', prayer });
+      seen.add(prayer);
+    }
+  }
+
   return (
     <div className="space-y-1.5">
-      {Array.from(activePrayers).map((prayer) => {
-        const prayed = prayedToday.has(prayer);
+      {items.map((item) => {
+        if (item.kind === 'pair') {
+          const prayed = prayedToday.has(item.p1) && prayedToday.has(item.p2);
+          return (
+            <div
+              key={item.label}
+              className={`flex items-center justify-between rounded-xl px-3 py-2 border text-sm ${
+                prayed ? 'bg-green-50 border-green-200 text-green-800' : 'bg-white border-gray-200 text-gray-700'
+              }`}
+            >
+              <span className="flex items-center gap-1.5">
+                {prayed && <img src="/icons/icon_prayed.png" alt="" className="w-7 h-7 object-contain" />}
+                {prayed
+                  ? `Already prayed ${item.label} today`
+                  : `${item.label} — did you already pray both?`}
+              </span>
+              <button
+                onClick={() => togglePrayedPair(item.p1, item.p2)}
+                className={`ml-3 text-xs font-medium px-2 py-1 rounded-full border transition-colors ${
+                  prayed
+                    ? 'border-green-300 text-green-700 hover:bg-green-100'
+                    : 'bg-green-600 border-green-600 text-white hover:bg-green-700'
+                }`}
+              >
+                {prayed ? 'Undo' : 'Yes, I prayed'}
+              </button>
+            </div>
+          );
+        }
+        const prayed = prayedToday.has(item.prayer);
         return (
           <div
-            key={prayer}
+            key={item.prayer}
             className={`flex items-center justify-between rounded-xl px-3 py-2 border text-sm ${
-              prayed
-                ? 'bg-green-50 border-green-200 text-green-800'
-                : 'bg-white border-gray-200 text-gray-700'
+              prayed ? 'bg-green-50 border-green-200 text-green-800' : 'bg-white border-gray-200 text-gray-700'
             }`}
           >
             <span className="flex items-center gap-1.5">
               {prayed && <img src="/icons/icon_prayed.png" alt="" className="w-7 h-7 object-contain" />}
-              {prayed ? `Already prayed ${prayer.charAt(0).toUpperCase() + prayer.slice(1)} today` : `${prayer.charAt(0).toUpperCase() + prayer.slice(1)} time — did you already pray?`}
+              {prayed
+                ? `Already prayed ${item.prayer.charAt(0).toUpperCase() + item.prayer.slice(1)} today`
+                : `${item.prayer.charAt(0).toUpperCase() + item.prayer.slice(1)} time — did you already pray?`}
             </span>
             <button
-              onClick={() => togglePrayed(prayer)}
+              onClick={() => togglePrayed(item.prayer)}
               className={`ml-3 text-xs font-medium px-2 py-1 rounded-full border transition-colors ${
                 prayed
                   ? 'border-green-300 text-green-700 hover:bg-green-100'
@@ -1266,6 +1334,14 @@ function GeoInput({
   );
 }
 
+// Waypoint row state (local — not persisted between form open/close)
+interface WaypointRow {
+  dest: TravelDestination | null;
+  query: string;
+  sugg: GeocodeSuggestion[];
+  loading: boolean;
+}
+
 function DestinationInput() {
   const userLocation    = useStore((s) => s.userLocation);
   const travelDestination = useStore((s) => s.travelDestination);
@@ -1274,9 +1350,11 @@ function DestinationInput() {
   const setTravelOrigin = useStore((s) => s.setTravelOrigin);
   const travelDepartureTime = useStore((s) => s.travelDepartureTime);
   const setTravelDepartureTime = useStore((s) => s.setTravelDepartureTime);
+  const travelPlan      = useStore((s) => s.travelPlan);
   const setTravelPlan   = useStore((s) => s.setTravelPlan);
   const setTravelPlanLoading = useStore((s) => s.setTravelPlanLoading);
   const travelModeStore = useStore((s) => s.travelMode);
+  const prayedToday     = useStore((s) => s.prayedToday);
 
   const [destQuery, setDestQuery]   = useState(travelDestination?.place_name ?? '');
   const [destSugg, setDestSugg]     = useState<GeocodeSuggestion[]>([]);
@@ -1286,6 +1364,10 @@ function DestinationInput() {
   const [originLoading, setOriginLoading] = useState(false);
   // Trip mode always follows global Muqeem/Musafir toggle — no per-trip override
   const tripMode = travelModeStore ? 'travel' : 'driving';
+
+  // Intermediate waypoint rows (0–4 stops between origin and destination)
+  const [waypointRows, setWaypointRows] = useState<WaypointRow[]>([]);
+  const wpDebounces = useRef<Array<ReturnType<typeof setTimeout> | null>>([]);
 
   // Whether the trip planner form is expanded (starts collapsed unless a destination/plan exists)
   const [formExpanded, setFormExpanded] = useState(() => !!travelDestination);
@@ -1319,6 +1401,15 @@ function DestinationInput() {
       .catch(() => {});
   }, [userLocation]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Auto re-plan when prayed prayers change while a plan is active
+  const prevPrayedRef = useRef<Set<string>>(prayedToday);
+  useEffect(() => {
+    if (travelPlan && prevPrayedRef.current !== prayedToday && travelDestination) {
+      prevPrayedRef.current = prayedToday;
+      executePlan(tripMode);
+    }
+  }, [prayedToday]); // eslint-disable-line react-hooks/exhaustive-deps
+
   function debounceGeocode(
     val: string,
     ref: React.MutableRefObject<ReturnType<typeof setTimeout> | null>,
@@ -1335,6 +1426,46 @@ function DestinationInput() {
     }, 400);
   }
 
+  function debounceGeocodeWp(index: number, val: string) {
+    if (wpDebounces.current[index]) clearTimeout(wpDebounces.current[index]!);
+    setWaypointRows(rows => rows.map((r, i) => i === index ? { ...r, query: val, sugg: val.length < 3 ? [] : r.sugg } : r));
+    if (val.length < 3) return;
+    wpDebounces.current[index] = setTimeout(async () => {
+      setWaypointRows(rows => rows.map((r, i) => i === index ? { ...r, loading: true } : r));
+      try {
+        const sugg = await apiService.geocodeDestination(val, userLocation?.latitude, userLocation?.longitude);
+        setWaypointRows(rows => rows.map((r, i) => i === index ? { ...r, sugg, loading: false } : r));
+      } catch {
+        setWaypointRows(rows => rows.map((r, i) => i === index ? { ...r, sugg: [], loading: false } : r));
+      }
+    }, 400);
+  }
+
+  function addWaypoint() {
+    if (waypointRows.length >= 4) return;
+    setWaypointRows(rows => [...rows, { dest: null, query: '', sugg: [], loading: false }]);
+    wpDebounces.current.push(null);
+  }
+
+  function removeWaypoint(index: number) {
+    if (wpDebounces.current[index]) clearTimeout(wpDebounces.current[index]!);
+    setWaypointRows(rows => rows.filter((_, i) => i !== index));
+    wpDebounces.current.splice(index, 1);
+  }
+
+  function moveWaypoint(index: number, direction: -1 | 1) {
+    const newIndex = index + direction;
+    if (newIndex < 0 || newIndex >= waypointRows.length) return;
+    setWaypointRows(rows => {
+      const next = [...rows];
+      [next[index], next[newIndex]] = [next[newIndex], next[index]];
+      return next;
+    });
+    const tmp = wpDebounces.current[index];
+    wpDebounces.current[index] = wpDebounces.current[newIndex];
+    wpDebounces.current[newIndex] = tmp;
+  }
+
   function clearAll() {
     setTravelDestination(null);
     setTravelOrigin(null);
@@ -1342,6 +1473,8 @@ function DestinationInput() {
     setTravelPlan(null);
     setDestQuery(''); setDestSugg([]);
     setOriginQuery(''); setOriginSugg([]);
+    setWaypointRows([]);
+    wpDebounces.current = [];
     setDepartureInput(defaultDeparture);
     setFormExpanded(false);
   }
@@ -1363,6 +1496,12 @@ function DestinationInput() {
     setTravelPlanLoading(true);
     setTravelPlan(null);
     setChipExpanded(false);
+
+    // Build waypoints list from confirmed rows only
+    const wps = waypointRows
+      .filter(w => w.dest !== null)
+      .map(w => ({ lat: w.dest!.lat, lng: w.dest!.lng, name: w.dest!.place_name }));
+
     try {
       const plan = await apiService.getTravelPlan(
         originLat, originLng,
@@ -1371,6 +1510,8 @@ function DestinationInput() {
         travelOrigin?.place_name,
         depIso,
         mode,
+        wps,
+        Array.from(prayedToday),
       );
       setTravelPlan(plan);
     } catch {
@@ -1438,23 +1579,15 @@ function DestinationInput() {
 
   return (
     <div className="mx-3 mb-2 bg-white border border-teal-200 rounded-xl p-3 shadow-sm space-y-2">
-      {/* Header with mode badge and cancel */}
+      {/* Header with cancel */}
       <div className="flex items-center justify-between">
-        <p className="text-xs font-bold text-teal-700 uppercase tracking-wider">Plan Your Trip</p>
-        <div className="flex items-center gap-2">
-          <span className={`text-xs font-semibold px-2 py-0.5 rounded-full ${travelModeStore ? 'bg-teal-100 text-teal-700' : 'bg-gray-100 text-gray-600'}`}>
-            {travelModeStore ? '✈️ Musafir' : '🏠 Muqeem'}
-          </span>
-          <button
-            onClick={() => setFormExpanded(false)}
-            className="text-gray-400 hover:text-gray-600 text-lg leading-none"
-            title="Close trip planner"
-          >✕</button>
-        </div>
+        <p className={`text-xs font-bold uppercase tracking-wider ${travelModeStore ? 'text-indigo-700' : 'text-teal-700'}`}>Plan Your Trip</p>
+        <button
+          onClick={() => setFormExpanded(false)}
+          className="text-gray-400 hover:text-gray-600 text-lg leading-none"
+          title="Close trip planner"
+        >✕</button>
       </div>
-      {travelModeStore && (
-        <p className="text-xs text-teal-600">Prayer combining (Jam') enabled along route</p>
-      )}
 
       {/* From */}
       <div className="relative">
@@ -1469,6 +1602,63 @@ function DestinationInput() {
           onClear={originQuery ? () => { setTravelOrigin(null); setOriginQuery(''); setOriginSugg([]); } : undefined}
         />
       </div>
+
+      {/* Intermediate waypoints */}
+      {waypointRows.map((wp, i) => (
+        <div key={i} className="flex items-start gap-1">
+          <div className="flex flex-col gap-0.5 pt-1.5">
+            <button
+              onClick={() => moveWaypoint(i, -1)}
+              disabled={i === 0}
+              className="text-gray-400 hover:text-gray-600 disabled:opacity-20 text-xs leading-none px-0.5"
+              title="Move up"
+            >▲</button>
+            <button
+              onClick={() => moveWaypoint(i, 1)}
+              disabled={i === waypointRows.length - 1}
+              className="text-gray-400 hover:text-gray-600 disabled:opacity-20 text-xs leading-none px-0.5"
+              title="Move down"
+            >▼</button>
+          </div>
+          <div className="flex-1 min-w-0">
+            <GeoInput
+              placeholder={`Stop ${i + 1}`}
+              icon="📌"
+              value={wp.query}
+              onChange={(v) => debounceGeocodeWp(i, v)}
+              suggestions={wp.sugg}
+              onSelect={(s) => {
+                setWaypointRows(rows => rows.map((r, ri) => ri === i
+                  ? { ...r, dest: s, query: s.place_name, sugg: [] }
+                  : r
+                ));
+              }}
+              loading={wp.loading}
+              onClear={() => {
+                setWaypointRows(rows => rows.map((r, ri) => ri === i
+                  ? { ...r, dest: null, query: '', sugg: [] }
+                  : r
+                ));
+              }}
+            />
+          </div>
+          <button
+            onClick={() => removeWaypoint(i)}
+            className="text-gray-400 hover:text-red-500 text-base leading-none pt-2 px-1 flex-shrink-0"
+            title="Remove stop"
+          >✕</button>
+        </div>
+      ))}
+
+      {/* Add stop button */}
+      {waypointRows.length < 4 && (
+        <button
+          onClick={addWaypoint}
+          className="text-xs text-teal-600 hover:text-teal-800 flex items-center gap-1 pl-1"
+        >
+          <span className="text-sm font-bold">+</span> Add stop
+        </button>
+      )}
 
       {/* To */}
       <GeoInput
@@ -1505,7 +1695,7 @@ function DestinationInput() {
           <div className="flex gap-2">
             <button
               onClick={() => { setTravelMode(true); executePlan('travel'); }}
-              className="flex-1 bg-teal-600 text-white text-xs font-semibold py-1.5 rounded-lg hover:bg-teal-700 transition-colors"
+              className="flex-1 bg-indigo-600 text-white text-xs font-semibold py-1.5 rounded-lg hover:bg-indigo-700 transition-colors"
             >
               ✈️ Switch to Musafir
             </button>
@@ -1550,6 +1740,7 @@ function TravelItineraryCard({ itinerary, index }: { itinerary: TripItinerary; i
     combine_late:   '⏪',
     at_destination: '🏁',
     separate:       '🔀',
+    solo_stop:      '🕌',
     stop_for_fajr:  '🌅',
     no_option:      '⚠️',
   };
@@ -1640,7 +1831,7 @@ function TravelItineraryCard({ itinerary, index }: { itinerary: TripItinerary; i
             const destName   = travelDestination?.place_name ?? undefined;
 
             const points: MapPoint[] = [
-              { lat: originLat, lng: originLng, name: originName },
+              { lat: originLat, lng: originLng, name: originName, is_gps: !travelOrigin },
               ...waystops.map((s: TravelStop) => ({
                 lat: s.mosque_lat,
                 lng: s.mosque_lng,
@@ -1904,7 +2095,7 @@ function App() {
   return (
     <div className="min-h-screen bg-slate-50 flex flex-col">
       {/* Header */}
-      <header className="bg-gradient-to-r from-teal-700 to-teal-600 px-4 py-0 flex items-stretch justify-between z-10 shadow-md" style={{ minHeight: '52px' }}>
+      <header className={`px-4 py-0 flex items-stretch justify-between z-10 shadow-md transition-colors duration-300 ${travelModeStore ? 'bg-gradient-to-r from-indigo-700 to-indigo-600' : 'bg-gradient-to-r from-teal-700 to-teal-600'}`} style={{ minHeight: '52px' }}>
         {/* Left: logo + title */}
         <div className="flex items-center gap-2 min-w-0 py-2">
           <img src="/icons/logo_pin.png" alt="" className="h-8 w-auto object-contain flex-shrink-0 brightness-0 invert opacity-90" />
@@ -1918,21 +2109,25 @@ function App() {
             )}
           </div>
         </div>
-        {/* Right: travel toggle + settings — vertically centered */}
+        {/* Right: mode flip control + settings */}
         <div className="flex items-center gap-2 flex-shrink-0 py-2">
-          <button
-            onClick={() => useStore.getState().setTravelMode(!travelModeStore)}
-            className={`flex items-center gap-1 text-xs font-semibold px-2.5 py-1 rounded-full border transition-colors leading-none ${
-              travelModeStore
-                ? 'bg-white text-teal-700 border-white'
-                : 'bg-transparent text-teal-100 border-teal-400 hover:border-white hover:text-white'
-            }`}
-            title={travelModeStore
-              ? 'Musafir mode ON — prayer combining enabled. Tap to switch to Muqeem (resident) mode.'
-              : 'Muqeem mode — tap to activate Musafir (traveler) mode and enable prayer combining (Dhuhr+Asr, Maghrib+Isha)'}
-          >
-            {travelModeStore ? '✈️ Musafir' : '🏠 Muqeem'}
-          </button>
+          {/* Segmented flip control */}
+          <div className="flex items-center bg-black/25 rounded-full p-0.5">
+            <button
+              onClick={() => useStore.getState().setTravelMode(false)}
+              className={`flex items-center gap-1 px-2 py-1 rounded-full text-xs font-semibold leading-none transition-colors ${
+                !travelModeStore ? 'bg-white text-teal-700' : 'text-white/70 hover:text-white'
+              }`}
+              title="Muqeem (resident) mode"
+            >🏠 Muqeem</button>
+            <button
+              onClick={() => useStore.getState().setTravelMode(true)}
+              className={`flex items-center gap-1 px-2 py-1 rounded-full text-xs font-semibold leading-none transition-colors ${
+                travelModeStore ? 'bg-white text-indigo-700' : 'text-white/70 hover:text-white'
+              }`}
+              title="Musafir (traveler) mode — prayer combining enabled"
+            >✈️ Musafir</button>
+          </div>
           <button
             onClick={() => openSheet({ type: 'settings' })}
             className="flex items-center justify-center w-8 h-8 hover:bg-teal-600 rounded-lg transition-colors flex-shrink-0"

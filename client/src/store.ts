@@ -82,6 +82,8 @@ interface AppState {
   setTravelDestination: (d: TravelDestination | null) => void;
   travelDepartureTime: string | null;            // ISO datetime string; null = now
   setTravelDepartureTime: (t: string | null) => void;
+  tripWaypoints: TravelDestination[];            // intermediate stops (0–4)
+  setTripWaypoints: (wps: TravelDestination[]) => void;
   travelPlan: TravelPlan | null;
   setTravelPlan: (p: TravelPlan | null) => void;
   travelPlanLoading: boolean;
@@ -90,6 +92,7 @@ interface AppState {
   // Prayed tracker — set<"YYYY-MM-DD:prayer"> persisted in localStorage
   prayedToday: Set<string>;
   togglePrayed: (prayer: string) => void;
+  togglePrayedPair: (p1: string, p2: string) => void;
 
   // Confirmed spots — set<spot_id> persisted permanently in localStorage
   confirmedSpots: Set<string>;
@@ -139,6 +142,8 @@ export const useStore = create<AppState>((set) => ({
   setTravelDestination: (travelDestination) => set({ travelDestination }),
   travelDepartureTime: null,
   setTravelDepartureTime: (travelDepartureTime) => set({ travelDepartureTime }),
+  tripWaypoints: [],
+  setTripWaypoints: (tripWaypoints) => set({ tripWaypoints }),
   travelPlan: null,
   setTravelPlan: (travelPlan) => set({ travelPlan }),
   travelPlanLoading: false,
@@ -148,6 +153,14 @@ export const useStore = create<AppState>((set) => ({
   togglePrayed: (prayer) => set((state) => {
     const next = new Set(state.prayedToday);
     if (next.has(prayer)) next.delete(prayer); else next.add(prayer);
+    savePrayed(next);
+    return { prayedToday: next };
+  }),
+  togglePrayedPair: (p1, p2) => set((state) => {
+    const next = new Set(state.prayedToday);
+    const anyPrayed = next.has(p1) || next.has(p2);
+    if (anyPrayed) { next.delete(p1); next.delete(p2); }
+    else { next.add(p1); next.add(p2); }
     savePrayed(next);
     return { prayedToday: next };
   }),

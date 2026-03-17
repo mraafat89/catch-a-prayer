@@ -48,10 +48,10 @@ logger = logging.getLogger(__name__)
 
 # ─── Config ──────────────────────────────────────────────────────────────────
 
-MAX_CANDIDATES   = 50   # mosques to pull from DB per run
+MAX_CANDIDATES   = 100  # mosques to pull from DB per run
 FETCH_TIMEOUT    = 8
 MIN_PRAYER_KWS   = 3
-COOLDOWN_DAYS    = 14   # days before re-checking a domain
+COOLDOWN_DAYS    = 3    # days before re-checking a domain (short: enables rapid self-improvement)
 
 _HERE           = os.path.dirname(os.path.abspath(__file__))
 ANALYZED_FILE   = os.path.join(_HERE, "adaptive_analyzed.json")
@@ -574,22 +574,21 @@ def main():
 
     save_cooldowns(cooldowns)
 
-    # ── Claude haiku fallback: one call for all sites that defeated automated approaches ──
-    MIN_CLAUDE_BATCH = 3
-    if len(claude_queue) >= MIN_CLAUDE_BATCH:
-        logger.info(f"  {len(claude_queue)} sites need Claude haiku — calling now...")
-        batch = claude_queue[:5]  # cap at 5 snippets per call
-        code = _call_claude_haiku(batch)
-        if code:
-            # Validate and save
-            if _validate_claude_code(code, batch):
-                fn_name = append_extractor(code, "claude_haiku", [s["url"] for s in batch])
-                new_extractor_count += 1
-                logger.info(f"  Claude extractor saved: {fn_name}")
-            else:
-                logger.warning(f"  Claude extractor failed validation — discarding")
-    elif claude_queue:
-        logger.info(f"  Only {len(claude_queue)} site(s) for Claude — need {MIN_CLAUDE_BATCH}, skipping (0 tokens)")
+    # ── Claude haiku fallback: process ALL sites that defeated automated approaches ──
+    # Process in batches of 5 (one Claude call per batch) to cover every stuck domain.
+    if claude_queue:
+        logger.info(f"  {len(claude_queue)} site(s) need Claude haiku — processing in batches of 5...")
+        for i in range(0, len(claude_queue), 5):
+            batch = claude_queue[i:i + 5]
+            logger.info(f"  Claude batch {i // 5 + 1}: {[s['domain'] for s in batch]}")
+            code = _call_claude_haiku(batch)
+            if code:
+                if _validate_claude_code(code, batch):
+                    fn_name = append_extractor(code, "claude_haiku", [s["url"] for s in batch])
+                    new_extractor_count += 1
+                    logger.info(f"  Claude extractor saved: {fn_name}")
+                else:
+                    logger.warning(f"  Claude extractor failed validation — discarding")
 
     if new_extractor_count > 0:
         requeued = requeue_tier5_websites(engine)
