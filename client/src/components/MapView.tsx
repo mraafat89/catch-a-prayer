@@ -296,7 +296,7 @@ const MapView: React.FC = () => {
         );
       })}
 
-      {showSpots && spots.map((spot) => (
+      {showSpots && !travelDestination && spots.map((spot) => (
         <CircleMarker
           key={spot.id}
           center={[spot.location.latitude, spot.location.longitude]}
