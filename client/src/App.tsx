@@ -791,6 +791,7 @@ function SpotDetailSheet({ spot }: { spot: PrayerSpot }) {
 
 function SpotSubmitSheet() {
   const closeSheet   = useStore((s) => s.closeSheet);
+  const th           = useTheme();
   const userLocation = useStore((s) => s.userLocation);
 
   // Resolved lat/lng for the spot (starts as GPS, can be overridden by address search)
@@ -871,7 +872,7 @@ function SpotSubmitSheet() {
         <p className="text-sm text-gray-600 mb-4">
           Your spot is pending community verification. Once 3 users confirm it, it will become active.
         </p>
-        <button onClick={closeSheet} className="bg-green-600 text-white px-6 py-2 rounded-lg font-medium">
+        <button onClick={closeSheet} className={`${th.bg} text-white px-6 py-2 rounded-lg font-medium`}>
           Done
         </button>
       </div>
@@ -891,7 +892,7 @@ function SpotSubmitSheet() {
           <label className="block text-xs font-medium text-gray-700 mb-1">Name *</label>
           <input
             type="text"
-            className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
+            className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-current"
             placeholder="e.g. Whole Foods Prayer Room"
             value={form.name ?? ''}
             onChange={(e) => set('name', e.target.value)}
@@ -904,7 +905,7 @@ function SpotSubmitSheet() {
           <div className="relative">
             <input
               type="text"
-              className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
+              className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-current"
               placeholder="Search for an address…"
               value={locationQuery}
               onChange={(e) => onLocationInput(e.target.value)}
@@ -940,7 +941,7 @@ function SpotSubmitSheet() {
         <div>
           <label className="block text-xs font-medium text-gray-700 mb-1">Type</label>
           <select
-            className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
+            className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-current"
             value={form.spot_type}
             onChange={(e) => set('spot_type', e.target.value)}
           >
@@ -995,7 +996,7 @@ function SpotSubmitSheet() {
           <label className="block text-xs font-medium text-gray-700 mb-1">Hours (optional)</label>
           <input
             type="text"
-            className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
+            className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-current"
             placeholder="e.g. Mon–Fri 9am–6pm"
             value={form.operating_hours ?? ''}
             onChange={(e) => set('operating_hours', e.target.value)}
@@ -1007,7 +1008,7 @@ function SpotSubmitSheet() {
           <label className="block text-xs font-medium text-gray-700 mb-1">Website (optional)</label>
           <input
             type="url"
-            className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
+            className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-current"
             placeholder="https://..."
             value={form.website ?? ''}
             onChange={(e) => set('website', e.target.value)}
@@ -1019,7 +1020,7 @@ function SpotSubmitSheet() {
           <label className="block text-xs font-medium text-gray-700 mb-1">Notes (optional)</label>
           <textarea
             rows={2}
-            className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500 resize-none"
+            className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-current resize-none"
             placeholder="Any helpful details for other musallees..."
             value={form.notes ?? ''}
             onChange={(e) => set('notes', e.target.value)}
@@ -1031,7 +1032,7 @@ function SpotSubmitSheet() {
         <button
           onClick={handleSubmit}
           disabled={submitting || !form.name?.trim() || spotLat === null}
-          className="w-full bg-green-600 text-white py-2.5 rounded-lg font-medium text-sm hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed"
+          className={`w-full ${th.bg} ${th.bgHover} text-white py-2.5 rounded-lg font-medium text-sm disabled:opacity-50 disabled:cursor-not-allowed`}
         >
           {submitting ? 'Submitting…' : 'Submit Spot'}
         </button>
