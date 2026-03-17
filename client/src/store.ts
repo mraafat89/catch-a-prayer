@@ -103,6 +103,8 @@ interface AppState {
   setMapCollapsed: (v: boolean) => void;
   bottomSheetHeight: 'peek' | 'half' | 'full';
   setBottomSheetHeight: (h: 'peek' | 'half' | 'full') => void;
+  tripPlannerOpen: boolean;
+  setTripPlannerOpen: (v: boolean) => void;
   selectedItineraryIndex: number | null;
   setSelectedItineraryIndex: (i: number | null) => void;
   selectedMosqueId: string | null;
@@ -113,6 +115,9 @@ interface AppState {
   bottomSheet: BottomSheet;
   openSheet: (sheet: BottomSheet) => void;
   closeSheet: () => void;
+  // True while the navigate-to action sheet (Google/Apple/Share) is visible
+  navShareOpen: boolean;
+  setNavShareOpen: (v: boolean) => void;
 }
 
 export const useStore = create<AppState>((set) => ({
@@ -179,8 +184,10 @@ export const useStore = create<AppState>((set) => ({
 
   mapCollapsed: false,
   setMapCollapsed: (mapCollapsed) => set({ mapCollapsed }),
-  bottomSheetHeight: 'half',
+  bottomSheetHeight: 'peek',
   setBottomSheetHeight: (bottomSheetHeight) => set({ bottomSheetHeight }),
+  tripPlannerOpen: false,
+  setTripPlannerOpen: (tripPlannerOpen) => set({ tripPlannerOpen }),
   selectedItineraryIndex: null,
   setSelectedItineraryIndex: (selectedItineraryIndex) => set({ selectedItineraryIndex }),
   selectedMosqueId: null,
@@ -190,4 +197,6 @@ export const useStore = create<AppState>((set) => ({
   bottomSheet: null,
   openSheet: (bottomSheet) => set({ bottomSheet }),
   closeSheet: () => set({ bottomSheet: null }),
+  navShareOpen: false,
+  setNavShareOpen: (navShareOpen) => set({ navShareOpen }),
 }));

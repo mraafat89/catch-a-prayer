@@ -1,4 +1,5 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
+import ReactDOM from 'react-dom';
 import L from 'leaflet';
 import { MapContainer, TileLayer, Marker, CircleMarker, Polyline, useMap, Tooltip } from 'react-leaflet';
 import { Mosque } from '../types';
@@ -123,21 +124,31 @@ function MapCenterer({ lat, lng }: { lat: number; lng: number }) {
   const map              = useMap();
   const selectedMosqueId = useStore((s) => s.selectedMosqueId);
   const travelDestination = useStore((s) => s.travelDestination);
+  const radiusKm          = useStore((s) => s.radiusKm);
 
   useEffect(() => {
     if (selectedMosqueId || travelDestination) return;
-    map.setView([lat, lng], map.getZoom());
-  }, [lat, lng, map]); // eslint-disable-line react-hooks/exhaustive-deps
+    // Fit to search radius so all nearby mosques are visible
+    // Fires on first location fix AND when a trip is cancelled (travelDestination → null)
+    const deg = (radiusKm / 111) * 1.1; // ~1.1× for padding
+    map.fitBounds(
+      [[lat - deg, lng - deg], [lat + deg, lng + deg]],
+      { animate: true }
+    );
+  }, [lat, lng, travelDestination]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return null;
 }
 
-// ─── Location recenter button ─────────────────────────────────────────────────
+// ─── Location recenter button (portal — avoids Leaflet z-index conflicts) ─────
 
 function LocationButton() {
-  const map          = useMap();
-  const userLocation = useStore((s) => s.userLocation);
-  const th           = useTheme();
+  const map               = useMap();
+  const userLocation      = useStore((s) => s.userLocation);
+  const bottomSheetHeight = useStore((s) => s.bottomSheetHeight);
+  const bottomSheet       = useStore((s) => s.bottomSheet); // any modal open (mosque/spot/settings)
+  const navShareOpen      = useStore((s) => s.navShareOpen); // navigate action sheet is visible
+  const th                = useTheme();
   const [inView, setInView] = useState(true);
 
   useEffect(() => {
@@ -151,22 +162,28 @@ function LocationButton() {
     return () => { map.off('moveend', check); };
   }, [map, userLocation]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  if (!userLocation) return null;
+  // Hide when sheet is maximized, any modal is open, or a nav-share action sheet is showing
+  if (!userLocation || bottomSheetHeight === 'full' || bottomSheet !== null || navShareOpen) return null;
 
-  return (
-    <div className="leaflet-bottom leaflet-right" style={{ marginBottom: '108px', marginRight: '12px' }}>
-      <div className="leaflet-control">
-        <button
-          onClick={() => map.flyTo([userLocation.latitude, userLocation.longitude], Math.max(map.getZoom(), 14), { animate: true, duration: 0.8 })}
-          title="Go to my location"
-          style={{ background: 'rgba(255,255,255,0.95)', backdropFilter: 'blur(8px)', border: 'none', borderRadius: '12px', width: '40px', height: '40px', boxShadow: '0 2px 8px rgba(0,0,0,0.2)', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer' }}
-        >
-          <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill={inView ? '#9ca3af' : th.hex}>
-            <path d="M12 2L4.5 20.29l.71.71L12 18l6.79 3 .71-.71z"/>
-          </svg>
-        </button>
-      </div>
-    </div>
+  return ReactDOM.createPortal(
+    <button
+      onClick={() => map.flyTo([userLocation.latitude, userLocation.longitude], Math.max(map.getZoom(), 14), { animate: true, duration: 0.8 })}
+      title="Go to my location"
+      style={{
+        position: 'fixed',
+        bottom: 'calc(var(--sheet-visible, 125px) + 12px)',
+        right: '16px', zIndex: 490,
+        background: 'rgba(255,255,255,0.95)', backdropFilter: 'blur(8px)',
+        border: 'none', borderRadius: '12px', width: '40px', height: '40px',
+        boxShadow: '0 2px 8px rgba(0,0,0,0.2)',
+        display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer',
+      }}
+    >
+      <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill={inView ? '#9ca3af' : th.hex}>
+        <path d="M12 2L4.5 20.29l.71.71L12 18l6.79 3 .71-.71z"/>
+      </svg>
+    </button>,
+    document.body
   );
 }
 
@@ -185,6 +202,7 @@ const MapView: React.FC = () => {
   const travelOrigin             = useStore((s) => s.travelOrigin);
   const travelPlan               = useStore((s) => s.travelPlan);
   const selectedItineraryIndex   = useStore((s) => s.selectedItineraryIndex);
+  const tripWaypoints            = useStore((s) => s.tripWaypoints);
 
   const center: [number, number] = userLocation
     ? [userLocation.latitude, userLocation.longitude]
@@ -231,8 +249,10 @@ const MapView: React.FC = () => {
     : travelPlan?.route?.route_geometry ?? null;
 
   // Theme-colored icons (created per-render so they pick up mode changes)
+  // Labels: A = origin, B/C/D... = waypoints, last = destination
   const originIcon      = createEndpointIcon('A', th.hex);
-  const destinationIcon = createEndpointIcon('B', '#dc2626');
+  const destinationLabel = String.fromCharCode(66 + tripWaypoints.length); // B if no waypoints, C if 1, etc.
+  const destinationIcon = createEndpointIcon(destinationLabel, '#dc2626');
 
   // Nearby mosques that are NOT already shown as route stops (avoid duplicate pins)
   const routeStopIds = new Set(routeStops.map((s) => s.id));
@@ -243,6 +263,7 @@ const MapView: React.FC = () => {
       zoom={13}
       style={{ height: '100%', width: '100%' }}
       zoomControl={false}
+      attributionControl={false}
     >
       <TileLayer
         attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>'
@@ -288,11 +309,24 @@ const MapView: React.FC = () => {
         </Marker>
       )}
 
+      {/* Waypoint pins (B, C, D...) */}
+      {tripWaypoints.map((wp, i) => (
+        <Marker
+          key={`wp-${i}`}
+          position={[wp.lat, wp.lng]}
+          icon={createEndpointIcon(String.fromCharCode(66 + i), '#64748b')}
+        >
+          <Tooltip permanent direction="top" offset={[0, -18]} opacity={0.95}>
+            <span className="text-xs font-semibold">{String.fromCharCode(66 + i)}: {wp.place_name}</span>
+          </Tooltip>
+        </Marker>
+      ))}
+
       {/* Destination pin */}
       {travelDestination && (
         <Marker position={[travelDestination.lat, travelDestination.lng]} icon={destinationIcon}>
           <Tooltip permanent direction="top" offset={[0, -18]} opacity={0.95}>
-            <span className="text-xs font-semibold">To: {travelDestination.place_name}</span>
+            <span className="text-xs font-semibold">{destinationLabel}: {travelDestination.place_name}</span>
           </Tooltip>
         </Marker>
       )}

@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState, Suspense, lazy } from 'react';
+import ReactDOM from 'react-dom';
 // MapView is lazy-loaded to defer Leaflet initialization until after mount (fixes iOS/WKWebView startup crash)
 import { apiService } from './services/api';
 import { useStore, SESSION_ID } from './store';
@@ -343,7 +344,7 @@ function MosqueCard({ mosque }: { mosque: Mosque }) {
             return (
               <div key={pair.pair}>
                 <p className={`text-xs font-semibold mb-1.5 ${th.text}`}>
-                  ✈️ {pair.emoji} {pair.label} — Musafir
+                  {pair.label} — Musafir
                 </p>
 
                 {/* Ta'kheer only: p1 time passed but NOT missed */}
@@ -465,7 +466,28 @@ function MosqueDetailSheet({ mosque }: { mosque: Mosque }) {
   const closeSheet    = useStore((s) => s.closeSheet);
   const prayedToday   = useStore((s) => s.prayedToday);
   const togglePrayed  = useStore((s) => s.togglePrayed);
+  const userLocation  = useStore((s) => s.userLocation);
   const th            = useTheme();
+  const [navSheetOpen, setNavSheetOpen] = useState(false);
+
+  const destLat  = mosque.location.latitude;
+  const destLng  = mosque.location.longitude;
+  const destName = mosque.location.address ? `${mosque.name}, ${mosque.location.address}` : mosque.name;
+  const navPoints: MapPoint[] = [
+    { lat: 0, lng: 0, is_gps: true },
+    { lat: destLat, lng: destLng, name: destName },
+  ];
+  const mosqueGoogleUrl = buildGoogleMapsUrl(navPoints);
+  const mosqueAppleUrl  = buildAppleMapsUrl(navPoints);
+
+  async function handleMosqueShare() {
+    if (navigator.share) {
+      try { await navigator.share({ title: `Navigate to ${mosque.name}`, url: mosqueGoogleUrl }); return; }
+      catch { /* cancelled */ }
+    }
+    try { await navigator.clipboard.writeText(mosqueGoogleUrl); }
+    catch { window.open(mosqueGoogleUrl, '_blank'); }
+  }
 
   const nc = mosque.next_catchable;
   const isMissed    = nc?.status === 'missed_make_up';
@@ -649,33 +671,68 @@ function MosqueDetailSheet({ mosque }: { mosque: Mosque }) {
 
       {/* Action buttons */}
       <div className="flex gap-2">
-        <a
-          href={`https://www.google.com/maps/dir/?api=1&destination=${mosque.location.latitude},${mosque.location.longitude}`}
-          target="_blank"
-          rel="noopener noreferrer"
-          className={`flex-1 ${th.bg} ${th.bgHover} text-white text-xs py-2 px-2 rounded-lg text-center font-medium`}
+        <button
+          onClick={() => setNavSheetOpen(true)}
+          className={`flex-1 flex items-center justify-center gap-1.5 ${th.bg} ${th.bgHover} text-white text-xs py-2.5 px-2 rounded-lg font-semibold`}
         >
-          Directions
-        </a>
+          <svg xmlns="http://www.w3.org/2000/svg" className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="currentColor">
+            <path d="M12 2L4.5 20.29l.71.71L12 18l6.79 3 .71-.71z"/>
+          </svg>
+          بسم الله — Navigate
+        </button>
         {mosque.phone && (
-          <a
-            href={`tel:${mosque.phone}`}
-            className="flex-1 bg-slate-700 hover:bg-slate-800 text-white text-xs py-2 px-2 rounded-lg text-center font-medium"
-          >
+          <a href={`tel:${mosque.phone}`} className="flex-1 bg-slate-700 hover:bg-slate-800 text-white text-xs py-2 px-2 rounded-lg text-center font-medium">
             Call
           </a>
         )}
         {mosque.website && (
-          <a
-            href={mosque.website}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="flex-1 bg-slate-700 hover:bg-slate-800 text-white text-xs py-2 px-2 rounded-lg text-center font-medium"
-          >
+          <a href={mosque.website} target="_blank" rel="noopener noreferrer" className="flex-1 bg-slate-700 hover:bg-slate-800 text-white text-xs py-2 px-2 rounded-lg text-center font-medium">
             Website
           </a>
         )}
       </div>
+
+      {/* Navigate action sheet — portal to document.body to escape stacking context */}
+      {navSheetOpen && ReactDOM.createPortal(
+        <div className="fixed inset-0 z-[900] flex items-end" onClick={() => setNavSheetOpen(false)}>
+          <div className="w-full bg-white rounded-t-2xl shadow-2xl pb-8 px-4 pt-3" onClick={(e) => e.stopPropagation()}>
+            <div className="flex justify-center mb-4"><div className="w-10 h-1 bg-gray-300 rounded-full" /></div>
+            <p className="text-sm font-semibold text-gray-800 mb-0.5">Navigate to {mosque.name}</p>
+            <p className="text-xs text-gray-400 mb-4">{mosque.location.address}</p>
+            <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-2">Open in…</p>
+            <div className="space-y-2">
+              <button onClick={() => { window.open(mosqueGoogleUrl, '_blank'); setNavSheetOpen(false); }}
+                className="w-full flex items-center gap-3 px-4 py-3.5 rounded-xl bg-gray-50 active:bg-gray-100 text-sm font-medium text-gray-800">
+                <img src="https://www.google.com/favicon.ico" alt="" className="w-5 h-5 rounded" />
+                Google Maps
+              </button>
+              {IS_IOS && (
+                <button onClick={() => { window.open(mosqueAppleUrl, '_blank'); setNavSheetOpen(false); }}
+                  className="w-full flex items-center gap-3 px-4 py-3.5 rounded-xl bg-gray-50 active:bg-gray-100 text-sm font-medium text-gray-800">
+                  <svg xmlns="http://www.w3.org/2000/svg" className="w-5 h-5" viewBox="0 0 814 1000" fill="currentColor">
+                    <path d="M788.1 340.9c-5.8 4.5-108.2 62.2-108.2 190.5 0 148.4 130.3 200.9 134.2 202.2-.6 3.2-20.7 71.9-68.7 141.9-42.8 61.6-87.5 123.1-155.5 123.1s-85.5-39.5-164-39.5c-76 0-103.7 40.8-165.9 40.8s-105-42.8-155.5-127.5c-43.5-74.2-77.5-188.6-77.5-297.5 0-179 116.7-273.8 231.5-273.8 61.5 0 112.8 40.8 150.7 40.8 36.2 0 93.8-43.4 162.8-43.4 26.2 0 108.2 2.6 168.3 92.8zm-107-99.4C720.8 168 743.1 111.8 743.1 55c0-5.8-.6-11.6-1.9-16.5-57.3 2.6-124.9 38.9-166.2 89.7-36.2 43.4-70.1 113.1-70.1 182.7 0 6.4 1.3 12.8 1.9 15.5 3.9.6 10.2 1.3 16.5 1.3 50.6 0 113.5-33.9 157.8-86.1z"/>
+                  </svg>
+                  Apple Maps
+                </button>
+              )}
+              <button onClick={async () => { await handleMosqueShare(); setNavSheetOpen(false); }}
+                className="w-full flex items-center gap-3 px-4 py-3.5 rounded-xl bg-gray-50 active:bg-gray-100 text-sm font-medium text-gray-800">
+                <svg xmlns="http://www.w3.org/2000/svg" className="w-5 h-5 text-gray-500" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/>
+                  <line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/>
+                </svg>
+                Share Route
+              </button>
+            </div>
+            <button
+              onClick={() => setNavSheetOpen(false)}
+              onTouchEnd={(e) => { e.stopPropagation(); setNavSheetOpen(false); }}
+              className="w-full mt-3 py-3 text-sm font-semibold text-gray-400 active:text-gray-600"
+            >Cancel</button>
+          </div>
+        </div>,
+        document.body
+      )}
     </div>
   );
 }
@@ -1157,13 +1214,13 @@ function BottomSheet() {
     <>
       {/* Backdrop — absorb all touch/pointer events so the map underneath doesn't pan */}
       <div
-        className="fixed inset-0 bg-black bg-opacity-30 z-40"
+        className="fixed inset-0 bg-black bg-opacity-30 z-[590]"
         onClick={useStore.getState().closeSheet}
         onTouchMove={(e) => e.preventDefault()}
       />
       {/* Sheet — stop propagation so scroll inside the sheet doesn't reach the map */}
       <div
-        className="fixed bottom-0 left-0 right-0 bg-white rounded-t-2xl shadow-2xl z-50 max-h-[85vh] overflow-y-auto"
+        className="fixed bottom-0 left-0 right-0 bg-white rounded-t-2xl shadow-2xl z-[600] max-h-[85vh] overflow-y-auto"
         onTouchMove={(e) => e.stopPropagation()}
         onClick={(e) => e.stopPropagation()}
       >
@@ -1309,12 +1366,29 @@ function LastResortCard() {
   );
 }
 
+// ─── Settings Button ─────────────────────────────────────────────────────────
+
+function SettingsButton() {
+  const openSheet = useStore((s) => s.openSheet);
+  return (
+    <button
+      onClick={() => openSheet({ type: 'settings' })}
+      className="w-11 h-11 flex items-center justify-center bg-white/95 backdrop-blur-sm rounded-xl shadow-lg flex-shrink-0"
+      aria-label="Settings"
+    >
+      <svg xmlns="http://www.w3.org/2000/svg" className="w-5 h-5 text-gray-600" viewBox="0 0 24 24" fill="currentColor">
+        <path fillRule="evenodd" d="M11.078 2.25c-.917 0-1.699.663-1.85 1.567L9.05 4.889c-.02.12-.115.26-.297.348a7.493 7.493 0 00-.986.57c-.166.115-.334.126-.45.083L6.3 5.508a1.875 1.875 0 00-2.282.819l-.922 1.597a1.875 1.875 0 00.432 2.385l.84.692c.095.078.17.229.154.43a7.598 7.598 0 000 1.139c.015.2-.059.352-.153.43l-.841.692a1.875 1.875 0 00-.432 2.385l.922 1.597a1.875 1.875 0 002.282.818l1.019-.382c.115-.043.283-.031.45.082.312.214.641.405.985.57.182.088.277.228.297.35l.178 1.071c.151.904.933 1.567 1.85 1.567h1.844c.916 0 1.699-.663 1.85-1.567l.178-1.072c.02-.12.114-.26.297-.349.344-.165.673-.356.985-.57.167-.114.335-.125.45-.082l1.02.382a1.875 1.875 0 002.28-.819l.923-1.597a1.875 1.875 0 00-.432-2.385l-.84-.692c-.095-.078-.17-.229-.154-.43a7.614 7.614 0 000-1.139c-.016-.2.059-.352.153-.43l.84-.692c.708-.582.891-1.59.433-2.385l-.922-1.597a1.875 1.875 0 00-2.282-.818l-1.02.382c-.114.043-.282.031-.449-.083a7.49 7.49 0 00-.985-.57c-.183-.087-.277-.227-.297-.348l-.179-1.072a1.875 1.875 0 00-1.85-1.567h-1.843zM12 15.75a3.75 3.75 0 100-7.5 3.75 3.75 0 000 7.5z" clipRule="evenodd"/>
+      </svg>
+    </button>
+  );
+}
+
 // ─── Destination Input ───────────────────────────────────────────────────────
 
 function GeoInput({
-  placeholder, icon, value, onChange, suggestions, onSelect, loading, onClear,
+  placeholder, icon = '', value, onChange, suggestions, onSelect, loading, onClear,
 }: {
-  placeholder: string; icon: string; value: string;
+  placeholder: string; icon?: string; value: string;
   onChange: (v: string) => void;
   suggestions: GeocodeSuggestion[]; onSelect: (s: GeocodeSuggestion) => void;
   loading: boolean;
@@ -1324,7 +1398,7 @@ function GeoInput({
   return (
     <div className="relative">
       <div className="flex items-center gap-2 bg-white border border-gray-200 rounded-lg px-2.5 py-2">
-        <span className="text-sm">{icon}</span>
+        {icon && <span className="text-xs font-medium text-gray-400 flex-shrink-0 min-w-[28px]">{icon}</span>}
         <input
           type="text"
           placeholder={placeholder}
@@ -1381,6 +1455,8 @@ function DestinationInput() {
   const setTravelPlanLoading = useStore((s) => s.setTravelPlanLoading);
   const travelModeStore = useStore((s) => s.travelMode);
   const prayedToday     = useStore((s) => s.prayedToday);
+  const setTripPlannerOpen = useStore((s) => s.setTripPlannerOpen);
+  const setTripWaypoints   = useStore((s) => s.setTripWaypoints);
 
   const [destQuery, setDestQuery]   = useState(travelDestination?.place_name ?? '');
   const [destSugg, setDestSugg]     = useState<GeocodeSuggestion[]>([]);
@@ -1419,13 +1495,14 @@ function DestinationInput() {
     }
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Auto-populate "From" field with current location address
+  // Auto-populate "From" field with current location address.
+  // Re-runs when form opens (formExpanded) so "From" repopulates after clearAll().
   useEffect(() => {
     if (!userLocation || travelOrigin || originQuery) return;
     apiService.reverseGeocode(userLocation.latitude, userLocation.longitude)
       .then((label) => { if (label) setOriginQuery(label); })
       .catch(() => {});
-  }, [userLocation]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [userLocation, formExpanded]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Auto re-plan when prayed prayers change while a plan is active
   const prevPrayedRef = useRef<Set<string>>(prayedToday);
@@ -1513,12 +1590,31 @@ function DestinationInput() {
     wpDebounces.current = [];
     setDepartureInput(defaultDeparture);
     setFormExpanded(false);
+    setChipExpanded(false);
+    setTripWaypoints([]);
+    // Immediately hide bottom sheet off-screen state and update CSS var
+    useStore.getState().setTripPlannerOpen(false);
+    // Reset map to "fresh start" — re-zoom to search radius around current location
+    useStore.getState().setSelectedMosqueId(null);
+    useStore.getState().setMapFocusCoords(null);
+    useStore.getState().setBottomSheetHeight('peek');
   }
 
   const [chipExpanded, setChipExpanded] = useState(false);
   // Non-null = long-trip warning is showing; value = distance in km
   const [longTripKm, setLongTripKm] = useState<number | null>(null);
   const setTravelMode = useStore((s) => s.setTravelMode);
+
+  // Sync form open state → store (hides bottom sheet while planning)
+  const isExpanded_ = formExpanded || chipExpanded;
+  useEffect(() => {
+    setTripPlannerOpen(isExpanded_);
+  }, [isExpanded_]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Sync confirmed waypoints → store (for map pins)
+  useEffect(() => {
+    setTripWaypoints(waypointRows.filter(w => w.dest !== null).map(w => w.dest!));
+  }, [waypointRows]); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function executePlan(mode: 'travel' | 'driving') {
     if (!travelDestination) return;
@@ -1532,6 +1628,7 @@ function DestinationInput() {
     setTravelPlanLoading(true);
     setTravelPlan(null);
     setChipExpanded(false);
+    setFormExpanded(false);
 
     // Build waypoints list from confirmed rows only
     const wps = waypointRows
@@ -1575,45 +1672,40 @@ function DestinationInput() {
     executePlan(tripMode);
   }
 
-  const openSheet = useStore((s) => s.openSheet);
   const originLabel = travelOrigin?.place_name ?? 'Current location';
   const isExpanded = formExpanded || chipExpanded || (!travelDestination && formExpanded);
-
-  // Shared settings button (inline to avoid hook-in-callback issues)
-  const settingsBtn = (
-    <button
-      onClick={() => openSheet({ type: 'settings' })}
-      className="w-10 h-10 flex items-center justify-center bg-white/95 backdrop-blur-sm rounded-xl shadow-lg flex-shrink-0"
-      aria-label="Settings"
-    >
-      <img src="/icons/icon_settings.png" alt="" className="w-5 h-5 object-contain opacity-50" />
-    </button>
-  );
 
   // EXPANDED form card
   if (isExpanded) {
     return (
-      <div className="p-3">
+      <div className="p-3 pointer-events-auto">
         <div className="bg-white/97 backdrop-blur rounded-2xl shadow-xl overflow-hidden">
-          {/* Card header */}
-          <div className="flex items-center gap-2 px-3 pt-3 pb-2 border-b border-gray-100">
-            <button
-              onClick={() => { setFormExpanded(false); setChipExpanded(false); }}
-              className="w-8 h-8 flex items-center justify-center rounded-full hover:bg-gray-100 text-gray-500 transition-colors flex-shrink-0"
-            >
-              <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M15 18l-6-6 6-6"/></svg>
-            </button>
-            <p className={`text-xs font-bold uppercase tracking-wider flex-1 ${th.text}`}>Plan Trip</p>
-            <ModeToggle />
-            {settingsBtn}
-          </div>
-
           {/* Form fields */}
-          <div className="px-3 pb-3 pt-2 space-y-2">
+          <div className="px-3 pb-3 pt-3 space-y-2">
+            {/* Destination — appears first, matching "Where to?" pill */}
+            <div className="flex items-center gap-1" style={{ paddingRight: '200px' }}>
+              <button
+                onClick={clearAll}
+                className="w-8 h-8 flex items-center justify-center rounded-full hover:bg-gray-100 text-gray-500 transition-colors flex-shrink-0"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M15 18l-6-6 6-6"/></svg>
+              </button>
+              <div className="flex-1 min-w-0">
+                <GeoInput
+                  placeholder="Where to?"
+                  value={destQuery}
+                  onChange={(v) => { setDestQuery(v); debounceGeocode(v, destDebounce, setDestLoading, setDestSugg); }}
+                  suggestions={destSugg}
+                  onSelect={(s) => { setTravelDestination(s); setDestQuery(s.place_name); setDestSugg([]); }}
+                  loading={destLoading}
+                />
+              </div>
+            </div>
+
             {/* From */}
             <GeoInput
-              placeholder="From: Current location"
-              icon="📍"
+              placeholder="Current location"
+              icon="From:"
               value={originQuery}
               onChange={(v) => { setOriginQuery(v); debounceGeocode(v, originDebounce, setOriginLoading, setOriginSugg); }}
               suggestions={originSugg}
@@ -1623,38 +1715,30 @@ function DestinationInput() {
             />
 
             {/* Intermediate waypoints */}
-            {waypointRows.map((wp, i) => (
-              <div key={i} className="flex items-start gap-1">
-                <div className="flex flex-col gap-0.5 pt-1.5">
-                  <button onClick={() => moveWaypoint(i, -1)} disabled={i === 0} className="text-gray-400 hover:text-gray-600 disabled:opacity-20 text-xs leading-none px-0.5">▲</button>
-                  <button onClick={() => moveWaypoint(i, 1)} disabled={i === waypointRows.length - 1} className="text-gray-400 hover:text-gray-600 disabled:opacity-20 text-xs leading-none px-0.5">▼</button>
+            {waypointRows.map((wp, i) => {
+              const letter = String.fromCharCode(65 + i); // A, B, C, D
+              return (
+                <div key={i} className="flex items-start gap-1">
+                  <div className="flex flex-col gap-0.5 pt-1.5">
+                    <button onClick={() => moveWaypoint(i, -1)} disabled={i === 0} className="text-gray-400 hover:text-gray-600 disabled:opacity-20 text-xs leading-none px-0.5">▲</button>
+                    <button onClick={() => moveWaypoint(i, 1)} disabled={i === waypointRows.length - 1} className="text-gray-400 hover:text-gray-600 disabled:opacity-20 text-xs leading-none px-0.5">▼</button>
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <GeoInput
+                      placeholder={`Stop ${letter}`}
+                      icon={`${letter}:`}
+                      value={wp.query}
+                      onChange={(v) => debounceGeocodeWp(i, v)}
+                      suggestions={wp.sugg}
+                      onSelect={(s) => setWaypointRows(rows => rows.map((r, ri) => ri === i ? { ...r, dest: s, query: s.place_name, sugg: [] } : r))}
+                      loading={wp.loading}
+                      onClear={() => setWaypointRows(rows => rows.map((r, ri) => ri === i ? { ...r, dest: null, query: '', sugg: [] } : r))}
+                    />
+                  </div>
+                  <button onClick={() => removeWaypoint(i)} className="text-gray-400 hover:text-red-500 text-base leading-none pt-2 px-1 flex-shrink-0">✕</button>
                 </div>
-                <div className="flex-1 min-w-0">
-                  <GeoInput
-                    placeholder={`Stop ${i + 1}`}
-                    icon="📌"
-                    value={wp.query}
-                    onChange={(v) => debounceGeocodeWp(i, v)}
-                    suggestions={wp.sugg}
-                    onSelect={(s) => setWaypointRows(rows => rows.map((r, ri) => ri === i ? { ...r, dest: s, query: s.place_name, sugg: [] } : r))}
-                    loading={wp.loading}
-                    onClear={() => setWaypointRows(rows => rows.map((r, ri) => ri === i ? { ...r, dest: null, query: '', sugg: [] } : r))}
-                  />
-                </div>
-                <button onClick={() => removeWaypoint(i)} className="text-gray-400 hover:text-red-500 text-base leading-none pt-2 px-1 flex-shrink-0">✕</button>
-              </div>
-            ))}
-
-            {/* To */}
-            <GeoInput
-              placeholder="To: Destination *"
-              icon="🏁"
-              value={destQuery}
-              onChange={(v) => { setDestQuery(v); debounceGeocode(v, destDebounce, setDestLoading, setDestSugg); }}
-              suggestions={destSugg}
-              onSelect={(s) => { setTravelDestination(s); setDestQuery(s.place_name); setDestSugg([]); }}
-              loading={destLoading}
-            />
+              );
+            })}
 
             {/* Add stop */}
             {travelDestination && waypointRows.length < 4 && (
@@ -1703,24 +1787,20 @@ function DestinationInput() {
   // COLLAPSED — plan active chip
   if (travelDestination && travelPlan) {
     return (
-      <div className="p-3">
-        <div className="flex items-center gap-2">
-          <div
-            onClick={() => setChipExpanded(true)}
-            className="flex-1 flex items-center gap-3 bg-white/95 backdrop-blur-sm rounded-2xl shadow-lg px-4 py-3 cursor-pointer"
-          >
-            <div className={`w-2 h-2 rounded-full flex-shrink-0 ${th.bg}`} />
-            <div className="flex-1 min-w-0">
-              <p className="text-xs text-gray-500 truncate">{originLabel}</p>
-              <p className="text-sm font-semibold text-gray-800 truncate">{travelDestination.place_name}</p>
-            </div>
-            <button
-              onClick={(e) => { e.stopPropagation(); clearAll(); }}
-              className="text-gray-400 hover:text-gray-600 text-lg leading-none flex-shrink-0"
-            >✕</button>
+      <div className="pt-3 pl-3 pb-3 pointer-events-auto" style={{ paddingRight: '220px' }}>
+        <div
+          onClick={() => { setChipExpanded(true); useStore.getState().setTripPlannerOpen(true); }}
+          className="flex items-center gap-3 bg-white/95 backdrop-blur-sm rounded-2xl shadow-lg px-4 py-3 cursor-pointer"
+        >
+          <div className={`w-2 h-2 rounded-full flex-shrink-0 ${th.bg}`} />
+          <div className="flex-1 min-w-0">
+            <p className="text-xs text-gray-500 truncate">{originLabel}</p>
+            <p className="text-sm font-semibold text-gray-800 truncate">{travelDestination.place_name}</p>
           </div>
-          <ModeToggle />
-          {settingsBtn}
+          <button
+            onClick={(e) => { e.stopPropagation(); clearAll(); }}
+            className="text-gray-400 hover:text-gray-600 text-lg leading-none flex-shrink-0"
+          >✕</button>
         </div>
       </div>
     );
@@ -1728,20 +1808,13 @@ function DestinationInput() {
 
   // COLLAPSED — idle search pill
   return (
-    <div className="p-3">
-      <div className="flex items-center gap-2">
-        <button
-          onClick={() => setFormExpanded(true)}
-          className="flex-1 flex items-center gap-3 bg-white/95 backdrop-blur-sm rounded-2xl shadow-lg px-4 py-3.5 text-left"
-        >
-          <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4 text-gray-400 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
-            <circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/>
-          </svg>
-          <span className="text-gray-400 text-sm font-medium">Where to?</span>
-        </button>
-        <ModeToggle />
-        {settingsBtn}
-      </div>
+    <div className="pt-3 pl-3 pb-3 pointer-events-auto" style={{ paddingRight: '220px' }}>
+      <button
+        onClick={() => { setFormExpanded(true); useStore.getState().setTripPlannerOpen(true); }}
+        className="w-full flex items-center gap-3 bg-white/95 backdrop-blur-sm rounded-2xl shadow-lg px-4 py-3.5 text-left"
+      >
+        <span className="text-gray-400 text-sm font-medium">Where to?</span>
+      </button>
     </div>
   );
 }
@@ -1778,7 +1851,6 @@ function TravelItineraryCard({ itinerary, index }: { itinerary: TripItinerary; i
         onClick={() => {
           setExpanded((e) => !e);
           setSelectedItineraryIndex(index);
-          setBottomSheetHeight('peek');
         }}
       >
         <div className="flex items-start justify-between gap-2">
@@ -1854,7 +1926,11 @@ function NavigateBar() {
   const travelOrigin      = useStore((s) => s.travelOrigin);
   const travelDestination = useStore((s) => s.travelDestination);
   const userLocation      = useStore((s) => s.userLocation);
+  const setNavShareOpen   = useStore((s) => s.setNavShareOpen);
   const [sheetOpen, setSheetOpen] = useState(false);
+
+  function openSheet() { setSheetOpen(true);  setNavShareOpen(true); }
+  function closeSheet() { setSheetOpen(false); setNavShareOpen(false); }
 
   if (selectedItineraryIndex == null || !travelPlan || !travelDestination) return null;
 
@@ -1894,22 +1970,22 @@ function NavigateBar() {
 
   return (
     <>
-      {/* Floats above the bottom-sheet peek (80px) + gap */}
-      <div className="fixed bottom-[88px] left-3 right-3 z-[450]">
+      {/* Sits below the search bar in the top overlay — rendered as pointer-events-auto strip */}
+      <div className="px-3 pb-2 pointer-events-auto">
         <button
-          onClick={() => setSheetOpen(true)}
+          onClick={openSheet}
           className={`w-full flex items-center justify-center gap-2 active:scale-95 text-white text-sm font-semibold rounded-xl py-3 shadow-lg transition-all ${th.bg} ${th.bgHover}`}
         >
           <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4" viewBox="0 0 24 24" fill="currentColor">
-            <path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5A2.5 2.5 0 1 1 12 6a2.5 2.5 0 0 1 0 5.5z"/>
+            <path d="M12 2L4.5 20.29l.71.71L12 18l6.79 3 .71-.71z"/>
           </svg>
           بسم الله — Navigate
         </button>
       </div>
 
-      {/* Full-screen action sheet */}
-      {sheetOpen && (
-        <div className="fixed inset-0 z-[1000] flex items-end" onClick={() => setSheetOpen(false)}>
+      {/* Full-screen action sheet — portaled to document.body so it sits above all stacking contexts */}
+      {sheetOpen && ReactDOM.createPortal(
+        <div className="fixed inset-0 z-[1000] flex items-end" onClick={closeSheet}>
           <div className="w-full bg-white rounded-t-2xl shadow-2xl pb-8 px-4 pt-3" onClick={(e) => e.stopPropagation()}>
             <div className="flex justify-center mb-4">
               <div className="w-10 h-1 bg-gray-300 rounded-full" />
@@ -1919,7 +1995,7 @@ function NavigateBar() {
             <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-2">Open route in…</p>
             <div className="space-y-2">
               <button
-                onClick={() => { window.open(googleUrl, '_blank'); setSheetOpen(false); }}
+                onClick={() => { window.open(googleUrl, '_blank'); closeSheet(); }}
                 className="w-full flex items-center gap-3 px-4 py-3.5 rounded-xl bg-gray-50 active:bg-gray-100 text-sm font-medium text-gray-800 transition-colors"
               >
                 <img src="https://www.google.com/favicon.ico" alt="" className="w-5 h-5 rounded" />
@@ -1927,10 +2003,9 @@ function NavigateBar() {
               </button>
               {IS_IOS && (
                 <button
-                  onClick={() => { window.open(appleUrl, '_blank'); setSheetOpen(false); }}
+                  onClick={() => { window.open(appleUrl, '_blank'); closeSheet(); }}
                   className="w-full flex items-center gap-3 px-4 py-3.5 rounded-xl bg-gray-50 active:bg-gray-100 text-sm font-medium text-gray-800 transition-colors"
                 >
-                  {/* Apple logo SVG */}
                   <svg xmlns="http://www.w3.org/2000/svg" className="w-5 h-5" viewBox="0 0 814 1000" fill="currentColor">
                     <path d="M788.1 340.9c-5.8 4.5-108.2 62.2-108.2 190.5 0 148.4 130.3 200.9 134.2 202.2-.6 3.2-20.7 71.9-68.7 141.9-42.8 61.6-87.5 123.1-155.5 123.1s-85.5-39.5-164-39.5c-76 0-103.7 40.8-165.9 40.8s-105-42.8-155.5-127.5c-43.5-74.2-77.5-188.6-77.5-297.5 0-179 116.7-273.8 231.5-273.8 61.5 0 112.8 40.8 150.7 40.8 36.2 0 93.8-43.4 162.8-43.4 26.2 0 108.2 2.6 168.3 92.8zm-107-99.4C720.8 168 743.1 111.8 743.1 55c0-5.8-.6-11.6-1.9-16.5-57.3 2.6-124.9 38.9-166.2 89.7-36.2 43.4-70.1 113.1-70.1 182.7 0 6.4 1.3 12.8 1.9 15.5 3.9.6 10.2 1.3 16.5 1.3 50.6 0 113.5-33.9 157.8-86.1z"/>
                   </svg>
@@ -1938,7 +2013,7 @@ function NavigateBar() {
                 </button>
               )}
               <button
-                onClick={async () => { await handleShare(); setSheetOpen(false); }}
+                onClick={async () => { await handleShare(); closeSheet(); }}
                 className="w-full flex items-center gap-3 px-4 py-3.5 rounded-xl bg-gray-50 active:bg-gray-100 text-sm font-medium text-gray-800 transition-colors"
               >
                 <svg xmlns="http://www.w3.org/2000/svg" className="w-5 h-5 text-gray-500" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -1949,13 +2024,15 @@ function NavigateBar() {
               </button>
             </div>
             <button
-              onClick={() => setSheetOpen(false)}
+              onClick={closeSheet}
+              onTouchEnd={(e) => { e.stopPropagation(); closeSheet(); }}
               className="w-full mt-3 py-3 text-sm font-semibold text-gray-400 active:text-gray-600"
             >
               Cancel
             </button>
           </div>
-        </div>
+        </div>,
+        document.body
       )}
     </>
   );
@@ -2026,30 +2103,45 @@ function ModeToggle() {
   const setTravelMode = useStore((s) => s.setTravelMode);
   const th            = useTheme();
   return (
-    <button
-      onClick={() => setTravelMode(!travelMode)}
-      title={travelMode ? 'Musafir mode — tap to switch to Muqeem' : 'Muqeem mode — tap to switch to Musafir'}
-      className={`flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold text-white shadow-lg transition-colors flex-shrink-0 ${th.bg} ${th.bgHover}`}
-    >
-      <span>{travelMode ? '✈️' : '🏠'}</span>
-      <span>{travelMode ? 'Musafir' : 'Muqeem'}</span>
-    </button>
+    <div className="flex bg-white/95 backdrop-blur-sm rounded-xl shadow-lg overflow-hidden border border-gray-200 flex-shrink-0">
+      <button
+        onClick={() => setTravelMode(false)}
+        className={`px-3 py-2 text-xs font-semibold transition-colors ${
+          !travelMode ? `${th.bg} text-white` : 'text-gray-500'
+        }`}
+      >
+        Muqeem
+      </button>
+      <div className="w-px bg-gray-200 self-stretch" />
+      <button
+        onClick={() => setTravelMode(true)}
+        className={`px-3 py-2 text-xs font-semibold transition-colors ${
+          travelMode ? `${th.bg} text-white` : 'text-gray-500'
+        }`}
+      >
+        Musafir
+      </button>
+    </div>
   );
 }
 
 // ─── Add Spot FAB ─────────────────────────────────────────────────────────────
 
 function AddSpotFAB() {
-  const openSheet     = useStore((s) => s.openSheet);
-  const showSpots     = useStore((s) => s.showSpots);
-  const travelDestination = useStore((s) => s.travelDestination);
-  const th            = useTheme();
-  if (!showSpots || travelDestination) return null;
+  const openSheet          = useStore((s) => s.openSheet);
+  const showSpots          = useStore((s) => s.showSpots);
+  const travelDestination  = useStore((s) => s.travelDestination);
+  const bottomSheetHeight  = useStore((s) => s.bottomSheetHeight);
+  const th                 = useTheme();
+
+  if (!showSpots || travelDestination || bottomSheetHeight === 'full') return null;
+
   return (
     <button
       onClick={() => openSheet({ type: 'spot_submit' })}
       title="Add a prayer spot"
-      className={`fixed right-4 bottom-[100px] z-[450] w-12 h-12 rounded-full ${th.bg} ${th.bgHover} text-white shadow-xl flex items-center justify-center text-xl font-light transition-colors active:scale-95`}
+      style={{ bottom: 'calc(var(--sheet-visible, 125px) + 64px)', right: '16px' }}
+      className={`fixed z-[495] w-10 h-10 rounded-full ${th.bg} ${th.bgHover} text-white shadow-xl flex items-center justify-center text-xl font-light active:scale-95`}
     >
       +
     </button>
@@ -2074,43 +2166,57 @@ function MapBottomSheet() {
   const showSpots           = useStore((s) => s.showSpots);
   const userLocation        = useStore((s) => s.userLocation);
 
+  const tripPlannerOpen = useStore((s) => s.tripPlannerOpen);
+  const bottomSheet     = useStore((s) => s.bottomSheet);
+
   const sheetRef        = useRef<HTMLDivElement>(null);
   const dragStartY      = useRef<number | null>(null);
   const dragStartOffset = useRef(0);
+  const draggedRef      = useRef(false);
 
+  // Use the actual rendered height so JS perfectly tracks the CSS value (which uses env(safe-area-inset-top))
   function getSnappedY(state: 'peek' | 'half' | 'full'): number {
-    const h = window.innerHeight;
-    const sheetH = h * 0.85;
+    const sheetH = sheetRef.current?.offsetHeight ?? (window.innerHeight - 120);
     if (state === 'full') return 0;
-    if (state === 'half') return Math.max(0, sheetH - h * 0.52);
-    return sheetH - 80;
+    if (state === 'half') return Math.max(0, sheetH - sheetH * 0.55);
+    return Math.max(0, sheetH - 125); // peek: show 125px
   }
 
-  // Animate sheet when state changes
+  // Animate sheet when state changes, or hide fully when trip form is open
   useEffect(() => {
     if (!sheetRef.current) return;
     sheetRef.current.style.transition = 'transform 0.35s cubic-bezier(0.32, 0.72, 0, 1)';
-    sheetRef.current.style.transform = `translateY(${getSnappedY(bottomSheetHeight)}px)`;
-  }, [bottomSheetHeight]);
+    const y = tripPlannerOpen
+      ? window.innerHeight   // fully off-screen
+      : getSnappedY(bottomSheetHeight);
+    sheetRef.current.style.transform = `translateY(${y}px)`;
+    // Update --sheet-visible so FAB and location button track the sheet
+    const sheetH = sheetRef.current.offsetHeight;
+    const visible = tripPlannerOpen ? 0 : Math.max(0, sheetH - y);
+    document.documentElement.style.setProperty('--sheet-visible', `${visible}px`);
+  }, [bottomSheetHeight, tripPlannerOpen]);
 
   // Auto-transitions
-  const prevItineraryRef = useRef(selectedItineraryIndex);
-  useEffect(() => {
-    if (selectedItineraryIndex !== null && prevItineraryRef.current !== selectedItineraryIndex) {
-      setBottomSheetHeight('peek');
-    }
-    prevItineraryRef.current = selectedItineraryIndex;
-  }, [selectedItineraryIndex]); // eslint-disable-line react-hooks/exhaustive-deps
-
   useEffect(() => {
     if (travelPlan) setBottomSheetHeight('half');
   }, [travelPlan]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
-    if (!travelDestination) setBottomSheetHeight('half');
+    if (!travelDestination) setBottomSheetHeight('peek');
   }, [travelDestination]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // When a detail modal closes, pull the sheet back to half if it was maximized
+  // so that FAB and location button become visible again
+  const prevBottomSheetRef = useRef(bottomSheet);
+  useEffect(() => {
+    if (prevBottomSheetRef.current !== null && bottomSheet === null && bottomSheetHeight === 'full') {
+      setBottomSheetHeight('half');
+    }
+    prevBottomSheetRef.current = bottomSheet;
+  }, [bottomSheet]); // eslint-disable-line react-hooks/exhaustive-deps
+
   function handleTouchStart(e: React.TouchEvent) {
+    draggedRef.current = false;
     dragStartY.current = e.touches[0].clientY;
     if (sheetRef.current) {
       const m = new DOMMatrix(getComputedStyle(sheetRef.current).transform);
@@ -2122,8 +2228,12 @@ function MapBottomSheet() {
   function handleTouchMove(e: React.TouchEvent) {
     if (dragStartY.current === null || !sheetRef.current) return;
     const delta = e.touches[0].clientY - dragStartY.current;
+    if (Math.abs(delta) > 5) draggedRef.current = true;
     const newY = Math.max(0, Math.min(dragStartOffset.current + delta, getSnappedY('peek')));
     sheetRef.current.style.transform = `translateY(${newY}px)`;
+    // Keep buttons tracking the sheet in real-time during drag
+    const sheetH = sheetRef.current.offsetHeight;
+    document.documentElement.style.setProperty('--sheet-visible', `${Math.max(0, sheetH - newY)}px`);
   }
 
   function handleTouchEnd() {
@@ -2138,11 +2248,17 @@ function MapBottomSheet() {
     setBottomSheetHeight(nearest);
   }
 
+  function handlePeekTap() {
+    if (draggedRef.current) return;
+    setBottomSheetHeight(bottomSheetHeight === 'full' ? 'peek' : 'full');
+  }
+
   // Peek label
   let peekLabel = '';
   if (selectedItineraryIndex !== null && travelPlan?.itineraries?.[selectedItineraryIndex]) {
     const it = travelPlan.itineraries[selectedItineraryIndex];
-    peekLabel = `Option ${selectedItineraryIndex + 1} · ${it.label}`;
+    const detour = it.total_detour_minutes > 0 ? ` · +${fmtDuration(it.total_detour_minutes)} detour` : '';
+    peekLabel = `Option ${selectedItineraryIndex + 1}${detour} — tap to see all`;
   } else if (travelPlanLoading) {
     peekLabel = 'Finding prayer routes…';
   } else if (travelPlan?.itineraries?.length) {
@@ -2158,29 +2274,27 @@ function MapBottomSheet() {
   return (
     <div
       ref={sheetRef}
-      className="fixed bottom-0 left-0 right-0 bg-white rounded-t-3xl shadow-2xl z-[400] overflow-hidden"
-      style={{ height: '85vh', transform: `translateY(${getSnappedY('half')}px)` }}
+      className="fixed left-0 right-0 bottom-0 bg-white rounded-t-3xl shadow-2xl z-[400] overflow-hidden pointer-events-none"
+      style={{ top: 'var(--top-bar-bottom, 140px)', transform: `translateY(${getSnappedY(bottomSheetHeight)}px)` }}
     >
-      {/* Drag handle area */}
+      {/* Combined drag handle + peek label — the whole strip is swipeable and tappable */}
       <div
-        className="pt-2.5 pb-0 touch-none cursor-grab active:cursor-grabbing"
+        className="pointer-events-auto select-none cursor-grab active:cursor-grabbing touch-none"
         onTouchStart={handleTouchStart}
         onTouchMove={handleTouchMove}
         onTouchEnd={handleTouchEnd}
+        onClick={handlePeekTap}
       >
-        <div className="w-10 h-1 bg-gray-300 rounded-full mx-auto" />
+        <div className="pt-3 pb-1 flex justify-center">
+          <div className="w-10 h-1 bg-gray-300 rounded-full" />
+        </div>
+        <div className="px-4 py-2 active:bg-gray-50">
+          <p className="text-sm font-semibold text-gray-800 leading-tight truncate">{peekLabel}</p>
+        </div>
       </div>
 
-      {/* Peek label — tappable to toggle half/peek */}
-      <button
-        className="w-full px-4 py-2.5 text-left active:bg-gray-50"
-        onClick={() => setBottomSheetHeight(bottomSheetHeight === 'peek' ? 'half' : 'peek')}
-      >
-        <p className="text-sm font-semibold text-gray-800 leading-tight truncate">{peekLabel}</p>
-      </button>
-
-      {/* Scrollable content — below peek area */}
-      <div className="overflow-y-auto" style={{ height: 'calc(85vh - 64px)' }}>
+      {/* Scrollable content */}
+      <div className="overflow-y-auto pointer-events-auto" style={{ height: 'calc(100% - 64px)' }}>
 
         {/* Trip plan view */}
         {travelDestination ? (
@@ -2265,6 +2379,30 @@ function App() {
   const travelModeStore = useStore((s) => s.travelMode);
   const travelDestination = useStore((s) => s.travelDestination);
   const setTravelPlan = useStore((s) => s.setTravelPlan);
+
+  // Measure the top overlay height and expose as CSS var so the bottom sheet
+  // always starts exactly below the search bar (accounting for safe area + Dynamic Island)
+  const topOverlayRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const el = topOverlayRef.current;
+    if (!el) return;
+    function update() {
+      const bottom = el!.getBoundingClientRect().bottom;
+      // Guard against pre-layout 0 values; +8px adds visual gap below search bar
+      if (bottom > 20) {
+        document.documentElement.style.setProperty('--top-bar-bottom', `${bottom + 8}px`);
+      }
+    }
+    // Multiple attempts: rAF catches the first paint, timeout catches iOS deferred safe-area layout
+    const raf = requestAnimationFrame(() => {
+      update();
+      setTimeout(update, 150);
+      setTimeout(update, 500);
+    });
+    const ro = new ResizeObserver(update);
+    ro.observe(el);
+    return () => { cancelAnimationFrame(raf); ro.disconnect(); };
+  }, []);
 
   // Geolocation on mount
   useEffect(() => {
@@ -2385,13 +2523,19 @@ function App() {
         </Suspense>
       </div>
 
-      {/* Layer 1: Top overlay — trip planning bar */}
-      <div className="absolute top-0 left-0 right-0 z-[500]" style={{ paddingTop: 'env(safe-area-inset-top, 0px)' }}>
-        <DestinationInput />
+      {/* Layer 1: Top overlay — trip planning bar + navigate button */}
+      <div id="top-overlay" ref={topOverlayRef} className="absolute top-0 left-0 right-0 z-[500] pointer-events-none" style={{ paddingTop: 'env(safe-area-inset-top, 0px)' }}>
+        {/* Relative wrapper so ModeToggle+Settings can be absolutely positioned at constant top-right */}
+        <div className="relative">
+          <DestinationInput />
+          {/* Mode toggle + settings always float at the same top-right position regardless of form state */}
+          <div className="absolute top-3 right-3 flex items-center gap-2 pointer-events-auto z-10">
+            <ModeToggle />
+            <SettingsButton />
+          </div>
+        </div>
+        <NavigateBar />
       </div>
-
-      {/* Layer 2: Navigate bar — above bottom sheet peek */}
-      <NavigateBar />
 
       {/* Layer 3: Add spot FAB */}
       <AddSpotFAB />
