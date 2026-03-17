@@ -17,6 +17,7 @@ Algorithm:
 """
 from __future__ import annotations
 
+import asyncio
 import math
 import logging
 from datetime import datetime, timedelta
@@ -1590,12 +1591,61 @@ async def build_travel_plan(
 
     itineraries = build_itineraries(prayer_pairs, allow_combining=(trip_mode == "travel"))
 
+    # Build simplified polyline for the main route (origin → destination, no stops)
+    raw_coords = route.get("geometry", {}).get("coordinates", [])
+    if raw_coords:
+        sampled = raw_coords[::4]
+        if raw_coords[-1] not in sampled:
+            sampled = list(sampled) + [raw_coords[-1]]
+        base_geometry = [[c[1], c[0]] for c in sampled]  # lng,lat → lat,lng for Leaflet
+    else:
+        base_geometry = []
+
+    async def _geometry_for_itinerary(itin: dict) -> list:
+        """Return route geometry through this itinerary's prayer stops."""
+        seen: set = set()
+        stops: list[dict] = []
+        for pc in itin["pair_choices"]:
+            for s in pc["option"].get("stops", []):
+                if s["mosque_id"] not in seen:
+                    seen.add(s["mosque_id"])
+                    stops.append(s)
+        stops.sort(key=lambda s: s["minutes_into_trip"])
+
+        if not stops:
+            return base_geometry  # no detour — same as direct route
+
+        stop_wps = [{"lat": s["mosque_lat"], "lng": s["mosque_lng"]} for s in stops]
+        # Insert user-provided trip waypoints in their original positions
+        all_wps = list(waypoints or []) + stop_wps  # user wps first, mosque stops after
+        # Re-sort by proximity to the route isn't trivial; just pass mosque stops as additional
+        # waypoints appended after any user waypoints — Mapbox/OSRM will order them optimally
+        r = await get_mapbox_route(origin_lat, origin_lng, dest_lat, dest_lng, waypoints=all_wps)
+        if not r:
+            return base_geometry
+        rc = r.get("geometry", {}).get("coordinates", [])
+        if not rc:
+            return base_geometry
+        samp = rc[::4]
+        if rc[-1] not in samp:
+            samp = list(samp) + [rc[-1]]
+        return [[c[1], c[0]] for c in samp]
+
+    # Compute per-itinerary routes in parallel
+    itinerary_geometries = await asyncio.gather(
+        *[_geometry_for_itinerary(it) for it in itineraries],
+        return_exceptions=True,
+    )
+    for it, geom in zip(itineraries, itinerary_geometries):
+        it["route_geometry"] = geom if isinstance(geom, list) else base_geometry
+
     return {
         "route": {
             "distance_meters": route.get("distance", 0),
             "duration_minutes": round(route.get("duration", 0) / 60),
             "origin_name": origin_name,
             "destination_name": destination_name,
+            "route_geometry": base_geometry,
         },
         "prayer_pairs": prayer_pairs,
         "itineraries": itineraries,

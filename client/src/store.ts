@@ -101,6 +101,8 @@ interface AppState {
   // UI
   mapCollapsed: boolean;
   setMapCollapsed: (v: boolean) => void;
+  selectedItineraryIndex: number | null;
+  setSelectedItineraryIndex: (i: number | null) => void;
   selectedMosqueId: string | null;
   setSelectedMosqueId: (id: string | null) => void;
   // Focus arbitrary coords on the map (e.g., route stop mosque not in nearby list)
@@ -175,6 +177,8 @@ export const useStore = create<AppState>((set) => ({
 
   mapCollapsed: false,
   setMapCollapsed: (mapCollapsed) => set({ mapCollapsed }),
+  selectedItineraryIndex: null,
+  setSelectedItineraryIndex: (selectedItineraryIndex) => set({ selectedItineraryIndex }),
   selectedMosqueId: null,
   setSelectedMosqueId: (selectedMosqueId) => set({ selectedMosqueId }),
   mapFocusCoords: null,

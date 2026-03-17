@@ -17,13 +17,13 @@ This app is used on a mobile phone, often while standing outside or in a car. Th
 
 ```
 ┌─────────────────────────────────────────┐
-│ [pin] Catch a Prayer  [🚗 Travel] [⚙️]  │  teal gradient header, white text
+│ [pin] Catch a Prayer  [🏠 Muqeem][✈️ Musafir] [⚙️]  │  theme-gradient header, white text
 │       "Can catch Asr at Al-Noor"        │  subtitle: top mosque status
 ├─────────────────────────────────────────┤
 │                                         │
 │   Leaflet Map (CartoDB Positron tiles)  │  ~40% viewport height
 │   — status-colored teardrop pins        │  collapsible
-│   — teal user dot + pulse ring          │
+│   — theme-colored user dot + pulse ring │
 │                                         │
 ├─────────────────────────────────────────┤
 │  ▼ Hide map                             │  subtle text toggle
@@ -44,19 +44,25 @@ This app is used on a mobile phone, often while standing outside or in a car. Th
 
 ### Header
 
-The header uses a teal gradient (`from-teal-700 to-teal-600`) with a drop shadow. All text and icons are white.
+The header gradient and all primary UI colors follow a **two-mode theme system** — teal for Muqeem, indigo for Musafir — defined in `src/theme.ts` and applied via the `useTheme()` hook.
+
+| Mode | Color | Tailwind | Hex |
+|---|---|---|---|
+| Muqeem (resident) | Teal | `from-teal-700 to-teal-600` | `#0d9488` |
+| Musafir (traveler) | Indigo | `from-indigo-700 to-indigo-600` | `#6366f1` |
+
+The theme covers: header gradient, all primary buttons, card borders, badge colors, link text, route polyline, map stop pins, user location dot, and loading spinners. Switching mode instantly recolors the entire UI.
 
 ```
-┌──────────────────────────────────────────────────────┐
-│  [pin icon]  Catch a Prayer          [🚗 Travel] [⚙]  │
-│              Can catch Asr at Al-Noor                 │
-└──────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────┐
+│  [pin icon]  Catch a Prayer    [🏠 Muqeem | ✈️ Musafir] [⚙]  │
+│              Can catch Asr at Al-Noor                        │
+└──────────────────────────────────────────────────────────────┘
 ```
 
-- **Left**: `logo_pin.png` (teal pin, white-inverted) + app name bold + one-line subtitle (top mosque status or mosque count)
-- **Right**: Travel mode quick-toggle pill + settings icon button
-- **Travel toggle**: Pill button in header showing **current mode** — `🏠 Muqeem` (grey outline, off) or `✈️ Musafir` (solid white with teal text, on). Tap to switch. Toggling immediately re-fetches mosques with `travel_mode: true/false`. "Muqeem" (مقيم) = resident/home mode; "Musafir" (مسافر) = traveler mode that enables prayer combining (Jam').
-- **Settings icon**: `icon_settings.png` with `brightness-0 invert` CSS to render white on the teal background
+- **Left**: `logo_pin.png` (white-inverted) + app name bold + one-line subtitle (top mosque status or mosque count). Subtitle text uses `th.textWhite` / `th.textVeryLight` from the theme.
+- **Right**: Segmented pill toggle (`🏠 Muqeem` / `✈️ Musafir`) inside a dark pill background. Active tab = white bg + theme text color. Tap switches modes and immediately re-fetches mosques.
+- **Settings icon**: `icon_settings.png` white-inverted. Button background uses `th.bgDark` with `hover:opacity-80`.
 
 ### Desktop (secondary — two column)
 Map takes 60% width on the left, mosque list 40% on the right. Same cards.
@@ -577,9 +583,11 @@ CartoDB Positron tiles (`https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}
 
 ### User location marker
 
-Two overlapping `CircleMarker`s create a teal dot with a subtle pulse ring:
-- Outer ring: `radius=14`, `fillOpacity=0.12`, teal (`#0d9488`) — the "pulse" halo
-- Inner dot: `radius=5`, solid teal, white stroke
+Two overlapping `CircleMarker`s create a theme-colored dot with a subtle pulse ring:
+- Outer ring: `radius=14`, `fillOpacity=0.12`, theme hex — the "pulse" halo
+- Inner dot: `radius=5`, solid theme hex, white stroke
+
+The color is `th.hex` from the active theme (`#0d9488` Muqeem / `#6366f1` Musafir).
 
 ### Mosque markers — custom SVG teardrop pins
 
@@ -846,7 +854,7 @@ Tapping it expands the full form:
 │                                                      │
 │  🕐  Departs: Mon Mar 16, 3:30 PM                    │  datetime-local, default=now
 │                                                      │
-│  [ Plan My Prayers ]                                 │  disabled until dest selected
+│  [ Plan My Prayers ]                                 │  disabled until dest selected or while loading
 └──────────────────────────────────────────────────────┘
 ```
 
@@ -969,9 +977,16 @@ The plan shows **3–5 complete trip itineraries**, each covering ALL prayers fo
 **`at_destination` redundancy rule**: shown only when there are no route-stop options covering those prayers, to avoid a redundant third card.
 
 **Itinerary card behavior**:
-- Tap header to expand / collapse
+- Tap header to expand / collapse **and select that itinerary on the map** (`selectedItineraryIndex` is set in the store)
 - Tap a mosque stop → selects mosque in store, focuses map, un-collapses map
-- "Open in Maps" row (see Share Route section above) is shown at the bottom of every expanded card
+- Selected card gets `th.borderStrong` + `th.shadow` highlight border
+
+**Navigate bar**: When an itinerary is selected, a floating "Let's Go · Option N" pill appears at the bottom of the map area (`absolute bottom-3` inside the map wrapper). Tapping it opens a bottom action sheet with:
+- Google Maps (always)
+- Apple Maps (iOS only) with Apple logo SVG
+- Share Route (Web Share API or clipboard fallback)
+
+The Let's Go button uses `th.bg` / `th.bgHover` colors. When switching between itinerary options, the previous route polyline is cleared via a `key` prop on the `<Polyline>` component that encodes both `selectedItineraryIndex` and `departure_time`.
 
 ### Mosque Search Along Route
 
@@ -986,13 +1001,13 @@ For each mosque: estimated arrival time = departure time + cumulative step durat
 ### Itinerary Card Design (`TravelItineraryCard`)
 
 Each itinerary card has:
-- **Header** (always visible): "OPTION N" label (teal, uppercase) + combined label showing each pair's strategy + total detour minutes + ▲/▼ collapse toggle
+- **Header** (always visible): "OPTION N" label (theme text color, uppercase) + combined label + total detour + ▲/▼ toggle. Selected option shows `th.textMid` label; unselected shows `th.text`.
 - **Body** (expanded): one section per `pair_choice` in trip order:
   - Prayer pair emoji + label + optional Jam' badge
   - Strategy icon + description text
   - Tappable mosque stop rows (name · address · iqama · detour minutes 📍)
   - Optional italic note
-- **Share row** (bottom of body): `🗺 Google Maps` button · `🍎 Apple Maps` (iOS only) · `📤` share/copy button
+- **No share row inside card** — navigation is handled by the floating NavigateBar over the map (see Navigate Bar section above)
 
 Strategy icons used in descriptions:
 | option_type | Icon |
@@ -1025,6 +1040,8 @@ travelPlan: TravelPlan | null;                 // result from /api/travel/plan
 setTravelPlan: (p: TravelPlan | null) => void;
 travelPlanLoading: boolean;                    // true while plan is fetching
 setTravelPlanLoading: (v: boolean) => void;
+selectedItineraryIndex: number | null;         // which itinerary card is active on the map
+setSelectedItineraryIndex: (i: number | null) => void;
 ```
 
 The plan fetch is triggered **explicitly by the "Plan My Prayers" button** inside `DestinationInput` — not automatically on destination change. A `useEffect` in App watches `travelDestination` only to clear the plan when destination is removed.
@@ -1033,14 +1050,15 @@ The plan fetch is triggered **explicitly by the "Plan My Prayers" button** insid
 
 When a destination is set (with or without a plan), the map shows:
 
-1. **Origin pin** (teal circle labeled "A") — user's current GPS location or custom origin if set
+1. **Origin pin** (theme-colored circle labeled "A", `th.hex`) — user's current GPS location or custom origin if set
 2. **Destination pin** (red circle labeled "B") — travelDestination
 3. The map **auto-zooms** to fit both origin and destination at the tightest zoom that shows both
 4. **Nearby mosque pins are hidden** — only route stops and endpoint pins are shown during trip planning; nearby mosques reappear when the trip is cleared
 
 When a trip plan is active ("Plan My Prayers" was clicked), the map additionally shows:
 
-5. **Route mosque stop pins** — indigo/purple pins for each unique mosque from the plan's stops (from all feasible options)
+5. **Route mosque stop pins** — theme-colored pins (`th.hex`) for the selected itinerary's stops (or all feasible stops when no itinerary selected)
+6. **Route polyline** — theme-colored line (`th.hex`, weight 4) through the selected itinerary's prayer stops. Each itinerary has its own `route_geometry` computed server-side via a parallel routing call through its stops.
 6. The map **re-fits** to show all: origin, destination, and all mosque stops
 
 **Mosque name labels** are always visible (permanent tooltips) on all mosque pins — both nearby mosques and route stop mosques.

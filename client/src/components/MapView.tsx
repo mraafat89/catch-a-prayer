@@ -1,8 +1,9 @@
 import React, { useEffect } from 'react';
 import L from 'leaflet';
-import { MapContainer, TileLayer, Marker, CircleMarker, useMap, Tooltip } from 'react-leaflet';
+import { MapContainer, TileLayer, Marker, CircleMarker, Polyline, useMap, Tooltip } from 'react-leaflet';
 import { Mosque } from '../types';
 import { useStore } from '../store';
+import { useTheme } from '../theme';
 
 // ─── Status colors ────────────────────────────────────────────────────────────
 
@@ -49,19 +50,11 @@ function createPinIcon(color: string, selected: boolean): L.DivIcon {
   });
 }
 
-// Route mosque stop pin (smaller, indigo)
-function createRoutePinIcon(): L.DivIcon {
-  return createPinIcon('#6366f1', false);
-}
-
 // Origin / destination circle badges
 function createEndpointIcon(label: string, bg: string): L.DivIcon {
   const html = `<div style="background:${bg};color:white;border-radius:50%;width:28px;height:28px;display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:700;border:2.5px solid white;box-shadow:0 2px 5px rgba(0,0,0,0.35);line-height:1">${label}</div>`;
   return L.divIcon({ html, className: '', iconSize: [28, 28], iconAnchor: [14, 14] });
 }
-
-const originIcon      = createEndpointIcon('A', '#0d9488');
-const destinationIcon = createEndpointIcon('B', '#dc2626');
 
 // ─── Fit bounds controller ────────────────────────────────────────────────────
 
@@ -142,6 +135,7 @@ function MapCenterer({ lat, lng }: { lat: number; lng: number }) {
 // ─── MapView ──────────────────────────────────────────────────────────────────
 
 const MapView: React.FC = () => {
+  const th                = useTheme();
   const userLocation      = useStore((s) => s.userLocation);
   const mosques           = useStore((s) => s.mosques);
   const spots             = useStore((s) => s.spots);
@@ -149,35 +143,58 @@ const MapView: React.FC = () => {
   const openSheet         = useStore((s) => s.openSheet);
   const setSelectedMosqueId = useStore((s) => s.setSelectedMosqueId);
   const currentSelectedId   = useStore((s) => s.selectedMosqueId);
-  const travelDestination   = useStore((s) => s.travelDestination);
-  const travelOrigin        = useStore((s) => s.travelOrigin);
-  const travelPlan          = useStore((s) => s.travelPlan);
+  const travelDestination        = useStore((s) => s.travelDestination);
+  const travelOrigin             = useStore((s) => s.travelOrigin);
+  const travelPlan               = useStore((s) => s.travelPlan);
+  const selectedItineraryIndex   = useStore((s) => s.selectedItineraryIndex);
 
   const center: [number, number] = userLocation
     ? [userLocation.latitude, userLocation.longitude]
     : [37.7749, -122.4194];
 
-  // Collect unique route mosque stops from the travel plan
+  // Show stops from the selected itinerary only; fall back to all feasible stops
   const routeStops: { id: string; lat: number; lng: number; name: string }[] = [];
   if (travelPlan) {
     const seen = new Set<string>();
-    for (const pair of travelPlan.prayer_pairs) {
-      for (const opt of pair.options) {
-        if (!opt.feasible) continue;
-        for (const stop of opt.stops) {
+    const itinerary = selectedItineraryIndex != null
+      ? travelPlan.itineraries?.[selectedItineraryIndex]
+      : null;
+
+    if (itinerary) {
+      for (const pc of itinerary.pair_choices) {
+        for (const stop of pc.option.stops) {
           if (!seen.has(stop.mosque_id)) {
             seen.add(stop.mosque_id);
-            routeStops.push({
-              id: stop.mosque_id,
-              lat: stop.mosque_lat,
-              lng: stop.mosque_lng,
-              name: stop.mosque_name,
-            });
+            routeStops.push({ id: stop.mosque_id, lat: stop.mosque_lat, lng: stop.mosque_lng, name: stop.mosque_name });
+          }
+        }
+      }
+    } else {
+      for (const pair of travelPlan.prayer_pairs) {
+        for (const opt of pair.options) {
+          if (!opt.feasible) continue;
+          for (const stop of opt.stops) {
+            if (!seen.has(stop.mosque_id)) {
+              seen.add(stop.mosque_id);
+              routeStops.push({ id: stop.mosque_id, lat: stop.mosque_lat, lng: stop.mosque_lng, name: stop.mosque_name });
+            }
           }
         }
       }
     }
   }
+
+  // Use the selected itinerary's route (goes through its prayer stops); fall back to base route
+  const selectedItinerary = selectedItineraryIndex != null
+    ? travelPlan?.itineraries?.[selectedItineraryIndex]
+    : null;
+  const routeGeometry = (selectedItinerary?.route_geometry?.length ?? 0) > 1
+    ? selectedItinerary!.route_geometry!
+    : travelPlan?.route?.route_geometry ?? null;
+
+  // Theme-colored icons (created per-render so they pick up mode changes)
+  const originIcon      = createEndpointIcon('A', th.hex);
+  const destinationIcon = createEndpointIcon('B', '#dc2626');
 
   // Nearby mosques that are NOT already shown as route stops (avoid duplicate pins)
   const routeStopIds = new Set(routeStops.map((s) => s.id));
@@ -196,6 +213,15 @@ const MapView: React.FC = () => {
 
       <FitBoundsController />
 
+      {/* Route polyline */}
+      {routeGeometry && routeGeometry.length > 1 && (
+        <Polyline
+          key={`route-${selectedItineraryIndex}-${travelPlan?.departure_time ?? ''}`}
+          positions={routeGeometry}
+          pathOptions={{ color: th.hex, weight: 4, opacity: 0.7, dashArray: undefined }}
+        />
+      )}
+
       {userLocation && (
         <>
           <MapCenterer lat={userLocation.latitude} lng={userLocation.longitude} />
@@ -203,13 +229,13 @@ const MapView: React.FC = () => {
           <CircleMarker
             center={[userLocation.latitude, userLocation.longitude]}
             radius={14}
-            pathOptions={{ color: '#0d9488', fillColor: '#0d9488', fillOpacity: 0.12, weight: 1.5 }}
+            pathOptions={{ color: th.hex, fillColor: th.hex, fillOpacity: 0.12, weight: 1.5 }}
           />
           {/* User dot */}
           <CircleMarker
             center={[userLocation.latitude, userLocation.longitude]}
             radius={5}
-            pathOptions={{ color: '#fff', fillColor: '#0d9488', fillOpacity: 1, weight: 2 }}
+            pathOptions={{ color: '#fff', fillColor: th.hex, fillOpacity: 1, weight: 2 }}
           />
         </>
       )}
@@ -237,11 +263,11 @@ const MapView: React.FC = () => {
         <Marker
           key={`route-${stop.id}`}
           position={[stop.lat, stop.lng]}
-          icon={createRoutePinIcon()}
+          icon={createPinIcon(th.hex, false)}
           zIndexOffset={500}
         >
           <Tooltip permanent direction="top" offset={[0, -24]} opacity={0.95}>
-            <span className="text-xs font-semibold text-indigo-700">🕌 {stop.name}</span>
+            <span className={`text-xs font-semibold ${th.text}`}>🕌 {stop.name}</span>
           </Tooltip>
         </Marker>
       ))}

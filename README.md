@@ -14,17 +14,25 @@ Designed for US and Canada. Mobile-first — runs as a native iOS/Android app vi
 - **Source transparency**: Every time shown includes provenance (scraped, calculated, estimated) and freshness date
 - **Jumuah details**: Friday prayer times, multiple sessions, imam names, khutba languages
 
-### Travel Mode (Musafir / Muqeem)
-- **Muqeem mode** (resident): Individual prayer stops, no combining — teal header
-- **Musafir mode** (traveler): Prayer combining enabled — indigo header. Dhuhr+Asr and Maghrib+Isha tracked as pairs
-- **Smart Jam' display**: Only the first unresolved pair shown at a time (no Maghrib+Isha at 8 AM)
+### Two-Mode Theme System
+- **Muqeem mode** (resident, مقيم): Individual prayer stops, no combining — **teal** (#0d9488) header, buttons, pins, and polyline
+- **Musafir mode** (traveler, مسافر): Prayer combining enabled — **indigo** (#6366f1) header, buttons, pins, and polyline
+- **Full UI consistency**: Switching modes recolors every element — buttons, card borders, badges, map markers, route polyline, loading spinners — via a `useTheme()` hook backed by `src/theme.ts`
+
+### Smart Jam' Display (Musafir)
+- Only the first unresolved prayer pair shown at a time (no Maghrib+Isha at 8 AM)
   - Before Asr adhan → **Jam' Taqdeem — Combine Early** only (pray both at Dhuhr time)
   - After Asr adhan → **Jam' Ta'kheer — Combine Late** only (Dhuhr is not missed, pray both at Asr time)
   - Same logic applies for Maghrib + Isha
-- **Route-based trip planner**: Set a destination and get a complete prayer itinerary for the entire journey
-- **Complete trip itineraries**: 3–5 full plans covering every prayer along the route, with human-friendly detour durations
 - **Pair-aware "have you prayed?" banner**: In Musafir mode asks about pairs, not individual prayers
-- **Color-coded mode indicator**: Teal header = Muqeem, Indigo header = Musafir — visible at a glance
+
+### Route-Based Trip Planner
+- Set origin + destination (+ up to 4 waypoints) and get a full prayer itinerary for the entire journey
+- **3–5 complete itinerary options** (all-early, early+late mix, all-late, all-at-destination, separate stops)
+- **Per-itinerary route geometry**: each option computes its own driving route through its prayer stops in parallel — the map polyline shows the actual road path through each mosque
+- **Floating Navigate bar**: selecting an itinerary card shows a "Let's Go · Option N" button over the map that opens a native action sheet (Google Maps / Apple Maps on iOS / Share)
+- **Plan button disabled** while a plan is loading to prevent double-submits
+- Switching Muqeem ↔ Musafir while a plan is active automatically re-plans with the new mode
 
 ### Mobile App (Capacitor)
 - Installable on iPhone and Android as a native app via Capacitor

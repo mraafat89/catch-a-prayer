@@ -198,6 +198,7 @@ export interface TravelRouteInfo {
   duration_minutes: number;
   origin_name: string | null;
   destination_name: string;
+  route_geometry?: [number, number][];  // [lat, lng] pairs for Leaflet polyline
 }
 
 export interface PairChoice {
@@ -214,6 +215,7 @@ export interface TripItinerary {
   total_detour_minutes: number;
   stop_count: number;
   feasible: boolean;
+  route_geometry?: [number, number][];  // [[lat, lng], ...] through prayer stops
 }
 
 export interface TravelPlan {

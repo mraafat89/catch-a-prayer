@@ -203,6 +203,7 @@ class RouteInfo(BaseModel):
     duration_minutes: int
     origin_name: str        # "Current location" or user-provided name
     destination_name: str
+    route_geometry: list[list[float]] = []  # [[lat, lng], ...] for Leaflet polyline
 
 class PairChoice(BaseModel):
     pair: str
@@ -217,6 +218,7 @@ class TripItinerary(BaseModel):
     total_detour_minutes: int
     stop_count: int
     feasible: bool
+    route_geometry: list[list[float]] = []  # [[lat, lng], ...] through prayer stops
 
 class TravelPlanResponse(BaseModel):
     route: RouteInfo
