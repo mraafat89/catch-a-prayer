@@ -58,6 +58,8 @@ async def travel_plan(req: TravelPlanRequest, db: AsyncSession = Depends(get_db)
         origin_name=req.origin_name or "Current location",
         departure_dt=departure_dt,
         trip_mode=req.trip_mode,
+        waypoints=req.waypoints,
+        prayed_prayers=set(req.prayed_prayers),
     )
     if not result:
         raise HTTPException(status_code=503, detail="Could not build travel plan — routing unavailable")

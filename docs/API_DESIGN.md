@@ -92,7 +92,33 @@ Find mosques near a location and return prayer catching status for each.
         "leave_by": "16:13",
         "period_ends_at": "18:47"
       },
-      "travel_combinations": [],
+      // travel_combinations: populated when travel_mode=true.
+      // Rules:
+      //   - Only the FIRST unresolved pair is returned (Dhuhr+Asr before Maghrib+Isha).
+      //     Maghrib+Isha is omitted while Dhuhr+Asr has not been prayed and Asr period hasn't ended.
+      //   - Before p2 adhan (Asr/Isha): returns combine_early (Jam' Taqdeem) only.
+      //     Description does NOT say "now" if p1 adhan hasn't started yet.
+      //   - After p2 adhan, before p2 period ends: returns combine_late (Jam' Ta'kheer) only.
+      //     Taqdeem window is permanently closed once Asr/Isha adhan has passed.
+      //   - Empty array [] when travel_mode=false or pair is fully resolved.
+      "travel_combinations": [
+        {
+          "pair": "dhuhr_asr",
+          "label": "Dhuhr + Asr",
+          "emoji": "🕌",
+          "options": [
+            {
+              "option_type": "combine_early",           // or "combine_late"
+              "label": "Jam' Taqdeem — Combine Early",
+              "description": "Combine Dhuhr + Asr at Dhuhr time (iqama 1:05 PM) — pray both when you reach the mosque.",
+              "prayers": ["dhuhr", "asr"],
+              "combination_label": "Jam' Taqdeem",
+              "feasible": true,
+              "note": "Pray Asr early, during Dhuhr time."
+            }
+          ]
+        }
+      ],
       "prayers": [
         {
           "prayer": "fajr",

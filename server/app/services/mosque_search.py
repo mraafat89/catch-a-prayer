@@ -175,9 +175,10 @@ def compute_travel_combinations(
     ]
     result = []
 
+    found_active_pair = False  # only show the first unresolved pair
+
     for p1, p2, pair_key, label, emoji in PAIRS:
         # Sequential inference: prayer2 prayed → prayer1 was also done → skip pair
-        # Also skip if both are explicitly in prayed set
         if p2 in prayed or (p1 in prayed and p2 in prayed):
             continue
 
@@ -192,82 +193,82 @@ def compute_travel_combinations(
         p1_adhan_m = hhmm_to_minutes(p1_adhan)
         p2_adhan_m = hhmm_to_minutes(p2_adhan)
 
-        # Period end for p2 (used to check Ta'kheer feasibility)
+        # Period end for p2
         p2_end_key = _PAIR_PERIOD_END_KEYS.get(p2)
         p2_end_raw = schedule.get(p2_end_key) if p2_end_key else None
         if p2_end_raw:
             p2_end_m = hhmm_to_minutes(p2_end_raw)
-            # Handle midnight wrap (Isha → Fajr next day)
             if p2_end_m < p2_adhan_m:
-                p2_end_m += 1440
+                p2_end_m += 1440  # midnight wrap (Isha → Fajr next day)
         else:
-            p2_end_m = p2_adhan_m + 90  # fallback
+            p2_end_m = p2_adhan_m + 90
 
-        # Normalize current_min relative to p1_adhan to handle overnight pairs
         cur = current_min
-        if p2 == "isha" and cur < p1_adhan_m:
-            # After midnight but before the pair starts (shouldn't happen for dhuhr/maghrib)
-            pass
 
-        # Skip if both prayers have fully passed
+        # Skip if the entire pair window has passed
         if cur > p2_end_m and p2_end_m > p1_adhan_m:
             continue
-        # Skip if neither prayer has started yet (far in the future)
-        if cur < p1_adhan_m - 60:
+
+        # Don't show a later pair (Maghrib+Isha) while an earlier pair (Dhuhr+Asr) is
+        # still unresolved — the user should deal with one pair at a time.
+        if found_active_pair:
             continue
+        found_active_pair = True
 
-        options = []
+        p1_iqama_fmt = p1_iqama or p1_adhan
         p2_iqama_fmt = p2_iqama or p2_adhan
+        options = []
 
-        # Taqdeem: combine at p1 time — only feasible before p2 adhan
         if cur < p2_adhan_m:
-            p1_iqama_fmt = p1_iqama or p1_adhan
+            # ── Taqdeem window: p2 (Asr/Isha) hasn't started yet ──────────────
+            # Show Taqdeem only. Takheer becomes relevant once p2 has started.
+            if cur < p1_adhan_m:
+                # Before p1 adhan — describe the plan, not "now"
+                taqdeem_desc = (
+                    f"Combine {p1.title()} + {p2.title()} at {p1.title()} time "
+                    f"(iqama {p1_iqama_fmt}) — pray both when you reach the mosque."
+                )
+            else:
+                # p1 congregation is active
+                taqdeem_desc = (
+                    f"Pray {p1.title()} + {p2.title()} together now — "
+                    f"{p1.title()} iqama {p1_iqama_fmt}."
+                )
             options.append({
                 "option_type": "combine_early",
                 "label": "Jam' Taqdeem — Combine Early",
-                "description": (
-                    f"Pray both {p1.title()} and {p2.title()} now, during {p1.title()} time "
-                    f"(iqama {p1_iqama_fmt})."
-                ),
+                "description": taqdeem_desc,
                 "prayers": [p1, p2],
                 "combination_label": "Jam' Taqdeem",
                 "stops": [],
                 "feasible": True,
-                "note": f"Advance {p2.title()} into {p1.title()}'s window.",
+                "note": f"Pray {p2.title()} early, during {p1.title()} time.",
             })
-
-        # Ta'kheer: delay p1 to p2 time — only feasible if p2 period hasn't ended
-        if cur < p2_end_m:
-            if cur >= p2_adhan_m:
-                # Congregation window: iqama + 15 min
-                p2_iqama_m = hhmm_to_minutes(p2_iqama) if p2_iqama else p2_adhan_m + 15
-                congregation_ended = cur >= p2_iqama_m + CONGREGATION_WINDOW_MINUTES
-                # Period end display (e.g. "Fajr at 05:15" for Isha)
-                p2_end_display = schedule.get(_PAIR_PERIOD_END_KEYS.get(p2, ""), p2_iqama_fmt)
-                if congregation_ended:
-                    ta_kheer_desc = (
-                        f"As a Musafir, pray {p1.title()} + {p2.title()} together now at this "
-                        f"mosque (solo, Jam' Ta'kheer — {p2.title()} period active until {p2_end_display})."
-                    )
-                else:
-                    ta_kheer_desc = (
-                        f"Pray both {p1.title()} and {p2.title()} together during {p2.title()} time "
-                        f"(iqama ~{p2_iqama_fmt})."
-                    )
+        else:
+            # ── Takheer window: p2 adhan has started, period hasn't ended ─────
+            # Taqdeem is no longer possible; show Takheer until p2 period ends.
+            p2_iqama_m = hhmm_to_minutes(p2_iqama) if p2_iqama else p2_adhan_m + 15
+            congregation_ended = cur >= p2_iqama_m + CONGREGATION_WINDOW_MINUTES
+            p2_end_display = schedule.get(_PAIR_PERIOD_END_KEYS.get(p2, ""), p2_iqama_fmt)
+            if congregation_ended:
+                takheer_desc = (
+                    f"Pray {p1.title()} + {p2.title()} together now (solo) — "
+                    f"{p2.title()} period ends at {p2_end_display}."
+                )
             else:
-                ta_kheer_desc = (
-                    f"Wait until {p2.title()} time and pray both {p1.title()} + {p2.title()} "
-                    f"together (iqama ~{p2_iqama_fmt})."
+                takheer_desc = (
+                    f"Pray {p1.title()} + {p2.title()} together now — "
+                    f"{p2.title()} iqama {p2_iqama_fmt}."
                 )
             options.append({
                 "option_type": "combine_late",
                 "label": "Jam' Ta'kheer — Combine Late",
-                "description": ta_kheer_desc,
+                "description": takheer_desc,
                 "prayers": [p1, p2],
                 "combination_label": "Jam' Ta'kheer",
                 "stops": [],
                 "feasible": True,
-                "note": f"Delay {p1.title()} into {p2.title()}'s window.",
+                "note": f"Pray {p1.title()} late, during {p2.title()} time.",
             })
 
         if options:

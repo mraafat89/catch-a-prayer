@@ -85,6 +85,8 @@ export const apiService = {
     originName?: string,
     departureTime?: string,
     tripMode?: string,
+    waypoints?: Array<{ lat: number; lng: number; name?: string }>,
+    prayedPrayers?: string[],
   ): Promise<TravelPlan> => {
     const res = await api.post('/api/travel/plan', {
       origin_lat: originLat,
@@ -96,6 +98,8 @@ export const apiService = {
       departure_time: departureTime || null,
       timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
       trip_mode: tripMode || 'travel',
+      waypoints: waypoints || [],
+      prayed_prayers: prayedPrayers || [],
     });
     return res.data;
   },

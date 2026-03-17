@@ -743,9 +743,26 @@ When "Plan My Prayers" is tapped in Muqeem mode and the trip distance exceeds ~1
 
 ### Mode: Musafir, Static (No Route)
 
-When ✈️ toggle is ON and **no destination is set**, each mosque card gains a combining section below the normal prayer status. The display is **context-sensitive** — it shows the relevant option(s) for the current time, not a generic list.
+When ✈️ toggle is ON and **no destination is set**, each mosque card gains a combining section below the normal prayer status. The display is **context-sensitive** — exactly one option is shown at a time.
 
-**Case A — Before Asr adhan (Taqdeem only):**
+**Pair ordering rule:** Only the **first unresolved pair** is shown. Maghrib+Isha is hidden while Dhuhr+Asr has not been prayed yet and the Asr period has not ended. Once Dhuhr+Asr is fully resolved (both prayed, or Asr period passed), the Maghrib+Isha pair becomes visible. This prevents showing irrelevant future pairs (e.g. no Maghrib+Isha at 8 AM).
+
+**Case A — Before p1 adhan (e.g. 8 AM, Dhuhr at 1 PM):**
+```
+┌──────────────────────────────────────────────────────┐
+│ 🟢  Masjid Al-Noor                      12 min away │
+│     Dhuhr in 5h — leave by 12:50 to catch with Imam │
+│     ────────────────────────────────────────────     │
+│  ✈️ 🕌 Dhuhr + Asr — Musafir combining              │
+│  ┌─────────────────────────────────────────────┐    │
+│  │ Combine Dhuhr + Asr at Dhuhr time (iqama    │    │
+│  │ 1:05 PM) — pray both when you reach mosque. │    │
+│  │ [Jam' Taqdeem — Combine Early]              │    │
+│  └─────────────────────────────────────────────┘    │
+└──────────────────────────────────────────────────────┘
+```
+
+**Case B — p1 adhan started, before p2 adhan (Dhuhr started, Asr not yet):**
 ```
 ┌──────────────────────────────────────────────────────┐
 │ 🟢  Masjid Al-Noor                      12 min away │
@@ -753,34 +770,35 @@ When ✈️ toggle is ON and **no destination is set**, each mosque card gains a
 │     ────────────────────────────────────────────     │
 │  ✈️ 🕌 Dhuhr + Asr — Musafir combining              │
 │  ┌─────────────────────────────────────────────┐    │
-│  │ Pray both Dhuhr and Asr now, during Dhuhr   │    │
-│  │ time (iqama 1:05 PM).                       │    │
-│  │ [Jam' Taqdeem — pray now]                   │    │
+│  │ Pray Dhuhr + Asr together now —             │    │
+│  │ Dhuhr iqama 1:05 PM.                        │    │
+│  │ [Jam' Taqdeem — Combine Early]              │    │
 │  └─────────────────────────────────────────────┘    │
 └──────────────────────────────────────────────────────┘
 ```
 
-**Case B — After Asr adhan (Ta'kheer only — the critical case):**
+**Case C — After p2 adhan, before p2 period ends (Asr started, before Maghrib):**
+Taqdeem window is closed. Show only Takheer — the first prayer is NOT missed as a Musafir.
 ```
 ┌──────────────────────────────────────────────────────┐
 │ 🟢  Masjid Al-Noor                      12 min away │
 │     ────────────────────────────────────────────     │
 │  ✈️ 🕌 Dhuhr + Asr — Musafir combining              │
 │  ┌─────────────────────────────────────────────┐    │
-│  │ Dhuhr is not missed ✓                       │    │  ← key message
-│  │ As Musafir, pray both Dhuhr + Asr together  │    │
-│  │ during Asr time (iqama 4:30 PM)             │    │
-│  │ [Jam' Ta'kheer]                             │    │
+│  │ Pray Dhuhr + Asr together now —             │    │
+│  │ Asr iqama 4:30 PM.                          │    │
+│  │ [Jam' Ta'kheer — Combine Late]              │    │
 │  └─────────────────────────────────────────────┘    │
 └──────────────────────────────────────────────────────┘
 ```
 
-**Case C — Both options feasible (Taqdeem primary, Ta'kheer secondary):**
-Shows Taqdeem card first ("pray now") then Ta'kheer card ("or wait until Asr").
+The same three cases apply identically to the **Maghrib + Isha** pair once Dhuhr+Asr is resolved.
 
 Key rules:
-- **Taqdeem**: feasible while still in the first prayer's time (before p2 adhan)
-- **Ta'kheer**: feasible from any point until the second prayer's period ends — the first prayer is NOT missed
+- **Only one pair shown at a time** — the first unresolved pair in chronological order (Dhuhr+Asr → Maghrib+Isha)
+- **Taqdeem only** while before p2 adhan (Asr/Isha hasn't started). Never show both options simultaneously.
+- **Takheer only** once p2 adhan has passed — Taqdeem window is closed, but the first prayer is not missed
+- **No "now"** in the description before p1 adhan — describe the plan for when the user arrives
 - Both use `travel_combinations` from `/api/nearby` when `travel_mode=true`
 
 ### Share Route (Open in Maps)
@@ -788,10 +806,15 @@ Key rules:
 Each trip itinerary card has an **"Open in Maps"** button at the bottom that builds a multi-stop navigation URL and opens it in Google Maps or Apple Maps.
 
 **URL structure:**
-- Google Maps: `https://www.google.com/maps/dir/{origin}/{stop1}/{stop2}/{destination}` — supports unlimited waypoints, opens turn-by-turn navigation in the app
-- Apple Maps: `https://maps.apple.com/?saddr={origin}&daddr={stop1}&daddr={stop2}&daddr={destination}` — shown as alternative on iOS devices
+- Google Maps: `https://www.google.com/maps/dir/{origin}/{stop1}/{stop2}/{destination}` path format. If a mosque has a `google_place_id`, use `place_id:ChIJ...` as the segment; otherwise use the encoded name+address. Supports unlimited waypoints.
+- Apple Maps: `https://maps.apple.com/?saddr={origin}&daddr={stop1}&daddr={stop2}&daddr={destination}` — shown as alternative on iOS devices. Uses `Name@lat,lng` format for labeled pins.
 
-Stops are collected from the itinerary's `pair_choices[].option.stops`, sorted by `minutes_into_trip`, deduplicated by mosque ID. Origin is `travelOrigin` if set, otherwise the user's GPS location. Destination is `travelDestination`.
+**Origin waypoint rule**: When the user has NOT set an explicit origin (i.e., `travelOrigin === null` — the app is using GPS current location), do NOT include an explicit origin in the URL. Both Google Maps and Apple Maps automatically start routing from the device's current GPS position when no `saddr` / origin segment is provided. Including a lat/lng origin in this case creates a confusing extra dropped-pin waypoint.
+
+- Google Maps with current location: `https://www.google.com/maps/dir//{stop1}/{destination}` (empty origin segment = current location)
+- Apple Maps with current location: `https://maps.apple.com/?daddr={stop1}&daddr={destination}&dirflg=d` (no `saddr`)
+
+Stops are collected from the itinerary's `pair_choices[].option.stops`, sorted by `minutes_into_trip`, deduplicated by mosque ID. Destination is always `travelDestination`.
 
 The button is shown in every expanded itinerary card. On devices with the Web Share API (`navigator.share`), tapping "Share Route" invokes the native share sheet so the user can send the link to a friend or save it.
 
@@ -811,8 +834,14 @@ Tapping it expands the full form:
 ┌──────────────────────────────────────────────────────┐
 │  PLAN YOUR TRIP              [🏠 Muqeem / ✈️ Musafir]│  mode badge, read-only — reflects global mode
 │                                                      │
+│  📍  From: Current location                          │  optional — geocode search
 │                                                      │
-│  📍  From: Current location                   [⌖]   │  optional — geocode search
+│  ┌──────────────────────────────────────────────┐    │  ← waypoints (0–4, optional)
+│  │ 📌 Chicago, IL                    [↑][↓][✕] │    │
+│  │ 📌 Detroit, MI                    [↑][↓][✕] │    │
+│  └──────────────────────────────────────────────┘    │
+│  [ + Add stop ]                                      │  adds a geocode input above destination
+│                                                      │
 │  🏁  To: Destination *                               │  required — geocode search
 │                                                      │
 │  🕐  Departs: Mon Mar 16, 3:30 PM                    │  datetime-local, default=now
@@ -821,9 +850,20 @@ Tapping it expands the full form:
 └──────────────────────────────────────────────────────┘
 ```
 
-- Typing 3+ characters in either field triggers a debounced geocode query (400ms) via `GET /api/geocode?q=...`
+**Multi-stop waypoints:**
+- "Add stop" button appears between the From and To fields
+- Tapping it inserts a new geocode input above the destination row
+- Each waypoint row has: geocode input + ↑ (move up) + ↓ (move down) + ✕ (remove)
+- First waypoint's ↑ is disabled; last waypoint's ↓ is disabled; single waypoint has both disabled
+- Maximum 4 waypoints (6 total points: origin + 4 waypoints + destination)
+- Waypoints are stored in `tripWaypoints: TravelDestination[]` in the store
+- Passed to backend as `waypoints: [{lat, lng, name}]` in the request body
+- Backend routes through all waypoints in order: origin → wp1 → wp2 → destination
+- In the compact trip chip, waypoints appear in the route summary: `Origin → Chicago → Detroit → SF`
+
+- Typing 3+ characters in any field triggers a debounced geocode query (400ms) via `GET /api/geocode?q=...`
 - Results appear as a dropdown list below the input, each prefixed with 📍
-- Selecting a suggestion sets `travelOrigin` or `travelDestination` in the store
+- Selecting a suggestion sets the corresponding field in the store
 - Origin is optional — if blank, current GPS location is used
 - Departure time defaults to current local time (exact, not rounded)
 - **"Plan My Prayers"** button is the explicit trigger — no automatic fetch on input change
@@ -831,14 +871,14 @@ Tapping it expands the full form:
 
 ```
 ┌──────────────────────────────────────────────────────┐
-│  ✈️ Traveling                                     ✕  │  teal-50 bg, teal-200 border
-│  Current location → San Francisco, CA                │
+│  ✈️ Musafir trip                                  ✕  │  teal-50 bg, teal-200 border
+│  Current location → Chicago → Detroit → SF           │
 │  Departs Mar 16, 3:30 PM                             │
 └──────────────────────────────────────────────────────┘
 ```
 
-- Tapping **anywhere on the chip** (except ✕) re-opens the full trip planner form for editing — the form is pre-populated with the previous origin, destination, and departure time
-- Tapping ✕ clears the destination, plan, origin, and departure time (mosque list reappears)
+- Tapping **anywhere on the chip** (except ✕) re-opens the full trip planner form for editing — the form is pre-populated with the previous origin, waypoints, destination, and departure time
+- Tapping ✕ clears the destination, waypoints, plan, origin, and departure time (mosque list reappears)
 
 ### Travel Prayer Plan
 
@@ -849,6 +889,10 @@ When "Plan My Prayers" is tapped, `POST /api/travel/plan` is called with:
 - `departure_time`: ISO 8601 string from datetime picker (defaults to now)
 - `timezone`: user's browser timezone (IANA)
 - `trip_mode`: `"travel"` or `"driving"`
+- `waypoints`: array of `{lat, lng, name}` for intermediate stops (empty array if none)
+- `prayed_prayers`: array of prayer names already prayed today (from `prayedToday` store) — backend excludes these from the plan
+
+The backend skips any prayer pair where both prayers are already prayed. For pairs where one prayer is done, it builds a solo-stop plan for the remaining prayer only (see ISLAMIC_PRAYER_RULES.md — Prayed Prayer Exclusion).
 
 ### Prayer Pair Relevance — Time-Aware Filtering
 
@@ -973,6 +1017,8 @@ travelOrigin: TravelDestination | null;       // null = use GPS current location
 setTravelOrigin: (o: TravelDestination | null) => void;
 travelDestination: TravelDestination | null;   // required to plan a route
 setTravelDestination: (d: TravelDestination | null) => void;
+tripWaypoints: TravelDestination[];            // 0–4 intermediate stops between origin and destination
+setTripWaypoints: (w: TravelDestination[]) => void;
 travelDepartureTime: string | null;            // ISO; null = now
 setTravelDepartureTime: (t: string | null) => void;
 travelPlan: TravelPlan | null;                 // result from /api/travel/plan

@@ -6,7 +6,7 @@ Given origin + destination, builds a structured prayer plan for the journey.
 Algorithm:
 1. Get Mapbox Directions route (with steps for time-tagged waypoints)
 2. Build time-tagged checkpoints along route from step maneuver locations
-3. Find mosques near the route (within 20km of route bounding box)
+3. Sample waypoints every 30 min along the route; find mosques within 25km of each
 4. For each mosque, compute: estimated_pass_time + detour_minutes
 5. For each prayer pair (Dhuhr+Asr, Maghrib+Isha), build options:
    - combine_early: pray both during first prayer's period (Jam' Taqdeem)
@@ -38,10 +38,30 @@ from app.services.prayer_calc import calculate_prayer_times, estimate_iqama_time
 logger = logging.getLogger(__name__)
 settings = get_settings()
 
-DETOUR_OVERHEAD_MINUTES = 15   # time to stop, pray, re-enter route
-ROUTE_CORRIDOR_KM = 50         # mosques within 50km of route bounding box
-MAX_DETOUR_MINUTES = 60        # skip mosques requiring > 60 min total detour
-HIGHWAY_SPEED_KMH = 60         # speed used for detour estimate (highway avg)
+DETOUR_OVERHEAD_MINUTES = 15      # time to stop, pray, re-enter route
+ROUTE_CORRIDOR_KM = 25            # search radius around each route waypoint
+WAYPOINT_INTERVAL_MINUTES = 30    # sample route waypoints every 30 minutes
+MAX_DETOUR_MINUTES = 60           # skip mosques requiring > 60 min total detour
+HIGHWAY_SPEED_KMH = 60            # speed used for detour estimate (highway avg)
+
+
+def fmt_duration(minutes: int) -> str:
+    """Convert minutes to a human-friendly string. e.g. 352 → '5h 52min', 1500 → '1 day 1h'"""
+    minutes = max(0, int(minutes))
+    days = minutes // (24 * 60)
+    remaining = minutes % (24 * 60)
+    hours = remaining // 60
+    mins = remaining % 60
+    if days > 0:
+        parts = [f"{days} day{'s' if days > 1 else ''}"]
+        if hours:
+            parts.append(f"{hours}h")
+        if mins:
+            parts.append(f"{mins}min")
+        return " ".join(parts)
+    if hours > 0:
+        return f"{hours}h {mins}min" if mins else f"{hours}h"
+    return f"{mins}min"
 
 
 # ---------------------------------------------------------------------------
@@ -306,8 +326,27 @@ def nearest_checkpoint(mosque_lat: float, mosque_lng: float, checkpoints: list[d
 
 
 # ---------------------------------------------------------------------------
-# DB: find mosques in route bounding box
+# DB: find mosques along route corridor (per-waypoint radius search)
 # ---------------------------------------------------------------------------
+
+def sample_route_waypoints(checkpoints: list[dict], interval_minutes: float = 30.0) -> list[dict]:
+    """
+    Sample checkpoints at regular time intervals along the route.
+    Always includes the first and last checkpoint.
+    A 6-hour trip → ~13 waypoints; a 15-hour trip → ~31 waypoints.
+    """
+    if not checkpoints:
+        return []
+    waypoints = [checkpoints[0]]
+    next_target = checkpoints[0]["cumulative_minutes"] + interval_minutes
+    for cp in checkpoints[1:]:
+        if cp["cumulative_minutes"] >= next_target:
+            waypoints.append(cp)
+            next_target = cp["cumulative_minutes"] + interval_minutes
+    if waypoints[-1] is not checkpoints[-1]:
+        waypoints.append(checkpoints[-1])
+    return waypoints
+
 
 async def find_route_mosques(
     db: AsyncSession,
@@ -315,35 +354,36 @@ async def find_route_mosques(
     departure_dt: datetime,
 ) -> list[dict]:
     """
-    Query mosques within ROUTE_CORRIDOR_KM of the route bounding box.
-    For each mosque, compute estimated_pass_time and detour_minutes.
+    Find mosques within ROUTE_CORRIDOR_KM of the route.
+    Samples search centres every WAYPOINT_INTERVAL_MINUTES along the route,
+    then searches a radius around each centre — giving uniform corridor coverage
+    without the false positives of a single bounding box on diagonal routes.
     """
     if not checkpoints:
         return []
 
-    # Bounding box of all checkpoints + buffer
-    lats = [c["lat"] for c in checkpoints]
-    lngs = [c["lng"] for c in checkpoints]
-    # 1 degree lat ≈ 111km, 1 degree lng ≈ 111*cos(lat) km
+    search_wps = sample_route_waypoints(checkpoints, WAYPOINT_INTERVAL_MINUTES)
     lat_buf = ROUTE_CORRIDOR_KM / 111.0
     lng_buf = ROUTE_CORRIDOR_KM / 85.0  # conservative
 
-    bbox = {
-        "lat_min": min(lats) - lat_buf,
-        "lat_max": max(lats) + lat_buf,
-        "lng_min": min(lngs) - lng_buf,
-        "lng_max": max(lngs) + lng_buf,
-    }
-    result = await db.execute(text("""
-        SELECT id::text, name, lat, lng, address, city, state, timezone, google_place_id
+    # Build per-waypoint bbox OR clauses.
+    # Values are computed floats from route geometry (not user input) — safe to inline.
+    or_clauses = " OR ".join(
+        f"(lat BETWEEN {w['lat'] - lat_buf:.6f} AND {w['lat'] + lat_buf:.6f} "
+        f"AND lng BETWEEN {w['lng'] - lng_buf:.6f} AND {w['lng'] + lng_buf:.6f})"
+        for w in search_wps
+    )
+    result = await db.execute(text(f"""
+        SELECT DISTINCT ON (id) id::text, name, lat, lng, address, city, state, timezone, google_place_id
         FROM mosques
-        WHERE is_active = true
-          AND lat BETWEEN :lat_min AND :lat_max
-          AND lng BETWEEN :lng_min AND :lng_max
+        WHERE is_active = true AND ({or_clauses})
         LIMIT 2000
-    """), bbox)
+    """))
     rows = result.mappings().all()
-    logger.info(f"find_route_mosques: {len(checkpoints)} checkpoints, {len(rows)} mosques in bbox")
+    logger.info(
+        f"find_route_mosques: {len(checkpoints)} checkpoints → "
+        f"{len(search_wps)} search waypoints → {len(rows)} mosques in corridor"
+    )
 
     route_mosques = []
 
@@ -687,7 +727,7 @@ def _build_solo_plan(
                 "combination_label": None,
                 "stops": [_make_stop(m, prayer, si)],
                 "feasible": True,
-                "note": f"~{m['minutes_into_trip']} min into your trip",
+                "note": f"~{fmt_duration(m['minutes_into_trip'])} into your trip",
             })
             break
 
@@ -903,7 +943,7 @@ def build_combination_plan(
                 "combination_label": "Jam' Taqdeem",
                 "stops": [stop],
                 "feasible": True,
-                "note": f"~{m['minutes_into_trip']} min into your trip",
+                "note": f"~{fmt_duration(m['minutes_into_trip'])} into your trip",
             })
 
         late_candidates = []
@@ -926,7 +966,7 @@ def build_combination_plan(
                 "combination_label": "Jam' Ta'kheer",
                 "stops": [stop],
                 "feasible": True,
-                "note": f"~{m['minutes_into_trip']} min into your trip",
+                "note": f"~{fmt_duration(m['minutes_into_trip'])} into your trip",
             })
 
     # ── Separate stops — Muqeem mode only (hidden in Musafir/travel mode) ─
@@ -1194,13 +1234,13 @@ def _itinerary_summary(pair_choices: list[dict]) -> str:
             combo = "Jam' Taqdeem" if ot == "combine_early" else "Jam' Ta'kheer"
             mosque = stops[0]["mosque_name"] if stops else "a mosque en route"
             t = stops[0]["minutes_into_trip"] if stops else 0
-            parts.append(f"Combine {label} at {mosque} ({combo}, ~{t} min into trip)")
+            parts.append(f"Combine {label} at {mosque} ({combo}, ~{fmt_duration(t)} into trip)")
         elif ot == "at_destination":
             parts.append(f"Pray {label} near your destination")
         elif ot == "solo_stop":
             mosque = stops[0]["mosque_name"] if stops else "a mosque en route"
             t = stops[0]["minutes_into_trip"] if stops else 0
-            parts.append(f"Stop for {label} at {mosque} (~{t} min into trip)")
+            parts.append(f"Stop for {label} at {mosque} (~{fmt_duration(t)} into trip)")
         elif ot == "separate":
             if len(stops) >= 2:
                 parts.append(f"{label}: {stops[0]['mosque_name']} then {stops[1]['mosque_name']}")

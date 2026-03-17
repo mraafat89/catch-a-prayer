@@ -237,14 +237,63 @@ def extract_jumuah_sessions(html: str) -> list[dict]:
 
     return sessions
 
-# ─── Sub-pages to try ────────────────────────────────────────────────────────
+# ─── Link scoring ────────────────────────────────────────────────────────────
 
-_INFO_SUBPAGES = [
-    "/about", "/about-us", "/about-mosque", "/who-we-are",
-    "/services", "/facilities", "/programs",
-    "/friday", "/jumu'ah", "/jumuah", "/friday-prayer",
-    "/prayer-times", "/salah-times", "/iqama",
+# Keywords that suggest a page is relevant, with scores
+_LINK_SCORES: list[tuple[int, list[str]]] = [
+    (10, ["prayer", "salah", "salat", "iqama", "iqamah", "namaz", "times", "schedule"]),
+    (10, ["friday", "jumuah", "jumu", "juma", "jumah", "khutba", "khutbah"]),
+    (5,  ["about", "who we are", "who-we-are", "mission", "our-story", "overview"]),
+    (5,  ["services", "facilities", "programs", "activities", "community"]),
+    (3,  ["contact", "info", "information", "welcome", "home"]),
 ]
+
+_SKIP_EXTENSIONS = {".pdf", ".jpg", ".jpeg", ".png", ".gif", ".mp3", ".mp4", ".zip"}
+
+def _score_link(href: str, anchor_text: str) -> int:
+    combined = (href + " " + anchor_text).lower()
+    # Skip non-page links
+    if any(combined.endswith(ext) for ext in _SKIP_EXTENSIONS):
+        return -1
+    if href.startswith(("mailto:", "tel:", "javascript:", "#")):
+        return -1
+    score = 0
+    for points, keywords in _LINK_SCORES:
+        if any(kw in combined for kw in keywords):
+            score += points
+    return score
+
+
+def _extract_ranked_links(homepage_html: str, base_url: str, top_n: int = 5) -> list[str]:
+    """Extract internal links from homepage, ranked by relevance. Returns top N URLs."""
+    from urllib.parse import urljoin, urlparse
+    soup = BeautifulSoup(homepage_html, "html.parser")
+    base_domain = urlparse(base_url).netloc
+
+    seen: set[str] = set()
+    scored: list[tuple[int, str]] = []
+
+    for a in soup.find_all("a", href=True):
+        href = a["href"].strip()
+        anchor = a.get_text(" ", strip=True)
+        full_url = urljoin(base_url, href)
+
+        # Only follow internal links
+        if urlparse(full_url).netloc != base_domain:
+            continue
+        # Deduplicate
+        path = urlparse(full_url).path.rstrip("/")
+        if path in seen or not path or path == urlparse(base_url).path.rstrip("/"):
+            continue
+        seen.add(path)
+
+        score = _score_link(full_url, anchor)
+        if score > 0:
+            scored.append((score, full_url))
+
+    scored.sort(key=lambda x: -x[0])
+    return [url for _, url in scored[:top_n]]
+
 
 def _fetch(client: httpx.Client, url: str) -> Optional[str]:
     try:
@@ -256,7 +305,11 @@ def _fetch(client: httpx.Client, url: str) -> Optional[str]:
 # ─── Per-mosque enrichment ───────────────────────────────────────────────────
 
 def enrich_mosque(mosque: dict, client: httpx.Client) -> dict:
-    """Fetch the mosque website (and key sub-pages) and extract info fields."""
+    """
+    Fetch mosque website and extract info fields.
+    Fetches homepage, extracts + ranks all internal links by relevance,
+    then visits only the top 5 most relevant pages — no hardcoded URL guessing.
+    """
     url = mosque["website"]
     result: dict = {
         "denomination": None, "denomination_source": None,
@@ -264,39 +317,38 @@ def enrich_mosque(mosque: dict, client: httpx.Client) -> dict:
         "languages_spoken": None, "jumuah_sessions": [],
     }
 
-    # Collect all fetched text
-    all_html = ""
     homepage_html = _fetch(client, url) or ""
-    all_html += homepage_html
+    if not homepage_html.strip():
+        return result
 
-    # Also check sub-pages
-    from urllib.parse import urljoin
-    for path in _INFO_SUBPAGES:
-        sub_html = _fetch(client, urljoin(url, path))
+    # Rank internal links by relevance and fetch top 5
+    ranked_urls = _extract_ranked_links(homepage_html, url, top_n=5)
+    logger.debug(f"    ranked links: {ranked_urls}")
+
+    all_html = homepage_html
+    subpage_htmls: list[str] = []
+    for sub_url in ranked_urls:
+        sub_html = _fetch(client, sub_url)
         if sub_html:
             all_html += " " + sub_html
-
-    if not all_html.strip():
-        return result
+            subpage_htmls.append(sub_html)
 
     full_text = BeautifulSoup(all_html, "html.parser").get_text(" ")
 
-    result["denomination"]         = detect_denomination(full_text)
-    result["denomination_source"]  = "website_scraped" if result["denomination"] else None
-    result["has_womens_section"]   = detect_womens_section(full_text)
+    result["denomination"]          = detect_denomination(full_text)
+    result["denomination_source"]   = "website_scraped" if result["denomination"] else None
+    result["has_womens_section"]    = detect_womens_section(full_text)
     result["wheelchair_accessible"] = detect_wheelchair(full_text)
     langs = detect_languages(full_text)
-    result["languages_spoken"]     = langs if langs else None
+    result["languages_spoken"]      = langs if langs else None
 
-    # Jumuah: try homepage first, then dedicated friday sub-page
+    # Jumuah: try homepage first, then any fetched subpages
     sessions = extract_jumuah_sessions(homepage_html)
     if not sessions:
-        for path in ["/friday", "/jumuah", "/friday-prayer", "/prayer-times"]:
-            sub = _fetch(client, urljoin(url, path))
-            if sub:
-                sessions = extract_jumuah_sessions(sub)
-                if sessions:
-                    break
+        for sub_html in subpage_htmls:
+            sessions = extract_jumuah_sessions(sub_html)
+            if sessions:
+                break
     result["jumuah_sessions"] = sessions
 
     return result
@@ -342,17 +394,16 @@ def save_mosque_info(conn, mosque_id: str, info: dict, dry_run: bool) -> None:
                 INSERT INTO jumuah_sessions
                     (id, mosque_id, valid_date, session_number,
                      khutba_start, prayer_start, language, imam_name,
-                     booking_required, created_at, updated_at)
+                     booking_required, created_at)
                 VALUES
                     (gen_random_uuid(), CAST(:mosque_id AS uuid), :valid_date, :session_number,
                      :khutba_start, :prayer_start, :language, :imam_name,
-                     false, NOW(), NOW())
+                     false, NOW())
                 ON CONFLICT (mosque_id, valid_date, session_number) DO UPDATE SET
                     khutba_start = EXCLUDED.khutba_start,
                     prayer_start = EXCLUDED.prayer_start,
                     language     = EXCLUDED.language,
-                    imam_name    = EXCLUDED.imam_name,
-                    updated_at   = NOW()
+                    imam_name    = EXCLUDED.imam_name
             """), {
                 "mosque_id":      mosque_id,
                 "valid_date":     friday.isoformat(),

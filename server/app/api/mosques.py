@@ -64,6 +64,7 @@ async def get_nearby_mosques(
             client_timezone=request.client_timezone,
             current_time=current_time,
             travel_mode=request.travel_mode,
+            prayed_prayers=set(request.prayed_prayers),
         )
     except Exception as exc:
         logger.error(

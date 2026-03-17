@@ -13,6 +13,7 @@ class NearbyRequest(BaseModel):
     travel_mode: bool = False
     travel_destination_lat: Optional[float] = None
     travel_destination_lng: Optional[float] = None
+    prayed_prayers: list[str] = []  # prayers already performed today (pair-level in Musafir mode)
 
 
 class PrayerTime(BaseModel):
@@ -163,6 +164,8 @@ class TravelPlanRequest(BaseModel):
     departure_time: Optional[str] = None       # ISO 8601; None = now
     timezone: str = "UTC"
     trip_mode: str = "travel"                  # "travel" (combining allowed) or "driving" (single prayers only)
+    waypoints: list[dict] = []                 # [{lat, lng, name}] intermediate stops in order
+    prayed_prayers: list[str] = []             # prayers already performed today — excluded from plan
 
 class TravelStop(BaseModel):
     mosque_id: str

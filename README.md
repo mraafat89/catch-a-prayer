@@ -1,8 +1,8 @@
 # Catch a Prayer
 
-Find nearby mosques and never miss a prayer again. Shows whether you can catch a prayer with the Imam, pray solo, or need to find a nearby clean location — with real travel times and full source transparency.
+Find nearby mosques and never miss a prayer — especially when traveling. Shows whether you can catch a prayer with the Imam, pray solo, or combine prayers as a Musafir (traveler), with real travel times and full source transparency.
 
-Designed for US and Canada. Mobile-first PWA.
+Designed for US and Canada. Mobile-first — runs as a native iOS/Android app via Capacitor.
 
 ---
 
@@ -16,12 +16,20 @@ Designed for US and Canada. Mobile-first PWA.
 
 ### Travel Mode (Musafir / Muqeem)
 - **Muqeem mode** (resident): Individual prayer stops, no combining — teal header
-- **Musafir mode** (traveler): Prayer combining enabled — indigo header. Dhuhr+Asr and Maghrib+Isha tracked as pairs (Jam' Taqdeem / Ta'kheer)
+- **Musafir mode** (traveler): Prayer combining enabled — indigo header. Dhuhr+Asr and Maghrib+Isha tracked as pairs
+- **Smart Jam' display**: Only the first unresolved pair shown at a time (no Maghrib+Isha at 8 AM)
+  - Before Asr adhan → **Jam' Taqdeem — Combine Early** only (pray both at Dhuhr time)
+  - After Asr adhan → **Jam' Ta'kheer — Combine Late** only (Dhuhr is not missed, pray both at Asr time)
+  - Same logic applies for Maghrib + Isha
 - **Route-based trip planner**: Set a destination and get a complete prayer itinerary for the entire journey
-- **Complete trip itineraries**: 3–5 full plans covering every prayer along the route
+- **Complete trip itineraries**: 3–5 full plans covering every prayer along the route, with human-friendly detour durations
 - **Pair-aware "have you prayed?" banner**: In Musafir mode asks about pairs, not individual prayers
 - **Color-coded mode indicator**: Teal header = Muqeem, Indigo header = Musafir — visible at a glance
-- **Segmented flip control**: Switch modes directly from the top bar
+
+### Mobile App (Capacitor)
+- Installable on iPhone and Android as a native app via Capacitor
+- Location permissions, app icon, and splash screen configured
+- iOS HTTP transport and viewport zoom-prevention configured for native feel
 
 ### Mosque Discovery
 - 2,400+ US/Canada mosques (OpenStreetMap + Hartford Institute + MosqueList)
@@ -82,6 +90,24 @@ cd server
 # Monitor in a second terminal
 ./monitor_scraping.sh watch
 ./monitor_scraping.sh tail
+```
+
+### Scheduled production refresh
+
+```bash
+# Requeue stale mosque data then run the scraping loop (add to crontab on VPS)
+# Prayer times refresh — every Tuesday at 2 AM
+0 2 * * 2 /app/server/run_weekly_update.sh >> /app/server/logs/weekly_update.log 2>&1
+
+# Monthly mosque discovery — 1st of every month at 3 AM
+0 3 1 * * /app/server/run_weekly_update.sh --new-mosques >> /app/server/logs/monthly_seed.log 2>&1
+```
+
+Manual requeue:
+```bash
+python -m pipeline.requeue_stale --days 30 --jumuah-days 7   # mark stale jobs pending
+python -m pipeline.requeue_stale --dry-run                    # preview counts only
+python -m pipeline.requeue_stale --new-mosques                # also re-seed from OSM
 ```
 
 ---
@@ -189,9 +215,15 @@ The app implements Jam' (prayer combination) rules for travelers per [ISLAMIC_PR
 | Mode | Behavior |
 |---|---|
 | **Muqeem** | Each prayer planned independently in its own time window. No combining. |
-| **Musafir** | Dhuhr+Asr and Maghrib+Isha tracked as pairs. Jam' Taqdeem (early) or Ta'kheer (late) combining options shown. |
+| **Musafir** | Dhuhr+Asr and Maghrib+Isha tracked as pairs. Jam' Taqdeem or Ta'kheer shown based on current time. |
 
-Key rules: combined window extends to end of second prayer's period (Dhuhr not missed at Asr adhan for Musafir) • Trip planner orders prayers chronologically from departure time • Fajr is always standalone.
+**Combining display rules:**
+- Only the **first unresolved pair** is shown (Dhuhr+Asr before Maghrib+Isha)
+- **Before Asr adhan**: Jam' Taqdeem — Combine Early only. If before Dhuhr too, describes the plan without implying "now"
+- **After Asr adhan**: Jam' Ta'kheer — Combine Late only. Dhuhr is not missed as a Musafir — can still be prayed with Asr
+- Both options are never shown simultaneously — the window determines which applies
+- Fajr is always standalone (no combining)
+- Combined window extends to end of second prayer's period • Trip planner orders prayers chronologically from departure time
 
 ---
 

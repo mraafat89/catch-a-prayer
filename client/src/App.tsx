@@ -1,5 +1,5 @@
-import React, { useEffect, useRef, useState } from 'react';
-import MapView from './components/MapView';
+import React, { useEffect, useRef, useState, Suspense, lazy } from 'react';
+// MapView is lazy-loaded to defer Leaflet initialization until after mount (fixes iOS/WKWebView startup crash)
 import { apiService } from './services/api';
 import { useStore, SESSION_ID } from './store';
 import {
@@ -9,6 +9,8 @@ import {
   TravelPlan, TravelPairPlan, TravelOption, TravelDestination, TravelStop, GeocodeSuggestion,
   TripItinerary, PairChoice,
 } from './types';
+
+const MapView = lazy(() => import('./components/MapView'));
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -67,6 +69,21 @@ function fmtTime(t: string | null): string {
   } catch {
     return t;
   }
+}
+
+function fmtDuration(minutes: number): string {
+  const m = Math.max(0, Math.round(minutes));
+  const days  = Math.floor(m / (24 * 60));
+  const hours = Math.floor((m % (24 * 60)) / 60);
+  const mins  = m % 60;
+  if (days > 0) {
+    const parts = [`${days} day${days > 1 ? 's' : ''}`];
+    if (hours) parts.push(`${hours}h`);
+    if (mins)  parts.push(`${mins}min`);
+    return parts.join(' ');
+  }
+  if (hours > 0) return mins ? `${hours}h ${mins}min` : `${hours}h`;
+  return `${mins}min`;
 }
 
 const WEBSITE_SOURCES = new Set([
@@ -335,7 +352,7 @@ function MosqueCard({ mosque }: { mosque: Mosque }) {
                     <p className="text-xs font-semibold text-blue-800">{pair.label.split(' + ')[0]} is not missed ✓</p>
                     <p className="text-xs text-blue-700">{takheer!.description}</p>
                     <span className="inline-block text-xs bg-blue-50 text-blue-700 border border-blue-200 px-1.5 py-0.5 rounded-full">
-                      Jam' Ta'kheer
+                      Jam' Ta'kheer — Combine Late
                     </span>
                   </div>
                 )}
@@ -345,7 +362,7 @@ function MosqueCard({ mosque }: { mosque: Mosque }) {
                   <div className={`bg-white rounded-lg border border-green-200 px-2.5 py-2 space-y-1 ${takheer ? 'mb-1.5' : ''}`}>
                     <p className="text-xs text-green-800">{taqdeem.description}</p>
                     <span className="inline-block text-xs bg-green-50 text-green-700 border border-green-200 px-1.5 py-0.5 rounded-full">
-                      Jam' Taqdeem — pray now
+                      Jam' Taqdeem — Combine Early
                     </span>
                   </div>
                 )}
@@ -355,7 +372,7 @@ function MosqueCard({ mosque }: { mosque: Mosque }) {
                   <div className="bg-white rounded-lg border border-blue-100 px-2.5 py-2 space-y-1">
                     <p className="text-xs text-blue-700">{takheer.description}</p>
                     <span className="inline-block text-xs bg-blue-50 text-blue-600 border border-blue-200 px-1.5 py-0.5 rounded-full">
-                      Jam' Ta'kheer — or wait
+                      Jam' Ta'kheer — Combine Late
                     </span>
                   </div>
                 )}
@@ -457,7 +474,7 @@ function MosqueDetailSheet({ mosque }: { mosque: Mosque }) {
   // When nc is already prayed, find the next future prayer from the table
   const nowMin = new Date().getHours() * 60 + new Date().getMinutes();
   const nextFromTable = isNcPrayed
-    ? mosque.prayers.find(p => {
+    ? (mosque.prayers ?? []).find(p => {
         if (!p.adhan_time) return false;
         const [h, m] = p.adhan_time.split(':').map(Number);
         return h * 60 + m > nowMin;
@@ -1307,7 +1324,8 @@ function GeoInput({
           placeholder={placeholder}
           value={value}
           onChange={(e) => onChange(e.target.value)}
-          className="flex-1 text-sm outline-none bg-transparent text-gray-800 placeholder-gray-400 min-w-0"
+          className="flex-1 outline-none bg-transparent text-gray-800 placeholder-gray-400 min-w-0"
+          style={{ fontSize: 16 }}
         />
         {loading && <span className="text-xs text-gray-300">…</span>}
         {onClear && !loading && (
@@ -1759,7 +1777,7 @@ function TravelItineraryCard({ itinerary, index }: { itinerary: TripItinerary; i
           </div>
           <div className="text-right shrink-0">
             {itinerary.total_detour_minutes > 0 && (
-              <p className="text-xs text-gray-500">+{itinerary.total_detour_minutes} min</p>
+              <p className="text-xs text-gray-500">+{fmtDuration(itinerary.total_detour_minutes)} detour</p>
             )}
             <p className="text-xs text-gray-400 mt-0.5">{expanded ? '▲' : '▼'}</p>
           </div>
@@ -1773,22 +1791,22 @@ function TravelItineraryCard({ itinerary, index }: { itinerary: TripItinerary; i
             return (
               <div key={i}>
                 {/* Prayer pair header */}
-                <div className="flex items-center gap-1.5 mb-1">
-                  <span className="text-sm">{pc.emoji}</span>
-                  <span className="text-xs font-semibold text-gray-700">{pc.label}</span>
+                <div className="flex items-center gap-1.5 mb-1 min-w-0 overflow-hidden">
+                  <span className="text-sm flex-shrink-0">{pc.emoji}</span>
+                  <span className="text-xs font-semibold text-gray-700 truncate">{pc.label}</span>
                   {pc.option.combination_label && (
-                    <span className="text-xs bg-teal-50 text-teal-700 border border-teal-200 px-1.5 py-0.5 rounded-full">
+                    <span className="text-xs bg-teal-50 text-teal-700 border border-teal-200 px-1.5 py-0.5 rounded-full flex-shrink-0">
                       {pc.option.combination_label}
                     </span>
                   )}
                 </div>
                 {/* Description */}
-                <p className="text-xs text-gray-500 mb-1">{icon} {pc.option.description}</p>
+                <p className="text-xs text-gray-500 mb-1 break-words">{icon} {pc.option.description}</p>
                 {/* Mosque stops — tappable */}
                 {pc.option.stops.map((stop: TravelStop, j: number) => (
                   <button
                     key={j}
-                    className="w-full text-left text-xs bg-gray-50 rounded-lg px-2.5 py-1.5 mt-1 border border-gray-100 hover:border-teal-300 hover:bg-teal-50 transition-colors"
+                    className="w-full text-left text-xs bg-gray-50 rounded-lg px-2.5 py-1.5 mt-1 border border-gray-100 hover:border-teal-300 hover:bg-teal-50 transition-colors overflow-hidden"
                     onClick={() => {
                       setSelectedMosqueId(stop.mosque_id);
                       setMapFocusCoords({ lat: stop.mosque_lat, lng: stop.mosque_lng });
@@ -1798,7 +1816,7 @@ function TravelItineraryCard({ itinerary, index }: { itinerary: TripItinerary; i
                     <span className="font-medium text-gray-800">{stop.mosque_name}</span>
                     {stop.mosque_address ? <span className="text-gray-500"> · {stop.mosque_address}</span> : null}
                     {stop.iqama_time ? <span className="text-gray-600"> · Iqama {fmtTime(stop.iqama_time)}</span> : null}
-                    <span className="ml-1 text-teal-600"> +{stop.detour_minutes} min detour 📍</span>
+                    <span className="ml-1 text-teal-600"> +{fmtDuration(stop.detour_minutes)} detour 📍</span>
                   </button>
                 ))}
                 {pc.option.note && (
@@ -2055,7 +2073,9 @@ function App() {
     console.log('[fetchData] lat:', lat, 'lng:', lng, 'radius:', radiusKm, 'travel:', travelModeStore);
     try {
       const res = await apiService.findNearbyMosques(lat, lng, radiusKm, travelModeStore);
-      console.log('[fetchData] response:', res);
+      if (!res || !Array.isArray(res.mosques)) {
+        throw new Error('Invalid response from server — is REACT_APP_API_URL set?');
+      }
       let filtered = res.mosques;
       if (denominationFilter !== 'all') {
         filtered = filtered.filter(
@@ -2093,7 +2113,7 @@ function App() {
   );
 
   return (
-    <div className="min-h-screen bg-slate-50 flex flex-col">
+    <div className="min-h-screen bg-slate-50 flex flex-col overflow-x-hidden">
       {/* Header */}
       <header className={`px-4 py-0 flex items-stretch justify-between z-10 shadow-md transition-colors duration-300 ${travelModeStore ? 'bg-gradient-to-r from-indigo-700 to-indigo-600' : 'bg-gradient-to-r from-teal-700 to-teal-600'}`} style={{ minHeight: '52px' }}>
         {/* Left: logo + title */}
@@ -2138,12 +2158,14 @@ function App() {
         </div>
       </header>
 
-      {/* Map */}
+      {/* Map — outer wrapper clips height; inner keeps 40vh so Leaflet never sees a zero-size container */}
       <div
-        className="relative isolate bg-slate-200 transition-all duration-300"
+        className="transition-all duration-300 overflow-hidden"
         style={{ height: mapCollapsed ? '0' : '40vh' }}
       >
-        {!mapCollapsed && <MapView />}
+        <div className="relative isolate bg-slate-200 overflow-hidden" style={{ height: '40vh' }}>
+          <Suspense fallback={<div className="h-full bg-slate-100" />}><MapView /></Suspense>
+        </div>
       </div>
 
       {/* Map toggle */}
@@ -2158,7 +2180,7 @@ function App() {
       </div>
 
       {/* Scrollable list */}
-      <div className="flex-1 overflow-y-auto px-3 pt-4 pb-24 space-y-4">
+      <div className="flex-1 overflow-y-auto overflow-x-hidden px-3 pt-4 pb-24 space-y-4">
 
         {/* Trip planner — always shown (collapsed by default) */}
         <DestinationInput />
