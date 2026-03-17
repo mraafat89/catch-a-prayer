@@ -105,11 +105,10 @@ interface MapPoint {
 function buildGoogleMapsUrl(points: MapPoint[]): string {
   // Use the directions URL format: /maps/dir/origin/.../destination
   // Empty first segment when origin is GPS — Google uses current device location
-  // With Google Place IDs where available: "place_id:ChIJ..."
+  // Use place_id when available; fall back to coords (most reliable — never fails to resolve)
   const segments = points.map(p => {
     if (p.is_gps) return '';
     if (p.place_id) return `place_id:${p.place_id}`;
-    if (p.name) return encodeURIComponent(p.name);
     return `${p.lat},${p.lng}`;
   });
   return 'https://www.google.com/maps/dir/' + segments.join('/');
