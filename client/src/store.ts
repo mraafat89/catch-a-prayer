@@ -101,6 +101,8 @@ interface AppState {
   // UI
   mapCollapsed: boolean;
   setMapCollapsed: (v: boolean) => void;
+  bottomSheetHeight: 'peek' | 'half' | 'full';
+  setBottomSheetHeight: (h: 'peek' | 'half' | 'full') => void;
   selectedItineraryIndex: number | null;
   setSelectedItineraryIndex: (i: number | null) => void;
   selectedMosqueId: string | null;
@@ -177,6 +179,8 @@ export const useStore = create<AppState>((set) => ({
 
   mapCollapsed: false,
   setMapCollapsed: (mapCollapsed) => set({ mapCollapsed }),
+  bottomSheetHeight: 'half',
+  setBottomSheetHeight: (bottomSheetHeight) => set({ bottomSheetHeight }),
   selectedItineraryIndex: null,
   setSelectedItineraryIndex: (selectedItineraryIndex) => set({ selectedItineraryIndex }),
   selectedMosqueId: null,

@@ -1,4 +1,4 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useState } from 'react';
 import L from 'leaflet';
 import { MapContainer, TileLayer, Marker, CircleMarker, Polyline, useMap, Tooltip } from 'react-leaflet';
 import { Mosque } from '../types';
@@ -132,6 +132,44 @@ function MapCenterer({ lat, lng }: { lat: number; lng: number }) {
   return null;
 }
 
+// ─── Location recenter button ─────────────────────────────────────────────────
+
+function LocationButton() {
+  const map          = useMap();
+  const userLocation = useStore((s) => s.userLocation);
+  const th           = useTheme();
+  const [inView, setInView] = useState(true);
+
+  useEffect(() => {
+    if (!userLocation) return;
+    function check() {
+      const bounds = map.getBounds();
+      setInView(bounds.contains([userLocation!.latitude, userLocation!.longitude]));
+    }
+    check();
+    map.on('moveend', check);
+    return () => { map.off('moveend', check); };
+  }, [map, userLocation]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  if (!userLocation) return null;
+
+  return (
+    <div className="leaflet-bottom leaflet-right" style={{ marginBottom: '108px', marginRight: '12px' }}>
+      <div className="leaflet-control">
+        <button
+          onClick={() => map.flyTo([userLocation.latitude, userLocation.longitude], Math.max(map.getZoom(), 14), { animate: true, duration: 0.8 })}
+          title="Go to my location"
+          style={{ background: 'rgba(255,255,255,0.95)', backdropFilter: 'blur(8px)', border: 'none', borderRadius: '12px', width: '40px', height: '40px', boxShadow: '0 2px 8px rgba(0,0,0,0.2)', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer' }}
+        >
+          <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill={inView ? '#9ca3af' : th.hex}>
+            <path d="M12 2L4.5 20.29l.71.71L12 18l6.79 3 .71-.71z"/>
+          </svg>
+        </button>
+      </div>
+    </div>
+  );
+}
+
 // ─── MapView ──────────────────────────────────────────────────────────────────
 
 const MapView: React.FC = () => {
@@ -204,7 +242,7 @@ const MapView: React.FC = () => {
       center={center}
       zoom={13}
       style={{ height: '100%', width: '100%' }}
-      zoomControl={true}
+      zoomControl={false}
     >
       <TileLayer
         attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>'
@@ -212,6 +250,7 @@ const MapView: React.FC = () => {
       />
 
       <FitBoundsController />
+      <LocationButton />
 
       {/* Route polyline */}
       {routeGeometry && routeGeometry.length > 1 && (
@@ -302,8 +341,8 @@ const MapView: React.FC = () => {
           center={[spot.location.latitude, spot.location.longitude]}
           radius={6}
           pathOptions={{
-            color: '#ea580c',
-            fillColor: '#fed7aa',
+            color: th.hex,
+            fillColor: th.hexLight,
             fillOpacity: 0.85,
             weight: 2,
             dashArray: '4 2',
