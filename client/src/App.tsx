@@ -1134,7 +1134,7 @@ function SettingsSheet() {
           <button
             onClick={() => setShowSpots(!showSpots)}
             className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors flex-shrink-0 ml-3 ${
-              showSpots ? 'bg-green-600' : 'bg-gray-300'
+              showSpots ? th.bg : 'bg-gray-300'
             }`}
           >
             <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
