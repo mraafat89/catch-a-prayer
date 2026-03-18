@@ -105,9 +105,9 @@ function FitBoundsController() {
     map.flyTo(map.unproject(p.subtract([0, offset]), zoom), zoom, { animate: true, duration: 0.8 });
   }, [travelDestination]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // 3) Trip: fit to origin + destination (+ all route stops if plan is loaded)
+  // 3) Trip: fit to origin + destination + stops when plan loads
   useEffect(() => {
-    if (!travelDestination) return;
+    if (!travelDestination || !travelPlan) return;
 
     const points: [number, number][] = [];
 

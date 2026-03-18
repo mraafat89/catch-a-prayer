@@ -1659,12 +1659,19 @@ function DestinationInput() {
     if (!travelDestination) return;
     const originLat = travelOrigin?.lat ?? userLocation?.latitude;
     const originLng = travelOrigin?.lng ?? userLocation?.longitude;
-    if (!originLat || !originLng) return;
+    if (!originLat || !originLng) {
+      // No GPS yet — open edit form so user can type their origin
+      setEditMode(true);
+      useStore.getState().setTripPlannerOpen(true);
+      return;
+    }
 
-    // Long-trip check: >160 km (~100 miles) in Muqeem mode → prompt
+    // Long-trip check: >160 km (~100 miles) in Muqeem mode → show prompt in edit form
     const distKm = haversineKm(originLat, originLng, travelDestination.lat, travelDestination.lng);
     if (distKm > 160 && !travelModeStore) {
       setLongTripKm(Math.round(distKm));
+      setEditMode(true);
+      useStore.getState().setTripPlannerOpen(true);
       return;
     }
 
@@ -1677,7 +1684,7 @@ function DestinationInput() {
       <div className="pt-3 pl-3 pb-3 pointer-events-auto" style={{ paddingRight: '220px' }}>
         <button
           onClick={() => { setSearchMode(true); useStore.getState().setTripPlannerOpen(true); }}
-          className="w-full flex items-center bg-white/95 backdrop-blur-sm rounded-2xl shadow-lg px-4 py-3.5 text-left"
+          className="w-full flex items-center h-12 bg-white/95 backdrop-blur-sm rounded-2xl shadow-lg px-4 text-left"
         >
           <span className="text-gray-400 text-sm font-medium">Where to?</span>
         </button>
@@ -1690,7 +1697,7 @@ function DestinationInput() {
     return (
       <div className="pt-3 pl-3 pb-3 pointer-events-auto" style={{ paddingRight: '220px' }}>
         <div className="relative">
-          <div className="flex items-center bg-white/95 backdrop-blur-sm rounded-2xl shadow-lg px-3 gap-2" style={{ minHeight: '52px' }}>
+          <div className="flex items-center h-12 bg-white/95 backdrop-blur-sm rounded-2xl shadow-lg px-3 gap-2">
             <button
               onClick={() => setSearchMode(false)}
               className="w-8 h-8 flex items-center justify-center rounded-full hover:bg-gray-100 text-gray-500 flex-shrink-0"
@@ -1703,7 +1710,7 @@ function DestinationInput() {
               placeholder="Where to?"
               value={destQuery}
               onChange={(e) => { setDestQuery(e.target.value); debounceGeocode(e.target.value, destDebounce, setDestLoading, setDestSugg); }}
-              className="flex-1 outline-none bg-transparent text-gray-800 placeholder-gray-400 min-w-0 py-3.5"
+              className="flex-1 outline-none bg-transparent text-gray-800 placeholder-gray-400 min-w-0"
               style={{ fontSize: 16 }}
             />
             {destLoading && <span className="text-xs text-gray-300 flex-shrink-0">…</span>}
@@ -1742,10 +1749,10 @@ function DestinationInput() {
     return (
       <>
         <div className="pt-3 pl-3 pb-3 pointer-events-auto" style={{ paddingRight: '220px' }}>
-          <div className="flex items-center bg-white/95 backdrop-blur-sm rounded-2xl shadow-lg px-4 gap-3" style={{ minHeight: '52px' }}>
+          <div className="flex items-center h-12 bg-white/95 backdrop-blur-sm rounded-2xl shadow-lg px-4 gap-3">
             <button
               onClick={() => setSearchMode(true)}
-              className="flex-1 min-w-0 text-left py-3.5"
+              className="flex-1 min-w-0 text-left h-full flex items-center"
             >
               <span className="text-sm font-medium text-gray-800 truncate block">{travelDestination.place_name}</span>
             </button>
@@ -1767,7 +1774,7 @@ function DestinationInput() {
             disabled={travelPlanLoading}
             className={`px-8 py-3 rounded-2xl text-sm font-semibold text-white shadow-lg active:scale-95 transition-transform disabled:opacity-60 ${th.bg} ${th.bgHover}`}
           >
-            {travelPlanLoading ? 'Planning…' : 'Plan a Trip'}
+            {travelPlanLoading ? 'Finding prayer stops…' : 'Pray on Route'}
           </button>
         </div>
       </>
@@ -1781,7 +1788,7 @@ function DestinationInput() {
       <div className="pt-3 pl-3 pb-3 pointer-events-auto" style={{ paddingRight: '220px' }}>
         <div
           onClick={() => { setEditMode(true); useStore.getState().setTripPlannerOpen(true); }}
-          className="flex items-center gap-3 bg-white/95 backdrop-blur-sm rounded-2xl shadow-lg px-4 py-3 cursor-pointer"
+          className="flex items-center gap-3 bg-white/95 backdrop-blur-sm rounded-2xl shadow-lg px-4 h-12 cursor-pointer"
         >
           <div className={`w-2 h-2 rounded-full flex-shrink-0 ${th.bg}`} />
           <div className="flex-1 min-w-0">
@@ -2180,10 +2187,10 @@ function ModeToggle() {
   const setTravelMode = useStore((s) => s.setTravelMode);
   const th            = useTheme();
   return (
-    <div className="flex bg-white/95 backdrop-blur-sm rounded-xl shadow-lg overflow-hidden border border-gray-200 flex-shrink-0">
+    <div className="flex h-12 bg-white/95 backdrop-blur-sm rounded-xl shadow-lg overflow-hidden border border-gray-200 flex-shrink-0">
       <button
         onClick={() => setTravelMode(false)}
-        className={`px-3 py-3 text-xs font-semibold transition-colors ${
+        className={`px-3 h-full text-xs font-semibold transition-colors ${
           !travelMode ? `${th.bg} text-white` : 'text-gray-500'
         }`}
       >
@@ -2192,7 +2199,7 @@ function ModeToggle() {
       <div className="w-px bg-gray-200 self-stretch" />
       <button
         onClick={() => setTravelMode(true)}
-        className={`px-3 py-3 text-xs font-semibold transition-colors ${
+        className={`px-3 h-full text-xs font-semibold transition-colors ${
           travelMode ? `${th.bg} text-white` : 'text-gray-500'
         }`}
       >
@@ -2456,6 +2463,11 @@ function App() {
   const travelModeStore = useStore((s) => s.travelMode);
   const travelDestination = useStore((s) => s.travelDestination);
   const setTravelPlan = useStore((s) => s.setTravelPlan);
+
+  // Initialize --sheet-visible immediately so LocationButton is positioned correctly on first render
+  useEffect(() => {
+    document.documentElement.style.setProperty('--sheet-visible', '125px');
+  }, []);
 
   // Measure the top overlay height and expose as CSS var so the bottom sheet
   // always starts exactly below the search bar (accounting for safe area + Dynamic Island)
