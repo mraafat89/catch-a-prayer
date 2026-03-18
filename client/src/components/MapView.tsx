@@ -93,6 +93,18 @@ function FitBoundsController() {
     map.fitBounds(bounds, { padding: [60, 60], animate: true });
   }, [selectedItineraryIndex]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // 2) Destination preview: fly to destination when selected (before plan loads)
+  useEffect(() => {
+    if (!travelDestination || travelPlan) return;
+    const zoom = 14;
+    const sheetVisible = parseFloat(
+      getComputedStyle(document.documentElement).getPropertyValue('--sheet-visible')
+    ) || 80;
+    const offset = sheetVisible / 2;
+    const p = map.project([travelDestination.lat, travelDestination.lng], zoom);
+    map.flyTo(map.unproject(p.subtract([0, offset]), zoom), zoom, { animate: true, duration: 0.8 });
+  }, [travelDestination]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // 3) Trip: fit to origin + destination (+ all route stops if plan is loaded)
   useEffect(() => {
     if (!travelDestination) return;
@@ -270,10 +282,8 @@ const MapView: React.FC = () => {
     : travelPlan?.route?.route_geometry ?? null;
 
   // Theme-colored icons (created per-render so they pick up mode changes)
-  // Labels: A = origin, B/C/D... = waypoints, last = destination
-  const originIcon      = createEndpointIcon('A', th.hex);
-  const destinationLabel = String.fromCharCode(66 + tripWaypoints.length); // B if no waypoints, C if 1, etc.
-  const destinationIcon = createEndpointIcon(destinationLabel, '#dc2626');
+  const originIcon      = createPinIcon(th.hex, false);
+  const destinationIcon = createPinIcon('#dc2626', false);
 
   // Nearby mosques that are NOT already shown as route stops (avoid duplicate pins)
   const routeStopIds = new Set(routeStops.map((s) => s.id));
@@ -324,21 +334,21 @@ const MapView: React.FC = () => {
       {/* Origin pin — only when a custom origin is set (not using GPS) */}
       {travelOrigin && (
         <Marker position={[travelOrigin.lat, travelOrigin.lng]} icon={originIcon}>
-          <Tooltip permanent direction="top" offset={[0, -18]} opacity={0.95}>
+          <Tooltip permanent direction="top" offset={[0, -30]} opacity={0.95}>
             <span className="text-xs font-semibold">From: {travelOrigin.place_name}</span>
           </Tooltip>
         </Marker>
       )}
 
-      {/* Waypoint pins (B, C, D...) */}
+      {/* Waypoint pins (A, B, C...) */}
       {tripWaypoints.map((wp, i) => (
         <Marker
           key={`wp-${i}`}
           position={[wp.lat, wp.lng]}
-          icon={createEndpointIcon(String.fromCharCode(66 + i), '#64748b')}
+          icon={createEndpointIcon(String.fromCharCode(65 + i), '#64748b')}
         >
           <Tooltip permanent direction="top" offset={[0, -18]} opacity={0.95}>
-            <span className="text-xs font-semibold">{String.fromCharCode(66 + i)}: {wp.place_name}</span>
+            <span className="text-xs font-semibold">{String.fromCharCode(65 + i)}: {wp.place_name}</span>
           </Tooltip>
         </Marker>
       ))}
@@ -346,8 +356,8 @@ const MapView: React.FC = () => {
       {/* Destination pin */}
       {travelDestination && (
         <Marker position={[travelDestination.lat, travelDestination.lng]} icon={destinationIcon}>
-          <Tooltip permanent direction="top" offset={[0, -18]} opacity={0.95}>
-            <span className="text-xs font-semibold">{destinationLabel}: {travelDestination.place_name}</span>
+          <Tooltip permanent direction="top" offset={[0, -30]} opacity={0.95}>
+            <span className="text-xs font-semibold">{travelDestination.place_name}</span>
           </Tooltip>
         </Marker>
       )}
@@ -361,7 +371,7 @@ const MapView: React.FC = () => {
           zIndexOffset={500}
         >
           <Tooltip permanent direction="top" offset={[0, -24]} opacity={0.95}>
-            <span className={`text-xs font-semibold ${th.text}`}>🕌 {stop.name}</span>
+            <span className={`text-xs font-semibold ${th.text}`}>{stop.name}</span>
           </Tooltip>
         </Marker>
       ))}

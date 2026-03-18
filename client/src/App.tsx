@@ -1373,7 +1373,7 @@ function SettingsButton() {
   return (
     <button
       onClick={() => openSheet({ type: 'settings' })}
-      className="w-11 h-11 flex items-center justify-center bg-white/95 backdrop-blur-sm rounded-xl shadow-lg flex-shrink-0"
+      className="h-12 px-3 flex items-center justify-center bg-white/95 backdrop-blur-sm rounded-xl shadow-lg flex-shrink-0"
       aria-label="Settings"
     >
       <svg xmlns="http://www.w3.org/2000/svg" className="w-5 h-5 text-gray-600" viewBox="0 0 24 24" fill="currentColor">
@@ -1419,11 +1419,11 @@ function GeoInput({
         )}
       </div>
       {suggestions.length > 0 && (
-        <div className="absolute z-50 top-full left-0 right-0 mt-0.5 bg-white border border-gray-200 rounded-lg shadow-lg overflow-hidden">
+        <div className="absolute z-50 top-full left-0 right-0 mt-1 bg-white border border-gray-100 rounded-xl shadow-xl overflow-hidden">
           {suggestions.map((s, i) => (
             <button key={i} onClick={() => onSelect(s)}
-              className={`w-full text-left px-3 py-2 text-xs text-gray-700 border-b border-gray-100 last:border-0 truncate ${th.bgHoverLight}`}>
-              <span className="text-gray-400 mr-1">📍</span>{s.place_name}
+              className={`w-full text-left px-4 py-3 text-sm text-gray-800 border-b border-gray-50 last:border-0 truncate hover:bg-gray-50`}>
+              {s.place_name}
             </button>
           ))}
         </div>
@@ -1471,8 +1471,9 @@ function DestinationInput() {
   const [waypointRows, setWaypointRows] = useState<WaypointRow[]>([]);
   const wpDebounces = useRef<Array<ReturnType<typeof setTimeout> | null>>([]);
 
-  // Whether the trip planner form is expanded (starts collapsed unless a destination/plan exists)
-  const [formExpanded, setFormExpanded] = useState(() => !!travelDestination);
+  // State machine: searchMode = destination autocomplete open, editMode = from/to/stops form open
+  const [searchMode, setSearchMode] = useState(false);
+  const [editMode, setEditMode] = useState(false);
 
   // Default departure time = right now in local time (datetime-local needs YYYY-MM-DDTHH:mm)
   const defaultDeparture = (() => {
@@ -1502,7 +1503,7 @@ function DestinationInput() {
     apiService.reverseGeocode(userLocation.latitude, userLocation.longitude)
       .then((label) => { if (label) setOriginQuery(label); })
       .catch(() => {});
-  }, [userLocation, formExpanded]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [userLocation, editMode]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Auto re-plan when prayed prayers change while a plan is active
   const prevPrayedRef = useRef<Set<string>>(prayedToday);
@@ -1589,8 +1590,8 @@ function DestinationInput() {
     setWaypointRows([]);
     wpDebounces.current = [];
     setDepartureInput(defaultDeparture);
-    setFormExpanded(false);
-    setChipExpanded(false);
+    setSearchMode(false);
+    setEditMode(false);
     setTripWaypoints([]);
     // Immediately hide bottom sheet off-screen state and update CSS var
     useStore.getState().setTripPlannerOpen(false);
@@ -1600,16 +1601,14 @@ function DestinationInput() {
     useStore.getState().setBottomSheetHeight('peek');
   }
 
-  const [chipExpanded, setChipExpanded] = useState(false);
   // Non-null = long-trip warning is showing; value = distance in km
   const [longTripKm, setLongTripKm] = useState<number | null>(null);
   const setTravelMode = useStore((s) => s.setTravelMode);
 
   // Sync form open state → store (hides bottom sheet while planning)
-  const isExpanded_ = formExpanded || chipExpanded;
   useEffect(() => {
-    setTripPlannerOpen(isExpanded_);
-  }, [isExpanded_]); // eslint-disable-line react-hooks/exhaustive-deps
+    setTripPlannerOpen(searchMode || editMode);
+  }, [searchMode, editMode]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Sync confirmed waypoints → store (for map pins)
   useEffect(() => {
@@ -1627,8 +1626,8 @@ function DestinationInput() {
     setTravelDepartureTime(depIso || null);
     setTravelPlanLoading(true);
     setTravelPlan(null);
-    setChipExpanded(false);
-    setFormExpanded(false);
+    setEditMode(false);
+    setSearchMode(false);
 
     // Build waypoints list from confirmed rows only
     const wps = waypointRows
@@ -1672,130 +1671,122 @@ function DestinationInput() {
     executePlan(tripMode);
   }
 
-  const originLabel = travelOrigin?.place_name ?? 'Current location';
-  const isExpanded = formExpanded || chipExpanded || (!travelDestination && formExpanded);
-
-  // EXPANDED form card
-  if (isExpanded) {
+  // STATE 1: Idle — no destination selected
+  if (!searchMode && !editMode && !travelDestination) {
     return (
-      <div className="p-3 pointer-events-auto">
-        <div className="bg-white/97 backdrop-blur rounded-2xl shadow-xl overflow-hidden">
-          {/* Form fields */}
-          <div className="px-3 pb-3 pt-3 space-y-2">
-            {/* Destination — appears first, matching "Where to?" pill */}
-            <div className="flex items-center gap-1" style={{ paddingRight: '200px' }}>
-              <button
-                onClick={clearAll}
-                className="w-8 h-8 flex items-center justify-center rounded-full hover:bg-gray-100 text-gray-500 transition-colors flex-shrink-0"
-              >
-                <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M15 18l-6-6 6-6"/></svg>
-              </button>
-              <div className="flex-1 min-w-0">
-                <GeoInput
-                  placeholder="Where to?"
-                  value={destQuery}
-                  onChange={(v) => { setDestQuery(v); debounceGeocode(v, destDebounce, setDestLoading, setDestSugg); }}
-                  suggestions={destSugg}
-                  onSelect={(s) => { setTravelDestination(s); setDestQuery(s.place_name); setDestSugg([]); }}
-                  loading={destLoading}
-                />
-              </div>
-            </div>
+      <div className="pt-3 pl-3 pb-3 pointer-events-auto" style={{ paddingRight: '220px' }}>
+        <button
+          onClick={() => { setSearchMode(true); useStore.getState().setTripPlannerOpen(true); }}
+          className="w-full flex items-center bg-white/95 backdrop-blur-sm rounded-2xl shadow-lg px-4 py-3.5 text-left"
+        >
+          <span className="text-gray-400 text-sm font-medium">Where to?</span>
+        </button>
+      </div>
+    );
+  }
 
-            {/* From */}
-            <GeoInput
-              placeholder="Current location"
-              icon="From:"
-              value={originQuery}
-              onChange={(v) => { setOriginQuery(v); debounceGeocode(v, originDebounce, setOriginLoading, setOriginSugg); }}
-              suggestions={originSugg}
-              onSelect={(s) => { setTravelOrigin(s); setOriginQuery(s.place_name); setOriginSugg([]); }}
-              loading={originLoading}
-              onClear={originQuery ? () => { setTravelOrigin(null); setOriginQuery(''); setOriginSugg([]); } : undefined}
+  // STATE 2: Destination search input
+  if (searchMode) {
+    return (
+      <div className="pt-3 pl-3 pb-3 pointer-events-auto" style={{ paddingRight: '220px' }}>
+        <div className="relative">
+          <div className="flex items-center bg-white/95 backdrop-blur-sm rounded-2xl shadow-lg px-3 gap-2" style={{ minHeight: '52px' }}>
+            <button
+              onClick={() => setSearchMode(false)}
+              className="w-8 h-8 flex items-center justify-center rounded-full hover:bg-gray-100 text-gray-500 flex-shrink-0"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M15 18l-6-6 6-6"/></svg>
+            </button>
+            <input
+              autoFocus
+              type="text"
+              placeholder="Where to?"
+              value={destQuery}
+              onChange={(e) => { setDestQuery(e.target.value); debounceGeocode(e.target.value, destDebounce, setDestLoading, setDestSugg); }}
+              className="flex-1 outline-none bg-transparent text-gray-800 placeholder-gray-400 min-w-0 py-3.5"
+              style={{ fontSize: 16 }}
             />
-
-            {/* Intermediate waypoints */}
-            {waypointRows.map((wp, i) => {
-              const letter = String.fromCharCode(65 + i); // A, B, C, D
-              return (
-                <div key={i} className="flex items-start gap-1">
-                  <div className="flex flex-col gap-0.5 pt-1.5">
-                    <button onClick={() => moveWaypoint(i, -1)} disabled={i === 0} className="text-gray-400 hover:text-gray-600 disabled:opacity-20 text-xs leading-none px-0.5">▲</button>
-                    <button onClick={() => moveWaypoint(i, 1)} disabled={i === waypointRows.length - 1} className="text-gray-400 hover:text-gray-600 disabled:opacity-20 text-xs leading-none px-0.5">▼</button>
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <GeoInput
-                      placeholder={`Stop ${letter}`}
-                      icon={`${letter}:`}
-                      value={wp.query}
-                      onChange={(v) => debounceGeocodeWp(i, v)}
-                      suggestions={wp.sugg}
-                      onSelect={(s) => setWaypointRows(rows => rows.map((r, ri) => ri === i ? { ...r, dest: s, query: s.place_name, sugg: [] } : r))}
-                      loading={wp.loading}
-                      onClear={() => setWaypointRows(rows => rows.map((r, ri) => ri === i ? { ...r, dest: null, query: '', sugg: [] } : r))}
-                    />
-                  </div>
-                  <button onClick={() => removeWaypoint(i)} className="text-gray-400 hover:text-red-500 text-base leading-none pt-2 px-1 flex-shrink-0">✕</button>
-                </div>
-              );
-            })}
-
-            {/* Add stop */}
-            {travelDestination && waypointRows.length < 4 && (
-              <button onClick={addWaypoint} className={`text-xs flex items-center gap-1 pl-1 ${th.textMid} ${th.textHoverDark}`}>
-                <span className="text-sm font-bold">+</span> Add stop
-              </button>
-            )}
-
-            {/* Departure time */}
-            <div className="flex items-center gap-2 bg-gray-50 border border-gray-200 rounded-lg px-2.5 py-1.5">
-              <input
-                type="datetime-local"
-                value={departureInput}
-                onChange={(e) => setDepartureInput(e.target.value)}
-                className="flex-1 text-sm outline-none bg-transparent text-gray-700 min-w-0"
-              />
-            </div>
-
-            {/* Long-trip suggestion */}
-            {longTripKm !== null && (
-              <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 space-y-2">
-                <p className="text-xs font-semibold text-amber-800">Long trip — ~{Math.round(longTripKm / 1.609)} mi</p>
-                <p className="text-xs text-amber-700">As Musafir you can combine prayers (Dhuhr+Asr, Maghrib+Isha).</p>
-                <div className="flex gap-2">
-                  <button onClick={() => { setTravelMode(true); executePlan('travel'); }} className={`flex-1 text-white text-xs font-semibold py-1.5 rounded-lg ${th.bg} ${th.bgHover}`}>✈️ Switch to Musafir</button>
-                  <button onClick={() => executePlan('driving')} className="flex-1 bg-white border border-gray-300 text-gray-600 text-xs font-semibold py-1.5 rounded-lg hover:bg-gray-50">Plan as Muqeem</button>
-                </div>
-              </div>
-            )}
-
-            {longTripKm === null && (
+            {destLoading && <span className="text-xs text-gray-300 flex-shrink-0">…</span>}
+            {destQuery && !destLoading && (
               <button
-                onClick={handlePlan}
-                disabled={!travelDestination || travelPlanLoading}
-                className={`w-full text-white text-sm font-semibold py-2.5 rounded-xl disabled:opacity-40 disabled:cursor-not-allowed transition-colors ${th.bg} ${th.bgHover}`}
-              >
-                {travelPlanLoading ? 'Planning…' : 'Plan My Prayers'}
-              </button>
+                onClick={() => { setDestQuery(''); setDestSugg([]); }}
+                className="flex-shrink-0 w-6 h-6 flex items-center justify-center rounded-full bg-gray-200 text-gray-500 text-sm leading-none"
+              >×</button>
             )}
           </div>
+          {destSugg.length > 0 && (
+            <div className="absolute top-full left-0 right-0 mt-1 bg-white border border-gray-100 rounded-2xl shadow-xl overflow-hidden z-50">
+              {destSugg.map((s, i) => (
+                <button key={i}
+                  onClick={() => {
+                    setTravelDestination(s);
+                    setDestQuery(s.place_name);
+                    setDestSugg([]);
+                    setSearchMode(false);
+                    useStore.getState().setTripPlannerOpen(false);
+                  }}
+                  className="w-full text-left px-4 py-3.5 text-sm text-gray-800 border-b border-gray-50 last:border-0 hover:bg-gray-50"
+                >
+                  <p className="font-medium truncate">{s.place_name}</p>
+                </button>
+              ))}
+            </div>
+          )}
         </div>
       </div>
     );
   }
 
-  // COLLAPSED — plan active chip
-  if (travelDestination && travelPlan) {
+  // STATE 3: Destination preview — show dest + "Plan a Trip" CTA
+  if (travelDestination && !travelPlan && !editMode) {
+    return (
+      <>
+        <div className="pt-3 pl-3 pb-3 pointer-events-auto" style={{ paddingRight: '220px' }}>
+          <div className="flex items-center bg-white/95 backdrop-blur-sm rounded-2xl shadow-lg px-4 gap-3" style={{ minHeight: '52px' }}>
+            <button
+              onClick={() => setSearchMode(true)}
+              className="flex-1 min-w-0 text-left py-3.5"
+            >
+              <span className="text-sm font-medium text-gray-800 truncate block">{travelDestination.place_name}</span>
+            </button>
+            <button
+              onClick={clearAll}
+              className="flex-shrink-0 text-gray-400 hover:text-gray-600 text-xl leading-none"
+            >✕</button>
+          </div>
+        </div>
+        {/* Plan a Trip CTA */}
+        <div className="flex justify-center pb-3 pointer-events-auto">
+          <button
+            onClick={() => {
+              setEditMode(false);
+              setSearchMode(false);
+              useStore.getState().setTripPlannerOpen(false);
+              handlePlan();
+            }}
+            disabled={travelPlanLoading}
+            className={`px-8 py-3 rounded-2xl text-sm font-semibold text-white shadow-lg active:scale-95 transition-transform disabled:opacity-60 ${th.bg} ${th.bgHover}`}
+          >
+            {travelPlanLoading ? 'Planning…' : 'Plan a Trip'}
+          </button>
+        </div>
+      </>
+    );
+  }
+
+  // STATE 4: Plan active chip — tap to edit, X to clear
+  if (travelPlan && !editMode) {
+    const originLabel = travelOrigin?.place_name ?? 'Current location';
     return (
       <div className="pt-3 pl-3 pb-3 pointer-events-auto" style={{ paddingRight: '220px' }}>
         <div
-          onClick={() => { setChipExpanded(true); useStore.getState().setTripPlannerOpen(true); }}
+          onClick={() => { setEditMode(true); useStore.getState().setTripPlannerOpen(true); }}
           className="flex items-center gap-3 bg-white/95 backdrop-blur-sm rounded-2xl shadow-lg px-4 py-3 cursor-pointer"
         >
           <div className={`w-2 h-2 rounded-full flex-shrink-0 ${th.bg}`} />
           <div className="flex-1 min-w-0">
             <p className="text-xs text-gray-500 truncate">{originLabel}</p>
-            <p className="text-sm font-semibold text-gray-800 truncate">{travelDestination.place_name}</p>
+            <p className="text-sm font-semibold text-gray-800 truncate">{travelDestination!.place_name}</p>
           </div>
           <button
             onClick={(e) => { e.stopPropagation(); clearAll(); }}
@@ -1806,15 +1797,115 @@ function DestinationInput() {
     );
   }
 
-  // COLLAPSED — idle search pill
+  // STATE 5: Edit mode — from/to/stops/done
+  // (also handles loading state while re-planning from edit)
+  const originLabel = travelOrigin?.place_name ?? 'Current location';
   return (
-    <div className="pt-3 pl-3 pb-3 pointer-events-auto" style={{ paddingRight: '220px' }}>
-      <button
-        onClick={() => { setFormExpanded(true); useStore.getState().setTripPlannerOpen(true); }}
-        className="w-full flex items-center gap-3 bg-white/95 backdrop-blur-sm rounded-2xl shadow-lg px-4 py-3.5 text-left"
-      >
-        <span className="text-gray-400 text-sm font-medium">Where to?</span>
-      </button>
+    <div className="p-3 pointer-events-auto">
+      <div className="bg-white/97 backdrop-blur rounded-2xl shadow-xl overflow-hidden">
+        <div className="px-3 pb-3 pt-3 space-y-2">
+          {/* Destination row with back button */}
+          <div className="flex items-center gap-1" style={{ paddingRight: '200px' }}>
+            <button
+              onClick={() => {
+                setEditMode(false);
+                useStore.getState().setTripPlannerOpen(false);
+              }}
+              className="w-8 h-8 flex items-center justify-center rounded-full hover:bg-gray-100 text-gray-500 transition-colors flex-shrink-0"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M15 18l-6-6 6-6"/></svg>
+            </button>
+            <div className="flex-1 min-w-0">
+              <GeoInput
+                placeholder="Where to?"
+                value={destQuery}
+                onChange={(v) => { setDestQuery(v); debounceGeocode(v, destDebounce, setDestLoading, setDestSugg); }}
+                suggestions={destSugg}
+                onSelect={(s) => { setTravelDestination(s); setDestQuery(s.place_name); setDestSugg([]); }}
+                loading={destLoading}
+              />
+            </div>
+          </div>
+
+          {/* From */}
+          <GeoInput
+            placeholder="Current location"
+            icon="From:"
+            value={originQuery}
+            onChange={(v) => { setOriginQuery(v); debounceGeocode(v, originDebounce, setOriginLoading, setOriginSugg); }}
+            suggestions={originSugg}
+            onSelect={(s) => { setTravelOrigin(s); setOriginQuery(s.place_name); setOriginSugg([]); }}
+            loading={originLoading}
+            onClear={originQuery ? () => { setTravelOrigin(null); setOriginQuery(''); setOriginSugg([]); } : undefined}
+          />
+
+          {/* Intermediate waypoints (A, B, C...) */}
+          {waypointRows.map((wp, i) => {
+            const letter = String.fromCharCode(65 + i); // A, B, C, D
+            return (
+              <div key={i} className="flex items-start gap-1">
+                <div className="flex flex-col gap-0.5 pt-1.5">
+                  <button onClick={() => moveWaypoint(i, -1)} disabled={i === 0} className="text-gray-400 hover:text-gray-600 disabled:opacity-20 text-xs leading-none px-0.5">▲</button>
+                  <button onClick={() => moveWaypoint(i, 1)} disabled={i === waypointRows.length - 1} className="text-gray-400 hover:text-gray-600 disabled:opacity-20 text-xs leading-none px-0.5">▼</button>
+                </div>
+                <div className="flex-1 min-w-0">
+                  <GeoInput
+                    placeholder={`Stop ${letter}`}
+                    icon={`${letter}:`}
+                    value={wp.query}
+                    onChange={(v) => debounceGeocodeWp(i, v)}
+                    suggestions={wp.sugg}
+                    onSelect={(s) => setWaypointRows(rows => rows.map((r, ri) => ri === i ? { ...r, dest: s, query: s.place_name, sugg: [] } : r))}
+                    loading={wp.loading}
+                    onClear={() => setWaypointRows(rows => rows.map((r, ri) => ri === i ? { ...r, dest: null, query: '', sugg: [] } : r))}
+                  />
+                </div>
+                <button onClick={() => removeWaypoint(i)} className="text-gray-400 hover:text-red-500 text-base leading-none pt-2 px-1 flex-shrink-0">✕</button>
+              </div>
+            );
+          })}
+
+          {/* Add stop */}
+          {travelDestination && waypointRows.length < 4 && (
+            <button onClick={addWaypoint} className={`text-xs flex items-center gap-1 pl-1 ${th.textMid} ${th.textHoverDark}`}>
+              <span className="text-sm font-bold">+</span> Add stop
+            </button>
+          )}
+
+          {/* Departure time */}
+          <div className="flex items-center gap-2 bg-gray-50 border border-gray-200 rounded-lg px-2.5 py-1.5">
+            <input
+              type="datetime-local"
+              value={departureInput}
+              onChange={(e) => setDepartureInput(e.target.value)}
+              className="flex-1 text-sm outline-none bg-transparent text-gray-700 min-w-0"
+            />
+          </div>
+
+          {/* Long-trip suggestion */}
+          {longTripKm !== null && (
+            <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 space-y-2">
+              <p className="text-xs font-semibold text-amber-800">Long trip — ~{Math.round(longTripKm / 1.609)} mi</p>
+              <p className="text-xs text-amber-700">As Musafir you can combine prayers (Dhuhr+Asr, Maghrib+Isha).</p>
+              <div className="flex gap-2">
+                <button onClick={() => { setTravelMode(true); executePlan('travel'); }} className={`flex-1 text-white text-xs font-semibold py-1.5 rounded-lg ${th.bg} ${th.bgHover}`}>Switch to Musafir</button>
+                <button onClick={() => executePlan('driving')} className="flex-1 bg-white border border-gray-300 text-gray-600 text-xs font-semibold py-1.5 rounded-lg hover:bg-gray-50">Plan as Muqeem</button>
+              </div>
+            </div>
+          )}
+
+          {/* Done button */}
+          {longTripKm === null && (
+            <button
+              onClick={handlePlan}
+              disabled={!travelDestination || travelPlanLoading}
+              className={`w-full text-white text-sm font-semibold py-2.5 rounded-xl disabled:opacity-40 disabled:cursor-not-allowed transition-colors ${th.bg} ${th.bgHover}`}
+            >
+              {travelPlanLoading ? 'Planning…' : 'Done'}
+            </button>
+          )}
+        </div>
+      </div>
     </div>
   );
 }
@@ -2092,7 +2183,7 @@ function ModeToggle() {
     <div className="flex bg-white/95 backdrop-blur-sm rounded-xl shadow-lg overflow-hidden border border-gray-200 flex-shrink-0">
       <button
         onClick={() => setTravelMode(false)}
-        className={`px-3 py-2 text-xs font-semibold transition-colors ${
+        className={`px-3 py-3 text-xs font-semibold transition-colors ${
           !travelMode ? `${th.bg} text-white` : 'text-gray-500'
         }`}
       >
@@ -2101,7 +2192,7 @@ function ModeToggle() {
       <div className="w-px bg-gray-200 self-stretch" />
       <button
         onClick={() => setTravelMode(true)}
-        className={`px-3 py-2 text-xs font-semibold transition-colors ${
+        className={`px-3 py-3 text-xs font-semibold transition-colors ${
           travelMode ? `${th.bg} text-white` : 'text-gray-500'
         }`}
       >
