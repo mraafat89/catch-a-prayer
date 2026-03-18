@@ -522,46 +522,46 @@ function MosqueDetailSheet({ mosque, onDismiss }: { mosque: Mosque; onDismiss?: 
     : null;
 
   return (
-    <div className="relative">
-      {/* ✕ dismiss — top-right of the card */}
-      <button
-        onClick={onDismiss ?? closeSheet}
-        className="absolute top-0 right-0 w-9 h-9 flex items-center justify-center rounded-full bg-gray-100 hover:bg-gray-200 text-gray-500 hover:text-gray-700 active:scale-95 transition-all"
-        aria-label="Close"
-      >✕</button>
-
-      {/* Header row: address on left, website + navigate icons on right (with right padding for the ✕) */}
-      <div className="flex items-center justify-between mb-3 pr-11">
+    <div>
+      {/* Row 1: address on left, ✕ on right */}
+      <div className="flex items-center justify-between mb-2">
         {mosque.location.address
           ? <p className="text-sm text-gray-500 flex-1 pr-3 leading-snug">{mosque.location.address}</p>
           : <div className="flex-1" />
         }
-        <div className="flex items-center gap-2 flex-shrink-0">
-          {mosque.website && (
-            <a
-              href={mosque.website}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="w-9 h-9 flex items-center justify-center rounded-full bg-gray-100 hover:bg-gray-200 text-gray-600 active:scale-95 transition-all"
-              aria-label="Website"
-            >
-              <svg xmlns="http://www.w3.org/2000/svg" className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                <circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/>
-                <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>
-              </svg>
-            </a>
-          )}
-          <button
-            onClick={() => setNavSheetOpen(true)}
-            className={`w-9 h-9 flex items-center justify-center rounded-full ${th.bg} ${th.bgHover} text-white active:scale-95 transition-all`}
-            aria-label="Navigate"
+        <button
+          onClick={onDismiss ?? closeSheet}
+          className="w-9 h-9 flex items-center justify-center rounded-full bg-gray-100 hover:bg-gray-200 text-gray-500 hover:text-gray-700 active:scale-95 transition-all flex-shrink-0"
+          aria-label="Close"
+        >✕</button>
+      </div>
+
+      {/* Row 2: action icons (website + navigate) right-aligned */}
+      <div className="flex items-center justify-end gap-2 mb-3">
+        {mosque.website && (
+          <a
+            href={mosque.website}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="w-9 h-9 flex items-center justify-center rounded-full bg-gray-100 hover:bg-gray-200 text-gray-600 active:scale-95 transition-all"
+            aria-label="Website"
           >
-            {/* Directions diamond-arrow (Google Maps style) */}
-            <svg xmlns="http://www.w3.org/2000/svg" className="w-5 h-5" viewBox="0 0 24 24" fill="currentColor">
-              <path d="M21.71 11.29l-9-9c-.39-.39-1.02-.39-1.41 0l-9 9c-.39.39-.39 1.02 0 1.41l9 9c.39.39 1.02.39 1.41 0l9-9c.39-.38.39-1.01 0-1.41zM14 14.5V12h-4v3H8v-4c0-.55.45-1 1-1h5V7.5l3.5 3.5-3.5 3.5z"/>
+            <svg xmlns="http://www.w3.org/2000/svg" className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/>
+              <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>
             </svg>
-          </button>
-        </div>
+          </a>
+        )}
+        <button
+          onClick={() => setNavSheetOpen(true)}
+          className={`w-9 h-9 flex items-center justify-center rounded-full ${th.bg} ${th.bgHover} text-white active:scale-95 transition-all`}
+          aria-label="Navigate"
+        >
+          {/* Directions diamond-arrow (Google Maps style) */}
+          <svg xmlns="http://www.w3.org/2000/svg" className="w-5 h-5" viewBox="0 0 24 24" fill="currentColor">
+            <path d="M21.71 11.29l-9-9c-.39-.39-1.02-.39-1.41 0l-9 9c-.39.39-.39 1.02 0 1.41l9 9c.39.39 1.02.39 1.41 0l9-9c.39-.38.39-1.01 0-1.41zM14 14.5V12h-4v3H8v-4c0-.55.45-1 1-1h5V7.5l3.5 3.5-3.5 3.5z"/>
+          </svg>
+        </button>
       </div>
 
       {/* Status badge — hidden when nc prayer is already marked as prayed */}

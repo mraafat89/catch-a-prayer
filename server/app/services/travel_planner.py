@@ -1059,10 +1059,13 @@ def build_combination_plan(
             dest_combination_label = "Jam' Taqdeem"
 
     if prayers_at_dest:
-        dest_mosque = _find_nearby_mosque(dest_lat, dest_lng, route_mosques, prayers_at_dest[0], arr_min_dest,
+        # For Jam' Ta'kheer the active window is prayer2 (e.g. Asr), not prayer1 (Dhuhr which ended).
+        # Search using the last prayer in the list so the mosque check uses the correct active window.
+        search_prayer_dest = prayers_at_dest[-1] if dest_combination_label == "Jam' Ta'kheer" else prayers_at_dest[0]
+        dest_mosque = _find_nearby_mosque(dest_lat, dest_lng, route_mosques, search_prayer_dest, arr_min_dest,
                                           anchor_mosques=dest_mosques)
         if dest_mosque:
-            dm_status = (prayer_status_at_arrival(prayers_at_dest[0], dest_mosque["schedule"], dest_mosque["local_arrival_minutes"])
+            dm_status = (prayer_status_at_arrival(search_prayer_dest, dest_mosque["schedule"], dest_mosque["local_arrival_minutes"])
                          or s1_dest or s2_dest)
             dest_stops = [_make_stop(dest_mosque, prayers_at_dest[0], dm_status)]
             dest_note = f"{dest_mosque['name']} is near your destination."

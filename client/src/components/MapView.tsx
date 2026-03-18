@@ -128,7 +128,7 @@ function FitBoundsController() {
       paddingBottomRight: [40, sheetVisible + 20],
       animate: true,
     });
-  }, [selectedItineraryIndex, bottomSheetHeight, tripPlannerOpen]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [selectedItineraryIndex, bottomSheetHeight, tripPlannerOpen, travelPlan]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // 2) Destination preview: fly to destination when selected (before plan loads)
   useEffect(() => {
@@ -198,7 +198,7 @@ function FitBoundsController() {
       paddingBottomRight: [40, sheetVisible + 20],
       animate: true,
     });
-  }, [travelDestination, travelPlan, tripPlannerOpen]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [travelDestination, travelPlan, tripPlannerOpen, bottomSheetHeight]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return null;
 }
