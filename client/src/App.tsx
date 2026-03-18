@@ -490,7 +490,7 @@ function MosqueDetailSheet({ mosque, onDismiss }: { mosque: Mosque; onDismiss?: 
 
   async function handleMosqueShare() {
     if (navigator.share) {
-      try { await navigator.share({ title: `Navigate to ${mosque.name}`, url: mosqueGoogleUrl }); return; }
+      try { await navigator.share({ title: `Navigate to ${mosque.location.address || mosque.name}`, url: mosqueGoogleUrl }); return; }
       catch { /* cancelled */ }
     }
     try { await navigator.clipboard.writeText(mosqueGoogleUrl); }
@@ -712,8 +712,7 @@ function MosqueDetailSheet({ mosque, onDismiss }: { mosque: Mosque; onDismiss?: 
         <div className="fixed inset-0 z-[900] flex items-end" onClick={() => setNavSheetOpen(false)}>
           <div className="w-full bg-white rounded-t-2xl shadow-2xl pb-8 px-4 pt-3" onClick={(e) => e.stopPropagation()}>
             <div className="flex justify-center mb-4"><div className="w-10 h-1 bg-gray-300 rounded-full" /></div>
-            <p className="text-sm font-semibold text-gray-800 mb-0.5">Navigate to {mosque.name}</p>
-            <p className="text-xs text-gray-400 mb-4">{mosque.location.address}</p>
+            <p className="text-sm font-semibold text-gray-800 mb-4">Navigate to {mosque.location.address || mosque.name}</p>
             <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-2">Open in…</p>
             <div className="space-y-2">
               <button onClick={() => { window.open(mosqueGoogleUrl, '_blank'); setNavSheetOpen(false); }}

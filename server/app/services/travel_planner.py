@@ -626,7 +626,10 @@ def _find_nearby_mosque(
     anchor_mosques: Optional[list[dict]] = None,
 ) -> Optional[dict]:
     """
-    Find the nearest mosque to (lat, lng) that supports `prayer` at `time_min`.
+    Find the nearest mosque to (lat, lng) that supports `prayer` at arrival time.
+    Uses each mosque's own local_arrival_minutes (timezone-correct) rather than
+    the caller-supplied time_min, which may be in a different timezone.
+    Falls back to time_min only if local_arrival_minutes is absent.
     Searches anchor_mosques (e.g. pre-fetched near origin/destination) first,
     merged with route_mosques, deduplicated by id, sorted by distance.
     """
@@ -638,7 +641,8 @@ def _find_nearby_mosque(
             seen.add(m["id"])
             deduped.append(m)
     for m in deduped[:15]:
-        s = prayer_status_at_arrival(prayer, m["schedule"], time_min)
+        arrival = m.get("local_arrival_minutes", time_min)
+        s = prayer_status_at_arrival(prayer, m["schedule"], arrival)
         if s:
             return m
     return None

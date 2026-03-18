@@ -211,7 +211,7 @@ Rendered **inline inside `MapBottomSheet`** when `singleMosqueNav` is set (no lo
 
 **✕ close button** — top-right of the header row; calls `onDismiss` to return to the mosque list.
 
-**Navigate action sheet** — portaled to `document.body`; Google Maps / Apple Maps (iOS only) / Share options.
+**Navigate action sheet** — portaled to `document.body`; shows `Navigate to {address}` (falls back to mosque name if no address). Options: Google Maps / Apple Maps (iOS only) / Share Route.
 
 **`onDismiss` prop** — passed from `MapBottomSheet`; calls `setSingleMosqueNav(null)` + `setSelectedMosqueId(null)` + `setBottomSheetHeight('peek')`.
 
