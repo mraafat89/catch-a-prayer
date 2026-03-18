@@ -60,14 +60,15 @@ function createEndpointIcon(label: string, bg: string): L.DivIcon {
 // ─── Fit bounds controller ────────────────────────────────────────────────────
 
 function FitBoundsController() {
-  const map               = useMap();
-  const selectedMosqueId  = useStore((s) => s.selectedMosqueId);
-  const mapFocusCoords    = useStore((s) => s.mapFocusCoords);
-  const mosques           = useStore((s) => s.mosques);
-  const userLocation      = useStore((s) => s.userLocation);
-  const travelDestination = useStore((s) => s.travelDestination);
-  const travelOrigin      = useStore((s) => s.travelOrigin);
-  const travelPlan        = useStore((s) => s.travelPlan);
+  const map                    = useMap();
+  const selectedMosqueId       = useStore((s) => s.selectedMosqueId);
+  const mapFocusCoords         = useStore((s) => s.mapFocusCoords);
+  const mosques                = useStore((s) => s.mosques);
+  const userLocation           = useStore((s) => s.userLocation);
+  const travelDestination      = useStore((s) => s.travelDestination);
+  const travelOrigin           = useStore((s) => s.travelOrigin);
+  const travelPlan             = useStore((s) => s.travelPlan);
+  const selectedItineraryIndex = useStore((s) => s.selectedItineraryIndex);
 
   // 1) Single mosque selected (from list or route stop card tap)
   useEffect(() => {
@@ -83,7 +84,16 @@ function FitBoundsController() {
     map.fitBounds(bounds, { padding: [52, 52], maxZoom: 15, animate: true });
   }, [selectedMosqueId, mapFocusCoords]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // 2) Trip: fit to origin + destination (+ all route stops if plan is loaded)
+  // 2) Itinerary selected — fit to that itinerary's route geometry
+  useEffect(() => {
+    if (selectedItineraryIndex === null || !travelPlan) return;
+    const itinerary = travelPlan.itineraries[selectedItineraryIndex];
+    if (!itinerary?.route_geometry?.length) return;
+    const bounds = L.latLngBounds(itinerary.route_geometry);
+    map.fitBounds(bounds, { padding: [60, 60], animate: true });
+  }, [selectedItineraryIndex]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // 3) Trip: fit to origin + destination (+ all route stops if plan is loaded)
   useEffect(() => {
     if (!travelDestination) return;
 

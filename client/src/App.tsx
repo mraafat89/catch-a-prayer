@@ -1830,54 +1830,40 @@ function TravelItineraryCard({ itinerary, index }: { itinerary: TripItinerary; i
   const th                        = useTheme();
   const [expanded, setExpanded]   = useState(index === 0);
 
-  const optionIcons: Record<string, string> = {
-    pray_before:    '📍',
-    combine_early:  '⏩',
-    combine_late:   '⏪',
-    at_destination: '🏁',
-    separate:       '🔀',
-    solo_stop:      '🕌',
-    stop_for_fajr:  '🌅',
-    no_option:      '⚠️',
-  };
 
   const isSelected = selectedItineraryIndex === index;
 
   return (
     <div className={`mx-3 bg-white border rounded-xl shadow-sm transition-all ${isSelected ? `${th.borderStrong} ${th.shadow}` : itinerary.feasible ? 'border-gray-200' : 'border-gray-200 opacity-60'}`}>
-      {/* Header — tap to expand/collapse + select on map */}
-      <button
-        className="w-full text-left px-3 pt-3 pb-2"
-        onClick={() => {
-          setExpanded((e) => !e);
-          setSelectedItineraryIndex(index);
-        }}
-      >
-        <div className="flex items-start justify-between gap-2">
-          <div className="min-w-0">
-            <p className={`text-xs font-bold uppercase tracking-wide ${isSelected ? th.textMid : th.text}`}>
-              {isSelected ? '▶ ' : ''}Option {index + 1}
-            </p>
-            <p className="text-sm font-semibold text-gray-800 mt-0.5 leading-snug">{itinerary.label}</p>
-          </div>
-          <div className="text-right shrink-0">
-            {itinerary.total_detour_minutes > 0 && (
-              <p className="text-xs text-gray-500">+{fmtDuration(itinerary.total_detour_minutes)} detour</p>
-            )}
-            <p className="text-xs text-gray-400 mt-0.5">{expanded ? '▲' : '▼'}</p>
-          </div>
-        </div>
-      </button>
+      {/* Header: left area selects itinerary; chevron button only expands/collapses */}
+      <div className="flex items-start px-3 pt-3 pb-2 gap-2">
+        <button
+          className="flex-1 text-left min-w-0"
+          onClick={() => setSelectedItineraryIndex(index)}
+        >
+          <p className={`text-xs font-bold uppercase tracking-wide ${isSelected ? th.textMid : th.text}`}>
+            {isSelected ? '▶ ' : ''}Option {index + 1}
+          </p>
+          <p className="text-sm font-semibold text-gray-800 mt-0.5 leading-snug">{itinerary.label}</p>
+          {itinerary.total_detour_minutes > 0 && (
+            <p className="text-xs text-gray-500 mt-0.5">+{fmtDuration(itinerary.total_detour_minutes)} detour</p>
+          )}
+        </button>
+        <button
+          className="shrink-0 w-8 h-8 flex items-center justify-center text-gray-400 hover:text-gray-600"
+          onClick={() => setExpanded((e) => !e)}
+        >
+          {expanded ? '▲' : '▼'}
+        </button>
+      </div>
 
       {expanded && (
         <div className="px-3 pb-3 space-y-3 border-t border-gray-100 pt-2">
           {itinerary.pair_choices.map((pc: PairChoice, i: number) => {
-            const icon = optionIcons[pc.option.option_type] ?? '•';
             return (
               <div key={i}>
                 {/* Prayer pair header */}
                 <div className="flex items-center gap-1.5 mb-1 min-w-0 overflow-hidden">
-                  <span className="text-sm flex-shrink-0">{pc.emoji}</span>
                   <span className="text-xs font-semibold text-gray-700 truncate">{pc.label}</span>
                   {pc.option.combination_label && (
                     <span className={`text-xs px-1.5 py-0.5 rounded-full flex-shrink-0 border ${th.bgLight} ${th.text} ${th.border}`}>
@@ -1886,7 +1872,7 @@ function TravelItineraryCard({ itinerary, index }: { itinerary: TripItinerary; i
                   )}
                 </div>
                 {/* Description */}
-                <p className="text-xs text-gray-500 mb-1 break-words">{icon} {pc.option.description}</p>
+                <p className="text-xs text-gray-500 mb-1 break-words">{pc.option.description}</p>
                 {/* Mosque stops — tappable */}
                 {pc.option.stops.map((stop: TravelStop, j: number) => (
                   <button
@@ -1901,7 +1887,7 @@ function TravelItineraryCard({ itinerary, index }: { itinerary: TripItinerary; i
                     <span className="font-medium text-gray-800">{stop.mosque_name}</span>
                     {stop.mosque_address ? <span className="text-gray-500"> · {stop.mosque_address}</span> : null}
                     {stop.iqama_time ? <span className="text-gray-600"> · Iqama {fmtTime(stop.iqama_time)}</span> : null}
-                    <span className={`ml-1 ${th.textMid}`}> +{fmtDuration(stop.detour_minutes)} detour 📍</span>
+                    <span className={`ml-1 ${th.textMid}`}> +{fmtDuration(stop.detour_minutes)} detour</span>
                   </button>
                 ))}
                 {pc.option.note && (
