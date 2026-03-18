@@ -73,6 +73,11 @@ function fmtTime(t: string | null): string {
   }
 }
 
+// Strip emoji characters from server-supplied strings
+function stripEmoji(s: string): string {
+  return s.replace(/[\p{Emoji_Presentation}\p{Extended_Pictographic}]/gu, '').trim();
+}
+
 function fmtDuration(minutes: number): string {
   const m = Math.max(0, Math.round(minutes));
   const days  = Math.floor(m / (24 * 60));
@@ -249,6 +254,8 @@ function isPastSwitchPoint(active: { prayer: string; adhan_time: string | null; 
 function MosqueCard({ mosque }: { mosque: Mosque }) {
   const openSheet           = useStore((s) => s.openSheet);
   const setSelectedMosqueId = useStore((s) => s.setSelectedMosqueId);
+  const setSingleMosqueNav  = useStore((s) => s.setSingleMosqueNav);
+  const setBottomSheetHeight = useStore((s) => s.setBottomSheetHeight);
   const prayedToday         = useStore((s) => s.prayedToday);
   const togglePrayed        = useStore((s) => s.togglePrayed);
   const travelMode          = useStore((s) => s.travelMode);
@@ -277,7 +284,8 @@ function MosqueCard({ mosque }: { mosque: Mosque }) {
 
   function handleClick() {
     setSelectedMosqueId(mosque.id);
-    openSheet({ type: 'mosque_detail', mosque });
+    setSingleMosqueNav(mosque);
+    setBottomSheetHeight('peek'); // collapse sheet so map + route are visible
   }
 
   return (
@@ -462,7 +470,7 @@ function SpotCard({ spot }: { spot: PrayerSpot }) {
 
 // ─── Mosque Detail Sheet ────────────────────────────────────────────────────
 
-function MosqueDetailSheet({ mosque }: { mosque: Mosque }) {
+function MosqueDetailSheet({ mosque, onDismiss }: { mosque: Mosque; onDismiss?: () => void }) {
   const closeSheet    = useStore((s) => s.closeSheet);
   const prayedToday   = useStore((s) => s.prayedToday);
   const togglePrayed  = useStore((s) => s.togglePrayed);
@@ -515,14 +523,44 @@ function MosqueDetailSheet({ mosque }: { mosque: Mosque }) {
 
   return (
     <div>
-      <div className="flex items-start justify-between mb-3">
-        <h2 className="text-lg font-bold text-gray-900 pr-4 leading-tight">{mosque.name}</h2>
-        <button onClick={closeSheet} className="w-9 h-9 flex items-center justify-center rounded-full bg-gray-100 hover:bg-gray-200 text-gray-500 hover:text-gray-700 text-lg flex-shrink-0 transition-colors">✕</button>
+      {/* Header row: address on left, website + navigate icons on right */}
+      <div className="flex items-center justify-between mb-3">
+        {mosque.location.address
+          ? <p className="text-sm text-gray-500 flex-1 pr-3 leading-snug">{mosque.location.address}</p>
+          : <div className="flex-1" />
+        }
+        <div className="flex items-center gap-2 flex-shrink-0">
+          {mosque.website && (
+            <a
+              href={mosque.website}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="w-9 h-9 flex items-center justify-center rounded-full bg-gray-100 hover:bg-gray-200 text-gray-600 active:scale-95 transition-all"
+              aria-label="Website"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/>
+                <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>
+              </svg>
+            </a>
+          )}
+          <button
+            onClick={() => setNavSheetOpen(true)}
+            className={`w-9 h-9 flex items-center justify-center rounded-full ${th.bg} ${th.bgHover} text-white active:scale-95 transition-all`}
+            aria-label="Navigate"
+          >
+            {/* Directions diamond-arrow (Google Maps style) */}
+            <svg xmlns="http://www.w3.org/2000/svg" className="w-5 h-5" viewBox="0 0 24 24" fill="currentColor">
+              <path d="M21.71 11.29l-9-9c-.39-.39-1.02-.39-1.41 0l-9 9c-.39.39-.39 1.02 0 1.41l9 9c.39.39 1.02.39 1.41 0l9-9c.39-.38.39-1.01 0-1.41zM14 14.5V12h-4v3H8v-4c0-.55.45-1 1-1h5V7.5l3.5 3.5-3.5 3.5z"/>
+            </svg>
+          </button>
+          <button
+            onClick={onDismiss ?? closeSheet}
+            className="w-9 h-9 flex items-center justify-center rounded-full bg-gray-100 hover:bg-gray-200 text-gray-500 hover:text-gray-700 active:scale-95 transition-all"
+            aria-label="Close"
+          >✕</button>
+        </div>
       </div>
-
-      {mosque.location.address && (
-        <p className="text-sm text-gray-500 mb-3">{mosque.location.address}</p>
-      )}
 
       {/* Status badge — hidden when nc prayer is already marked as prayed */}
       {nc && cfg && (
@@ -668,29 +706,6 @@ function MosqueDetailSheet({ mosque }: { mosque: Mosque }) {
 
       {/* Data source */}
       <p className={`text-xs mb-4 ${badge.color}`} title={badge.title}>{badge.label}</p>
-
-      {/* Action buttons */}
-      <div className="flex gap-2">
-        <button
-          onClick={() => setNavSheetOpen(true)}
-          className={`flex-1 flex items-center justify-center gap-1.5 ${th.bg} ${th.bgHover} text-white text-xs py-2.5 px-2 rounded-lg font-semibold`}
-        >
-          <svg xmlns="http://www.w3.org/2000/svg" className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="currentColor">
-            <path d="M12 2L4.5 20.29l.71.71L12 18l6.79 3 .71-.71z"/>
-          </svg>
-          بسم الله — Navigate
-        </button>
-        {mosque.phone && (
-          <a href={`tel:${mosque.phone}`} className="flex-1 bg-slate-700 hover:bg-slate-800 text-white text-xs py-2 px-2 rounded-lg text-center font-medium">
-            Call
-          </a>
-        )}
-        {mosque.website && (
-          <a href={mosque.website} target="_blank" rel="noopener noreferrer" className="flex-1 bg-slate-700 hover:bg-slate-800 text-white text-xs py-2 px-2 rounded-lg text-center font-medium">
-            Website
-          </a>
-        )}
-      </div>
 
       {/* Navigate action sheet — portal to document.body to escape stacking context */}
       {navSheetOpen && ReactDOM.createPortal(
@@ -1108,9 +1123,6 @@ function SettingsSheet() {
   const setDenominationFilter = useStore((s) => s.setDenominationFilter);
   const showSpots           = useStore((s) => s.showSpots);
   const setShowSpots        = useStore((s) => s.setShowSpots);
-  const travelMode          = useStore((s) => s.travelMode);
-  const setTravelMode       = useStore((s) => s.setTravelMode);
-
   return (
     <div>
       <div className="flex items-center justify-between mb-4">
@@ -1156,30 +1168,6 @@ function SettingsSheet() {
               </button>
             ))}
           </div>
-        </div>
-
-        {/* Travel mode */}
-        <div className="flex items-center justify-between">
-          <div>
-            <p className={`text-sm font-medium ${travelMode ? th.text : 'text-gray-700'}`}>
-              {travelMode ? '✈️ Musafir mode' : '🏠 Muqeem mode'}
-            </p>
-            <p className="text-xs text-gray-500">
-              {travelMode
-                ? 'You are a traveler (Musafir / Safar). Prayer combining options (Dhuhr+Asr, Maghrib+Isha) are shown on mosque cards.'
-                : 'You are a resident (Muqeem). Tap to activate Musafir mode when you are away from home.'}
-            </p>
-          </div>
-          <button
-            onClick={() => setTravelMode(!travelMode)}
-            className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors flex-shrink-0 ml-3 ${
-              travelMode ? th.bg : 'bg-gray-300'
-            }`}
-          >
-            <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
-              travelMode ? 'translate-x-6' : 'translate-x-1'
-            }`} />
-          </button>
         </div>
 
         {/* Show spots */}
@@ -1470,10 +1458,13 @@ function DestinationInput() {
   // Intermediate waypoint rows (0–4 stops between origin and destination)
   const [waypointRows, setWaypointRows] = useState<WaypointRow[]>([]);
   const wpDebounces = useRef<Array<ReturnType<typeof setTimeout> | null>>([]);
+  // Cache of computed plans keyed by trip config + mode; invalidated when route changes
+  const planCacheRef = useRef<Map<string, import('./types').TravelPlan>>(new Map());
 
   // State machine: searchMode = destination autocomplete open, editMode = from/to/stops form open
   const [searchMode, setSearchMode] = useState(false);
   const [editMode, setEditMode] = useState(false);
+  const [longTripModal, setLongTripModal] = useState<number | null>(null); // km distance if long trip
 
   // Default departure time = right now in local time (datetime-local needs YYYY-MM-DDTHH:mm)
   const defaultDeparture = (() => {
@@ -1505,6 +1496,16 @@ function DestinationInput() {
       .catch(() => {});
   }, [userLocation, editMode]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Auto-replan when mode changes while a plan is already loaded (use cache when available)
+  const prevTripModeRef = useRef(travelModeStore);
+  useEffect(() => {
+    if (prevTripModeRef.current === travelModeStore) return;
+    prevTripModeRef.current = travelModeStore;
+    if (travelDestination && !editMode) {
+      executePlan(travelModeStore ? 'travel' : 'driving');
+    }
+  }, [travelModeStore]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // Auto re-plan when prayed prayers change while a plan is active
   const prevPrayedRef = useRef<Set<string>>(prayedToday);
   useEffect(() => {
@@ -1513,16 +1514,6 @@ function DestinationInput() {
       executePlan(tripMode);
     }
   }, [prayedToday]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  // Re-plan when Muqeem/Musafir mode switches while a plan is active
-  const prevTripModeRef = useRef(tripMode);
-  useEffect(() => {
-    if (prevTripModeRef.current === tripMode) return;
-    prevTripModeRef.current = tripMode;
-    if (travelPlan && travelDestination) {
-      executePlan(tripMode);
-    }
-  }, [tripMode]); // eslint-disable-line react-hooks/exhaustive-deps
 
   function debounceGeocode(
     val: string,
@@ -1589,6 +1580,7 @@ function DestinationInput() {
     setOriginQuery(''); setOriginSugg([]);
     setWaypointRows([]);
     wpDebounces.current = [];
+    planCacheRef.current.clear();
     setDepartureInput(defaultDeparture);
     setSearchMode(false);
     setEditMode(false);
@@ -1599,6 +1591,8 @@ function DestinationInput() {
     useStore.getState().setSelectedMosqueId(null);
     useStore.getState().setMapFocusCoords(null);
     useStore.getState().setBottomSheetHeight('peek');
+    useStore.getState().setSelectedItineraryIndex(null);
+    useStore.getState().setSingleMosqueNav(null);
   }
 
   // Non-null = long-trip warning is showing; value = distance in km
@@ -1615,6 +1609,10 @@ function DestinationInput() {
     setTripWaypoints(waypointRows.filter(w => w.dest !== null).map(w => w.dest!));
   }, [waypointRows]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  function planCacheKey(mode: string, oLat: number, oLng: number, dLat: number, dLng: number, wps: Array<{lat:number;lng:number}>, dep: string | undefined): string {
+    return `${mode}|${oLat.toFixed(4)},${oLng.toFixed(4)}|${dLat.toFixed(4)},${dLng.toFixed(4)}|${wps.map(w=>`${w.lat.toFixed(4)},${w.lng.toFixed(4)}`).join('+')}|${dep||''}`;
+  }
+
   async function executePlan(mode: 'travel' | 'driving') {
     if (!travelDestination) return;
     const originLat = travelOrigin?.lat ?? userLocation?.latitude;
@@ -1628,11 +1626,25 @@ function DestinationInput() {
     setTravelPlan(null);
     setEditMode(false);
     setSearchMode(false);
+    // Explicitly unhide the bottom sheet (belt-and-suspenders: useEffect may not re-fire
+    // if searchMode/editMode were already false when executePlan is called from the CTA)
+    useStore.getState().setTripPlannerOpen(false);
+    useStore.getState().setBottomSheetHeight('peek');
 
     // Build waypoints list from confirmed rows only
     const wps = waypointRows
       .filter(w => w.dest !== null)
       .map(w => ({ lat: w.dest!.lat, lng: w.dest!.lng, name: w.dest!.place_name }));
+
+    // Check cache first
+    const cacheKey = planCacheKey(mode, originLat, originLng, travelDestination.lat, travelDestination.lng, wps, depIso);
+    const cached = planCacheRef.current.get(cacheKey);
+    if (cached) {
+      setTravelPlan(cached);
+      useStore.getState().setSelectedItineraryIndex(0);
+      setTravelPlanLoading(false);
+      return;
+    }
 
     try {
       const plan = await apiService.getTravelPlan(
@@ -1647,6 +1659,7 @@ function DestinationInput() {
       );
       setTravelPlan(plan);
       useStore.getState().setSelectedItineraryIndex(0);
+      planCacheRef.current.set(cacheKey, plan);
     } catch {
       setTravelPlan(null);
       useStore.getState().setSelectedItineraryIndex(null);
@@ -1659,23 +1672,36 @@ function DestinationInput() {
     if (!travelDestination) return;
     const originLat = travelOrigin?.lat ?? userLocation?.latitude;
     const originLng = travelOrigin?.lng ?? userLocation?.longitude;
-    if (!originLat || !originLng) {
-      // No GPS yet — open edit form so user can type their origin
-      setEditMode(true);
-      useStore.getState().setTripPlannerOpen(true);
-      return;
+    if (originLat && originLng && !travelModeStore) {
+      const distKm = haversineKm(originLat, originLng, travelDestination.lat, travelDestination.lng);
+      if (distKm > 160) {
+        setLongTripModal(Math.round(distKm));
+        return;
+      }
     }
-
-    // Long-trip check: >160 km (~100 miles) in Muqeem mode → show prompt in edit form
-    const distKm = haversineKm(originLat, originLng, travelDestination.lat, travelDestination.lng);
-    if (distKm > 160 && !travelModeStore) {
-      setLongTripKm(Math.round(distKm));
-      setEditMode(true);
-      useStore.getState().setTripPlannerOpen(true);
-      return;
-    }
-
     executePlan(tripMode);
+  }
+
+  // Long-trip Musafir suggestion modal
+  if (longTripModal !== null) {
+    return (
+      <div className="fixed inset-0 z-[600] flex items-center justify-center p-6 pointer-events-auto" style={{ background: 'rgba(0,0,0,0.4)' }}>
+        <div className="bg-white rounded-2xl shadow-2xl p-6 w-full max-w-sm space-y-4">
+          <h3 className="text-base font-bold text-gray-900">Long trip — ~{Math.round(longTripModal / 1.609)} mi</h3>
+          <p className="text-sm text-gray-600">This trip is over 80 miles. As a Musafir (traveler) you can combine prayers (Dhuhr+Asr, Maghrib+Isha). Would you like to switch to Musafir mode?</p>
+          <div className="flex gap-3">
+            <button
+              onClick={() => { setLongTripModal(null); setTravelMode(true); executePlan('travel'); }}
+              className={`flex-1 text-white text-sm font-semibold py-2.5 rounded-xl ${th.bg} ${th.bgHover}`}
+            >Switch to Musafir</button>
+            <button
+              onClick={() => { setLongTripModal(null); executePlan('driving'); }}
+              className="flex-1 bg-white border border-gray-200 text-gray-700 text-sm font-semibold py-2.5 rounded-xl hover:bg-gray-50"
+            >Continue as Muqeem</button>
+          </div>
+        </div>
+      </div>
+    );
   }
 
   // STATE 1: Idle — no destination selected
@@ -1762,21 +1788,17 @@ function DestinationInput() {
             >✕</button>
           </div>
         </div>
-        {/* Plan a Trip CTA */}
-        <div className="flex justify-center pb-3 pointer-events-auto">
-          <button
-            onClick={() => {
-              setEditMode(false);
-              setSearchMode(false);
-              useStore.getState().setTripPlannerOpen(false);
-              handlePlan();
-            }}
-            disabled={travelPlanLoading}
-            className={`px-8 py-3 rounded-2xl text-sm font-semibold text-white shadow-lg active:scale-95 transition-transform disabled:opacity-60 ${th.bg} ${th.bgHover}`}
-          >
-            {travelPlanLoading ? 'Finding prayer stops…' : 'Pray on Route'}
-          </button>
-        </div>
+        {/* Plan a Trip CTA — hidden while loading (bottom sheet shows the spinner) */}
+        {!travelPlanLoading && (
+          <div className="flex justify-center pb-3 pointer-events-auto">
+            <button
+              onClick={() => handlePlan()}
+              className={`px-8 py-3 rounded-2xl text-sm font-semibold text-white shadow-lg active:scale-95 transition-transform ${th.bg} ${th.bgHover}`}
+            >
+              Pray on Route
+            </button>
+          </div>
+        )}
       </>
     );
   }
@@ -1811,40 +1833,57 @@ function DestinationInput() {
     <div className="p-3 pointer-events-auto">
       <div className="bg-white/97 backdrop-blur rounded-2xl shadow-xl overflow-hidden">
         <div className="px-3 pb-3 pt-3 space-y-2">
-          {/* Destination row with back button */}
-          <div className="flex items-center gap-1" style={{ paddingRight: '200px' }}>
+          {/* Back button — top-left only */}
+          <div style={{ paddingRight: '200px' }}>
             <button
               onClick={() => {
                 setEditMode(false);
                 useStore.getState().setTripPlannerOpen(false);
               }}
-              className="w-8 h-8 flex items-center justify-center rounded-full hover:bg-gray-100 text-gray-500 transition-colors flex-shrink-0"
+              className="w-8 h-8 flex items-center justify-center rounded-full hover:bg-gray-100 text-gray-500 transition-colors"
             >
               <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M15 18l-6-6 6-6"/></svg>
             </button>
-            <div className="flex-1 min-w-0">
-              <GeoInput
-                placeholder="Where to?"
-                value={destQuery}
-                onChange={(v) => { setDestQuery(v); debounceGeocode(v, destDebounce, setDestLoading, setDestSugg); }}
-                suggestions={destSugg}
-                onSelect={(s) => { setTravelDestination(s); setDestQuery(s.place_name); setDestSugg([]); }}
-                loading={destLoading}
-              />
-            </div>
           </div>
 
-          {/* From */}
-          <GeoInput
-            placeholder="Current location"
-            icon="From:"
-            value={originQuery}
-            onChange={(v) => { setOriginQuery(v); debounceGeocode(v, originDebounce, setOriginLoading, setOriginSugg); }}
-            suggestions={originSugg}
-            onSelect={(s) => { setTravelOrigin(s); setOriginQuery(s.place_name); setOriginSugg([]); }}
-            loading={originLoading}
-            onClear={originQuery ? () => { setTravelOrigin(null); setOriginQuery(''); setOriginSugg([]); } : undefined}
-          />
+          {/* From — with reset-to-current-location button */}
+          <div className="flex items-center gap-1">
+            <div className="flex-1 min-w-0">
+              <GeoInput
+                placeholder="Current location"
+                icon="From:"
+                value={originQuery}
+                onChange={(v) => { setOriginQuery(v); debounceGeocode(v, originDebounce, setOriginLoading, setOriginSugg); }}
+                suggestions={originSugg}
+                onSelect={(s) => { setTravelOrigin(s); setOriginQuery(s.place_name); setOriginSugg([]); }}
+                loading={originLoading}
+                onClear={originQuery ? () => { setTravelOrigin(null); setOriginQuery(''); setOriginSugg([]); } : undefined}
+              />
+            </div>
+            {userLocation && (
+              <button
+                onClick={() => {
+                  setTravelOrigin(null);
+                  setOriginSugg([]);
+                  setOriginQuery('');
+                  apiService.reverseGeocode(userLocation.latitude, userLocation.longitude)
+                    .then((label) => { if (label) setOriginQuery(label); })
+                    .catch(() => {});
+                }}
+                className="w-8 h-8 flex-shrink-0 flex items-center justify-center rounded-full hover:bg-gray-100 text-gray-400 hover:text-gray-600 transition-colors"
+                title="Reset to current location"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2L4.5 20.29l.71.71L12 18l6.79 3 .71-.71z"/></svg>
+              </button>
+            )}
+          </div>
+
+          {/* Add stop — between From and To */}
+          {travelDestination && waypointRows.length < 4 && (
+            <button onClick={addWaypoint} className={`text-xs flex items-center gap-1 pl-1 ${th.textMid} ${th.textHoverDark}`}>
+              <span className="text-sm font-bold">+</span> Add stop
+            </button>
+          )}
 
           {/* Intermediate waypoints (A, B, C...) */}
           {waypointRows.map((wp, i) => {
@@ -1872,12 +1911,16 @@ function DestinationInput() {
             );
           })}
 
-          {/* Add stop */}
-          {travelDestination && waypointRows.length < 4 && (
-            <button onClick={addWaypoint} className={`text-xs flex items-center gap-1 pl-1 ${th.textMid} ${th.textHoverDark}`}>
-              <span className="text-sm font-bold">+</span> Add stop
-            </button>
-          )}
+          {/* To / Destination */}
+          <GeoInput
+            placeholder="Where to?"
+            icon="To:"
+            value={destQuery}
+            onChange={(v) => { setDestQuery(v); debounceGeocode(v, destDebounce, setDestLoading, setDestSugg); }}
+            suggestions={destSugg}
+            onSelect={(s) => { setTravelDestination(s); setDestQuery(s.place_name); setDestSugg([]); }}
+            loading={destLoading}
+          />
 
           {/* Departure time */}
           <div className="flex items-center gap-2 bg-gray-50 border border-gray-200 rounded-lg px-2.5 py-1.5">
@@ -1942,7 +1985,7 @@ function TravelItineraryCard({ itinerary, index }: { itinerary: TripItinerary; i
           <p className={`text-xs font-bold uppercase tracking-wide ${isSelected ? th.textMid : th.text}`}>
             {isSelected ? '▶ ' : ''}Option {index + 1}
           </p>
-          <p className="text-sm font-semibold text-gray-800 mt-0.5 leading-snug">{itinerary.label}</p>
+          <p className="text-sm font-semibold text-gray-800 mt-0.5 leading-snug">{stripEmoji(itinerary.label)}</p>
           {itinerary.total_detour_minutes > 0 && (
             <p className="text-xs text-gray-500 mt-0.5">+{fmtDuration(itinerary.total_detour_minutes)} detour</p>
           )}
@@ -1962,15 +2005,13 @@ function TravelItineraryCard({ itinerary, index }: { itinerary: TripItinerary; i
               <div key={i}>
                 {/* Prayer pair header */}
                 <div className="flex items-center gap-1.5 mb-1 min-w-0 overflow-hidden">
-                  <span className="text-xs font-semibold text-gray-700 truncate">{pc.label}</span>
+                  <span className="text-xs font-semibold text-gray-700 truncate">{stripEmoji(pc.label)}</span>
                   {pc.option.combination_label && (
                     <span className={`text-xs px-1.5 py-0.5 rounded-full flex-shrink-0 border ${th.bgLight} ${th.text} ${th.border}`}>
-                      {pc.option.combination_label}
+                      {stripEmoji(pc.option.combination_label)}
                     </span>
                   )}
                 </div>
-                {/* Description */}
-                <p className="text-xs text-gray-500 mb-1 break-words">{pc.option.description}</p>
                 {/* Mosque stops — tappable */}
                 {pc.option.stops.map((stop: TravelStop, j: number) => (
                   <button
@@ -2011,10 +2052,13 @@ function NavigateBar() {
   const travelDestination = useStore((s) => s.travelDestination);
   const userLocation      = useStore((s) => s.userLocation);
   const setNavShareOpen   = useStore((s) => s.setNavShareOpen);
+  const tripPlannerOpen   = useStore((s) => s.tripPlannerOpen);
   const [sheetOpen, setSheetOpen] = useState(false);
 
   function openSheet() { setSheetOpen(true);  setNavShareOpen(true); }
   function closeSheet() { setSheetOpen(false); setNavShareOpen(false); }
+
+  if (tripPlannerOpen) return null;
 
   if (selectedItineraryIndex == null || !travelPlan || !travelDestination) return null;
 
@@ -2069,13 +2113,13 @@ function NavigateBar() {
 
       {/* Full-screen action sheet — portaled to document.body so it sits above all stacking contexts */}
       {sheetOpen && ReactDOM.createPortal(
-        <div className="fixed inset-0 z-[1000] flex items-end" onClick={closeSheet}>
+        <div className="fixed inset-0 z-[1000] flex items-end bg-black/50" onClick={closeSheet}>
           <div className="w-full bg-white rounded-t-2xl shadow-2xl pb-8 px-4 pt-3" onClick={(e) => e.stopPropagation()}>
             <div className="flex justify-center mb-4">
               <div className="w-10 h-1 bg-gray-300 rounded-full" />
             </div>
-            <p className="text-sm font-semibold text-gray-800 mb-0.5">Option {selectedItineraryIndex! + 1}: {itinerary.label}</p>
-            <p className="text-xs text-gray-400 mb-4">{itinerary.summary}</p>
+            <p className="text-sm font-semibold text-gray-800 mb-0.5">Option {selectedItineraryIndex! + 1}: {stripEmoji(itinerary.label)}</p>
+            <p className="text-xs text-gray-400 mb-4">{stripEmoji(itinerary.summary)}</p>
             <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-2">Open route in…</p>
             <div className="space-y-2">
               <button
@@ -2249,6 +2293,9 @@ function MapBottomSheet() {
   const spotsLoading        = useStore((s) => s.spotsLoading);
   const showSpots           = useStore((s) => s.showSpots);
   const userLocation        = useStore((s) => s.userLocation);
+  const singleMosqueNav     = useStore((s) => s.singleMosqueNav);
+  const setSingleMosqueNav  = useStore((s) => s.setSingleMosqueNav);
+  const setSelectedMosqueId = useStore((s) => s.setSelectedMosqueId);
 
   const tripPlannerOpen = useStore((s) => s.tripPlannerOpen);
   const bottomSheet     = useStore((s) => s.bottomSheet);
@@ -2299,6 +2346,17 @@ function MapBottomSheet() {
     prevBottomSheetRef.current = bottomSheet;
   }, [bottomSheet]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Snap to half when a mosque is selected (and not in trip mode)
+  useEffect(() => {
+    if (singleMosqueNav && !travelDestination) setBottomSheetHeight('half');
+  }, [singleMosqueNav]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  function dismissMosque() {
+    setSingleMosqueNav(null);
+    setSelectedMosqueId(null);
+    setBottomSheetHeight('peek');
+  }
+
   function handleTouchStart(e: React.TouchEvent) {
     draggedRef.current = false;
     dragStartY.current = e.touches[0].clientY;
@@ -2339,10 +2397,14 @@ function MapBottomSheet() {
 
   // Peek label
   let peekLabel = '';
-  if (selectedItineraryIndex !== null && travelPlan?.itineraries?.[selectedItineraryIndex]) {
+  if (singleMosqueNav && !travelDestination) {
+    peekLabel = singleMosqueNav.name;
+  } else if (selectedItineraryIndex !== null && travelPlan?.itineraries?.[selectedItineraryIndex]) {
     const it = travelPlan.itineraries[selectedItineraryIndex];
     const detour = it.total_detour_minutes > 0 ? ` · +${fmtDuration(it.total_detour_minutes)} detour` : '';
-    peekLabel = `Option ${selectedItineraryIndex + 1}${detour} — tap to see all`;
+    peekLabel = bottomSheetHeight === 'full'
+      ? `Option ${selectedItineraryIndex + 1}${detour} — tap to minimize`
+      : `Option ${selectedItineraryIndex + 1}${detour} — tap to see all`;
   } else if (travelPlanLoading) {
     peekLabel = 'Finding prayer routes…';
   } else if (travelPlan?.itineraries?.length) {
@@ -2380,8 +2442,12 @@ function MapBottomSheet() {
       {/* Scrollable content */}
       <div className="overflow-y-auto pointer-events-auto" style={{ height: 'calc(100% - 64px)' }}>
 
-        {/* Trip plan view */}
-        {travelDestination ? (
+        {/* Mosque detail view — shown when mosque is selected and no trip active */}
+        {singleMosqueNav && !travelDestination ? (
+          <div className="px-4 pt-2 pb-6">
+            <MosqueDetailSheet mosque={singleMosqueNav} onDismiss={dismissMosque} />
+          </div>
+        ) : travelDestination ? (
           <TravelPlanView />
         ) : (
           <>
@@ -2446,6 +2512,7 @@ function MapBottomSheet() {
     </div>
   );
 }
+
 
 // ─── Main App ────────────────────────────────────────────────────────────────
 

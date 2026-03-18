@@ -118,6 +118,9 @@ interface AppState {
   // True while the navigate-to action sheet (Google/Apple/Share) is visible
   navShareOpen: boolean;
   setNavShareOpen: (v: boolean) => void;
+  // Single-mosque quick-nav: tap a mosque in the list to see route + Bismillah button
+  singleMosqueNav: Mosque | null;
+  setSingleMosqueNav: (m: Mosque | null) => void;
 }
 
 export const useStore = create<AppState>((set) => ({
@@ -199,4 +202,6 @@ export const useStore = create<AppState>((set) => ({
   closeSheet: () => set({ bottomSheet: null }),
   navShareOpen: false,
   setNavShareOpen: (navShareOpen) => set({ navShareOpen }),
+  singleMosqueNav: null,
+  setSingleMosqueNav: (singleMosqueNav) => set({ singleMosqueNav }),
 }));

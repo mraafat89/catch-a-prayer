@@ -1345,15 +1345,6 @@ def build_itineraries(prayer_pairs: list[dict], allow_combining: bool = True) ->
             continue
         seen.add(combo_key)
 
-        # Temporal consistency: stops should be in roughly chronological order
-        stop_times = [
-            s["minutes_into_trip"]
-            for _, opt in choices  # type: ignore[misc]
-            for s in opt.get("stops", [])
-        ]
-        if stop_times != sorted(stop_times):
-            continue
-
         pair_choices_out = []
         total_detour = 0
         all_feasible = True

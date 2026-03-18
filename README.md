@@ -26,13 +26,23 @@ Designed for US and Canada. Mobile-first — runs as a native iOS/Android app vi
   - Same logic applies for Maghrib + Isha
 - **Pair-aware "have you prayed?" banner**: In Musafir mode asks about pairs, not individual prayers
 
+### Mosque Quick-Nav (Google Maps style)
+- Tap any mosque in the list or on the map pin → bottom sheet snaps to half-height showing the mosque detail card
+- **Real road route** from current location to the mosque appears on the map (fetched from OSRM routing API — not a straight line)
+- **Map auto-zooms** to fit user + mosque accounting for the half-sheet visible area
+- Mosque detail shows: prayer status badge, today's prayer times, Jumu'ah schedule, data source
+- **Top-right action icons**: globe (mosque website) · directions arrow (opens Google Maps / Apple Maps) · ✕ (dismiss)
+- Dismissing with ✕ returns to the mosque list at peek height and re-zooms to search radius
+
 ### Route-Based Trip Planner
 - Set origin + destination (+ up to 4 waypoints) and get a full prayer itinerary for the entire journey
+- **Google Maps-style 5-state UI**: idle pill → search → destination preview → active chip → edit form
 - **3–5 complete itinerary options** (all-early, early+late mix, all-late, all-at-destination, separate stops)
 - **Per-itinerary route geometry**: each option computes its own driving route through its prayer stops in parallel — the map polyline shows the actual road path through each mosque
-- **Floating Navigate bar**: selecting an itinerary card shows a "Let's Go · Option N" button over the map that opens a native action sheet (Google Maps / Apple Maps on iOS / Share)
-- **Plan button disabled** while a plan is loading to prevent double-submits
-- Switching Muqeem ↔ Musafir while a plan is active automatically re-plans with the new mode
+- **بسم الله — Navigate bar**: selecting an itinerary shows a navigate button that opens a native action sheet (Google Maps / Apple Maps on iOS / Share)
+- **Plan caching**: computed plans are cached per trip config + mode; switching Muqeem ↔ Musafir while a plan is active instantly re-uses the cached plan for that mode
+- **Long-trip suggestion**: trips > 160 km in Muqeem mode show a modal asking to switch to Musafir
+- Map auto-adjusts on every state transition: edit mode open, edit mode close (back button), plan load, itinerary select, sheet drag
 
 ### Mobile App (Capacitor)
 - Installable on iPhone and Android as a native app via Capacitor
@@ -43,7 +53,7 @@ Designed for US and Canada. Mobile-first — runs as a native iOS/Android app vi
 - 2,400+ US/Canada mosques (OpenStreetMap + Hartford Institute + MosqueList)
 - No per-request API cost — all pre-indexed in PostGIS
 - Real travel times via Mapbox (not straight-line estimates)
-- One-tap navigation to Google Maps, Apple Maps, or Waze
+- One-tap navigation to Google Maps or Apple Maps
 
 ---
 

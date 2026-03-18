@@ -59,6 +59,13 @@ function createEndpointIcon(label: string, bg: string): L.DivIcon {
 
 // ─── Fit bounds controller ────────────────────────────────────────────────────
 
+/** Compute sheet visible height directly from React state — avoids CSS var race condition */
+function sheetVisiblePx(height: 'peek' | 'half' | 'full'): number {
+  if (height === 'full') return window.innerHeight;
+  if (height === 'half') return Math.round(window.innerHeight * 0.55);
+  return 125; // peek
+}
+
 function FitBoundsController() {
   const map                    = useMap();
   const selectedMosqueId       = useStore((s) => s.selectedMosqueId);
@@ -68,7 +75,10 @@ function FitBoundsController() {
   const travelDestination      = useStore((s) => s.travelDestination);
   const travelOrigin           = useStore((s) => s.travelOrigin);
   const travelPlan             = useStore((s) => s.travelPlan);
+  const tripWaypoints          = useStore((s) => s.tripWaypoints);
+  const tripPlannerOpen        = useStore((s) => s.tripPlannerOpen);
   const selectedItineraryIndex = useStore((s) => s.selectedItineraryIndex);
+  const bottomSheetHeight      = useStore((s) => s.bottomSheetHeight);
 
   // 1) Single mosque selected (from list or route stop card tap)
   useEffect(() => {
@@ -81,17 +91,44 @@ function FitBoundsController() {
       [userLocation.latitude, userLocation.longitude],
       [focusLat, focusLng],
     ]);
-    map.fitBounds(bounds, { padding: [52, 52], maxZoom: 15, animate: true });
-  }, [selectedMosqueId, mapFocusCoords]); // eslint-disable-line react-hooks/exhaustive-deps
+    const root = document.documentElement;
+    const topBarBottom = parseFloat(root.style.getPropertyValue('--top-bar-bottom') || getComputedStyle(root).getPropertyValue('--top-bar-bottom')) || 80;
+    map.fitBounds(bounds, {
+      paddingTopLeft: [40, topBarBottom + 20],
+      paddingBottomRight: [40, sheetVisiblePx('half') + 20],
+      maxZoom: 15,
+      animate: true,
+    });
+  }, [selectedMosqueId, mapFocusCoords, bottomSheetHeight]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // 2) Itinerary selected — fit to that itinerary's route geometry
+  // 2) Itinerary selected (or sheet height changes, or edit panel closes) — fit route in VISIBLE map area
   useEffect(() => {
+    if (tripPlannerOpen) return; // editing in progress — wait for panel to close
     if (selectedItineraryIndex === null || !travelPlan) return;
-    const itinerary = travelPlan.itineraries[selectedItineraryIndex];
-    if (!itinerary?.route_geometry?.length) return;
-    const bounds = L.latLngBounds(itinerary.route_geometry);
-    map.fitBounds(bounds, { padding: [60, 60], animate: true });
-  }, [selectedItineraryIndex]); // eslint-disable-line react-hooks/exhaustive-deps
+    const itinerary = travelPlan.itineraries?.[selectedItineraryIndex];
+    const root = document.documentElement;
+    const topBarBottom = parseFloat(root.style.getPropertyValue('--top-bar-bottom') || getComputedStyle(root).getPropertyValue('--top-bar-bottom')) || 80;
+    const sheetVisible = sheetVisiblePx(bottomSheetHeight);
+
+    // Use itinerary route geometry if available; otherwise fall back to all stop coords
+    let points: [number, number][] = [];
+    if (itinerary?.route_geometry?.length) {
+      points = itinerary.route_geometry as [number, number][];
+    } else if (itinerary?.pair_choices?.length) {
+      for (const pc of itinerary.pair_choices) {
+        for (const stop of pc.option.stops) {
+          points.push([stop.mosque_lat, stop.mosque_lng]);
+        }
+      }
+    }
+    if (points.length < 2) return;
+    const bounds = L.latLngBounds(points);
+    map.fitBounds(bounds, {
+      paddingTopLeft: [40, topBarBottom + 20],
+      paddingBottomRight: [40, sheetVisible + 20],
+      animate: true,
+    });
+  }, [selectedItineraryIndex, bottomSheetHeight, tripPlannerOpen]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // 2) Destination preview: fly to destination when selected (before plan loads)
   useEffect(() => {
@@ -105,37 +142,63 @@ function FitBoundsController() {
     map.flyTo(map.unproject(p.subtract([0, offset]), zoom), zoom, { animate: true, duration: 0.8 });
   }, [travelDestination]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // 3) Trip: fit to origin + destination + stops when plan loads
+  // 3) Edit mode: fit to show all configured points, accounting for the expanded edit panel height
   useEffect(() => {
+    if (!tripPlannerOpen || !travelDestination) return;
+    const points: [number, number][] = [];
+    const originLat = travelOrigin?.lat ?? userLocation?.latitude;
+    const originLng = travelOrigin?.lng ?? userLocation?.longitude;
+    if (originLat != null && originLng != null) points.push([originLat, originLng]);
+    for (const wp of tripWaypoints) points.push([wp.lat, wp.lng]);
+    points.push([travelDestination.lat, travelDestination.lng]);
+    if (points.length < 2) return;
+    // Delay reading --top-bar-bottom so ResizeObserver has time to measure the expanded edit panel
+    const timer = setTimeout(() => {
+      const topBarBottom = parseFloat(
+        getComputedStyle(document.documentElement).getPropertyValue('--top-bar-bottom')
+      ) || 80;
+      map.fitBounds(L.latLngBounds(points), {
+        paddingTopLeft: [40, topBarBottom + 20],
+        paddingBottomRight: [40, 40],
+        animate: true,
+      });
+    }, 350);
+    return () => clearTimeout(timer);
+  }, [travelDestination, travelOrigin, tripWaypoints, tripPlannerOpen]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // 4) Trip plan loaded (or edit panel closes) — fit to full route in visible map area
+  useEffect(() => {
+    if (tripPlannerOpen) return; // editing in progress — wait for panel to close
     if (!travelDestination || !travelPlan) return;
 
-    const points: [number, number][] = [];
+    const root = document.documentElement;
+    const topBarBottom = parseFloat(root.style.getPropertyValue('--top-bar-bottom') || getComputedStyle(root).getPropertyValue('--top-bar-bottom')) || 80;
+    const sheetVisible = sheetVisiblePx(bottomSheetHeight);
 
+    const points: [number, number][] = [];
     const originLat = travelOrigin?.lat ?? userLocation?.latitude;
     const originLng = travelOrigin?.lng ?? userLocation?.longitude;
     if (originLat != null && originLng != null) points.push([originLat, originLng]);
     points.push([travelDestination.lat, travelDestination.lng]);
 
-    if (travelPlan) {
-      const seen = new Set<string>();
-      for (const pair of travelPlan.prayer_pairs) {
-        for (const opt of pair.options) {
-          if (!opt.feasible) continue;
-          for (const stop of opt.stops) {
-            const key = `${stop.mosque_lat},${stop.mosque_lng}`;
-            if (!seen.has(key)) {
-              seen.add(key);
-              points.push([stop.mosque_lat, stop.mosque_lng]);
-            }
-          }
+    const seen = new Set<string>();
+    for (const pair of travelPlan.prayer_pairs) {
+      for (const opt of pair.options) {
+        if (!opt.feasible) continue;
+        for (const stop of opt.stops) {
+          const key = `${stop.mosque_lat},${stop.mosque_lng}`;
+          if (!seen.has(key)) { seen.add(key); points.push([stop.mosque_lat, stop.mosque_lng]); }
         }
       }
     }
 
     if (points.length < 2) return;
-    const bounds = L.latLngBounds(points);
-    map.fitBounds(bounds, { padding: [60, 60], animate: true });
-  }, [travelDestination, travelPlan]); // eslint-disable-line react-hooks/exhaustive-deps
+    map.fitBounds(L.latLngBounds(points), {
+      paddingTopLeft: [40, topBarBottom + 20],
+      paddingBottomRight: [40, sheetVisible + 20],
+      animate: true,
+    });
+  }, [travelDestination, travelPlan, tripPlannerOpen]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return null;
 }
@@ -170,6 +233,7 @@ function LocationButton() {
   const bottomSheetHeight = useStore((s) => s.bottomSheetHeight);
   const bottomSheet       = useStore((s) => s.bottomSheet); // any modal open (mosque/spot/settings)
   const navShareOpen      = useStore((s) => s.navShareOpen); // navigate action sheet is visible
+  const travelPlanLoading = useStore((s) => s.travelPlanLoading);
   const th                = useTheme();
   const [inView, setInView] = useState(true);
 
@@ -184,8 +248,8 @@ function LocationButton() {
     return () => { map.off('moveend', check); };
   }, [map, userLocation]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Hide when sheet is maximized, any modal is open, or a nav-share action sheet is showing
-  if (!userLocation || bottomSheetHeight === 'full' || bottomSheet !== null || navShareOpen) return null;
+  // Hide when sheet is maximized, any modal is open, nav-share action sheet is showing, or route is loading
+  if (!userLocation || bottomSheetHeight === 'full' || bottomSheet !== null || navShareOpen || travelPlanLoading) return null;
 
   return ReactDOM.createPortal(
     <button
@@ -236,14 +300,39 @@ const MapView: React.FC = () => {
   const travelPlan               = useStore((s) => s.travelPlan);
   const selectedItineraryIndex   = useStore((s) => s.selectedItineraryIndex);
   const tripWaypoints            = useStore((s) => s.tripWaypoints);
+  const tripPlannerOpen          = useStore((s) => s.tripPlannerOpen);
+  const singleMosqueNav          = useStore((s) => s.singleMosqueNav);
+
+  // Fetch real road route from OSRM when a mosque is selected
+  const [singleMosqueRoute, setSingleMosqueRoute] = useState<[number, number][] | null>(null);
+  useEffect(() => {
+    if (!singleMosqueNav || !userLocation) { setSingleMosqueRoute(null); return; }
+    let cancelled = false;
+    const { latitude: fromLat, longitude: fromLng } = userLocation;
+    const { latitude: toLat, longitude: toLng } = singleMosqueNav.location;
+    fetch(
+      `https://router.project-osrm.org/route/v1/driving/${fromLng},${fromLat};${toLng},${toLat}?overview=full&geometries=geojson`
+    )
+      .then((r) => r.json())
+      .then((data) => {
+        if (cancelled) return;
+        const coords: [number, number][] = data?.routes?.[0]?.geometry?.coordinates;
+        if (coords) setSingleMosqueRoute(coords.map(([lng, lat]) => [lat, lng]));
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [singleMosqueNav?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const center: [number, number] = userLocation
     ? [userLocation.latitude, userLocation.longitude]
     : [37.7749, -122.4194];
 
+  // In edit mode (tripPlannerOpen), hide route and stops — show only origin/waypoints/destination pins
+  const showRoute = !tripPlannerOpen;
+
   // Show stops from the selected itinerary only; fall back to all feasible stops
   const routeStops: { id: string; lat: number; lng: number; name: string }[] = [];
-  if (travelPlan) {
+  if (travelPlan && showRoute) {
     const seen = new Set<string>();
     const itinerary = selectedItineraryIndex != null
       ? travelPlan.itineraries?.[selectedItineraryIndex]
@@ -274,12 +363,15 @@ const MapView: React.FC = () => {
   }
 
   // Use the selected itinerary's route (goes through its prayer stops); fall back to base route
+  // Hidden when editing (showRoute=false) or no trip destination
   const selectedItinerary = selectedItineraryIndex != null
     ? travelPlan?.itineraries?.[selectedItineraryIndex]
     : null;
-  const routeGeometry = (selectedItinerary?.route_geometry?.length ?? 0) > 1
-    ? selectedItinerary!.route_geometry!
-    : travelPlan?.route?.route_geometry ?? null;
+  const routeGeometry = (showRoute && travelDestination)
+    ? ((selectedItinerary?.route_geometry?.length ?? 0) > 1
+        ? selectedItinerary!.route_geometry!
+        : travelPlan?.route?.route_geometry ?? null)
+    : null;
 
   // Theme-colored icons (created per-render so they pick up mode changes)
   const originIcon      = createPinIcon(th.hex, false);
@@ -304,12 +396,21 @@ const MapView: React.FC = () => {
       <FitBoundsController />
       <LocationButton />
 
-      {/* Route polyline */}
+      {/* Trip route polyline */}
       {routeGeometry && routeGeometry.length > 1 && (
         <Polyline
           key={`route-${selectedItineraryIndex}-${travelPlan?.departure_time ?? ''}`}
           positions={routeGeometry}
           pathOptions={{ color: th.hex, weight: 4, opacity: 0.7, dashArray: undefined }}
+        />
+      )}
+
+      {/* Single-mosque route — real road geometry from OSRM */}
+      {singleMosqueRoute && !travelDestination && (
+        <Polyline
+          key={`singlenav-${singleMosqueNav?.id}`}
+          positions={singleMosqueRoute}
+          pathOptions={{ color: th.hex, weight: 4, opacity: 0.75 }}
         />
       )}
 
@@ -362,8 +463,8 @@ const MapView: React.FC = () => {
         </Marker>
       )}
 
-      {/* Route mosque stop pins (indigo) */}
-      {routeStops.map((stop) => (
+      {/* Route mosque stop pins — hidden while editing */}
+      {showRoute && routeStops.map((stop) => (
         <Marker
           key={`route-${stop.id}`}
           position={[stop.lat, stop.lng]}
@@ -389,7 +490,8 @@ const MapView: React.FC = () => {
             eventHandlers={{
               click: () => {
                 setSelectedMosqueId(mosque.id);
-                openSheet({ type: 'mosque_detail', mosque });
+                useStore.getState().setSingleMosqueNav(mosque);
+                useStore.getState().setBottomSheetHeight('peek');
               },
             }}
           >
