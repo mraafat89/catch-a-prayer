@@ -522,9 +522,16 @@ function MosqueDetailSheet({ mosque, onDismiss }: { mosque: Mosque; onDismiss?: 
     : null;
 
   return (
-    <div>
-      {/* Header row: address on left, website + navigate icons on right */}
-      <div className="flex items-center justify-between mb-3">
+    <div className="relative">
+      {/* ✕ dismiss — top-right of the card */}
+      <button
+        onClick={onDismiss ?? closeSheet}
+        className="absolute top-0 right-0 w-9 h-9 flex items-center justify-center rounded-full bg-gray-100 hover:bg-gray-200 text-gray-500 hover:text-gray-700 active:scale-95 transition-all"
+        aria-label="Close"
+      >✕</button>
+
+      {/* Header row: address on left, website + navigate icons on right (with right padding for the ✕) */}
+      <div className="flex items-center justify-between mb-3 pr-11">
         {mosque.location.address
           ? <p className="text-sm text-gray-500 flex-1 pr-3 leading-snug">{mosque.location.address}</p>
           : <div className="flex-1" />
@@ -554,11 +561,6 @@ function MosqueDetailSheet({ mosque, onDismiss }: { mosque: Mosque; onDismiss?: 
               <path d="M21.71 11.29l-9-9c-.39-.39-1.02-.39-1.41 0l-9 9c-.39.39-.39 1.02 0 1.41l9 9c.39.39 1.02.39 1.41 0l9-9c.39-.38.39-1.01 0-1.41zM14 14.5V12h-4v3H8v-4c0-.55.45-1 1-1h5V7.5l3.5 3.5-3.5 3.5z"/>
             </svg>
           </button>
-          <button
-            onClick={onDismiss ?? closeSheet}
-            className="w-9 h-9 flex items-center justify-center rounded-full bg-gray-100 hover:bg-gray-200 text-gray-500 hover:text-gray-700 active:scale-95 transition-all"
-            aria-label="Close"
-          >✕</button>
         </div>
       </div>
 
@@ -712,7 +714,6 @@ function MosqueDetailSheet({ mosque, onDismiss }: { mosque: Mosque; onDismiss?: 
         <div className="fixed inset-0 z-[900] flex items-end" onClick={() => setNavSheetOpen(false)}>
           <div className="w-full bg-white rounded-t-2xl shadow-2xl pb-8 px-4 pt-3" onClick={(e) => e.stopPropagation()}>
             <div className="flex justify-center mb-4"><div className="w-10 h-1 bg-gray-300 rounded-full" /></div>
-            <p className="text-sm font-semibold text-gray-800 mb-4">Navigate to {mosque.location.address || mosque.name}</p>
             <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-2">Open in…</p>
             <div className="space-y-2">
               <button onClick={() => { window.open(mosqueGoogleUrl, '_blank'); setNavSheetOpen(false); }}

@@ -662,6 +662,7 @@ def _build_solo_plan(
     dest_lng: float = 0.0,
     origin_mosques: Optional[list[dict]] = None,
     dest_mosques: Optional[list[dict]] = None,
+    dest_tz_str: Optional[str] = None,
 ) -> dict:
     """Build a single-prayer plan (no combining) for Muqeem mode or a solo remaining prayer."""
     pair_labels_solo = {
@@ -684,6 +685,16 @@ def _build_solo_plan(
     dep_min = dep_local.hour * 60 + dep_local.minute
     arr_min = arr_local.hour * 60 + arr_local.minute
     dep_fmt = f"{dep_local.hour:02d}:{dep_local.minute:02d}"
+
+    # Arrival time in the DESTINATION's timezone — used for dest_schedule checks.
+    # dest_schedule times are in destination local time, so comparing against origin
+    # arr_min would be wrong for cross-timezone trips (e.g. LA→NY 3hr offset).
+    try:
+        _dest_tz = ZoneInfo(dest_tz_str or timezone_str)
+        _arr_dest = arrival_dt.astimezone(_dest_tz)
+        arr_min_dest = _arr_dest.hour * 60 + _arr_dest.minute
+    except Exception:
+        arr_min_dest = arr_min
 
     # Deadline for no_option fallback
     _DEADLINE_KEYS = {"fajr": "sunrise", "dhuhr": "asr_adhan", "asr": "maghrib_adhan",
@@ -737,9 +748,9 @@ def _build_solo_plan(
             break
 
     # At destination — use anchor mosques near destination for best results
-    s_dest = prayer_status_at_arrival(prayer, dest_schedule, arr_min)
+    s_dest = prayer_status_at_arrival(prayer, dest_schedule, arr_min_dest)
     if s_dest:
-        dest_mosque = _find_nearby_mosque(dest_lat, dest_lng, route_mosques, prayer, arr_min,
+        dest_mosque = _find_nearby_mosque(dest_lat, dest_lng, route_mosques, prayer, arr_min_dest,
                                           anchor_mosques=dest_mosques)
         if dest_mosque:
             dm_status = prayer_status_at_arrival(prayer, dest_mosque["schedule"], dest_mosque["local_arrival_minutes"]) or s_dest
@@ -791,6 +802,7 @@ def build_combination_plan(
     dest_lng: float = 0.0,
     origin_mosques: Optional[list[dict]] = None,
     dest_mosques: Optional[list[dict]] = None,
+    dest_tz_str: Optional[str] = None,
 ) -> Optional[dict]:
     """
     Build all valid prayer options for a prayer pair (e.g. dhuhr+asr).
@@ -798,6 +810,7 @@ def build_combination_plan(
     trip_mode='driving' only shows separate-stop options (combining not allowed).
     prayed_prayers: set of prayer names already performed today.
     origin_mosques/dest_mosques: pre-fetched anchor mosques for pray_before/at_destination.
+    dest_tz_str: destination timezone string — used to correctly check dest_schedule times.
     Returns a dict matching TravelPairPlan schema, or None if both prayers are done.
     """
     prayed = prayed_prayers or set()
@@ -812,6 +825,7 @@ def build_combination_plan(
             prayer2, schedule, route_mosques, departure_dt, arrival_dt, dest_schedule,
             timezone_str, origin_lat, origin_lng, dest_lat, dest_lng,
             origin_mosques=origin_mosques, dest_mosques=dest_mosques,
+            dest_tz_str=dest_tz_str,
         )
     # Sequential inference: if prayer2 (e.g. Asr) is already prayed, prayer1 (e.g. Dhuhr)
     # must have been addressed before it. Skip the entire pair — both are done.
@@ -840,6 +854,14 @@ def build_combination_plan(
     arr_min = arr_local.hour * 60 + arr_local.minute
     dep_fmt = f"{dep_local.hour:02d}:{dep_local.minute:02d}"
 
+    # Arrival time in DESTINATION timezone — dest_schedule times are in dest local time.
+    try:
+        _dest_tz = ZoneInfo(dest_tz_str or timezone_str)
+        _arr_dest = arrival_dt.astimezone(_dest_tz)
+        arr_min_dest = _arr_dest.hour * 60 + _arr_dest.minute
+    except Exception:
+        arr_min_dest = arr_min
+
     # Deadline for no_option fallback — end of prayer2's window
     _DEADLINE_KEYS = {"asr": "maghrib_adhan", "isha": "fajr_adhan"}
     _deadline_key = _DEADLINE_KEYS.get(prayer2)
@@ -858,6 +880,7 @@ def build_combination_plan(
             prayer2, schedule, route_mosques, departure_dt, arrival_dt, dest_schedule,
             timezone_str, origin_lat, origin_lng, dest_lat, dest_lng,
             origin_mosques=origin_mosques, dest_mosques=dest_mosques,
+            dest_tz_str=dest_tz_str,
         )
 
     options = []
@@ -1010,8 +1033,9 @@ def build_combination_plan(
             })
 
     # ── Pray at / near destination — anchor mosque search near destination ───
-    s1_dest = prayer_status_at_arrival(prayer1, dest_schedule, arr_min)
-    s2_dest = prayer_status_at_arrival(prayer2, dest_schedule, arr_min)
+    # Use arr_min_dest (arrival in destination timezone) to correctly check dest_schedule times.
+    s1_dest = prayer_status_at_arrival(prayer1, dest_schedule, arr_min_dest)
+    s2_dest = prayer_status_at_arrival(prayer2, dest_schedule, arr_min_dest)
     prayers_at_dest: list[str] = [p for p, s in [(prayer1, s1_dest), (prayer2, s2_dest)] if s]
     dest_combination_label: Optional[str] = None
 
@@ -1026,16 +1050,16 @@ def build_combination_plan(
             p2_adhan_raw = dest_schedule.get(f"{prayer2}_adhan")
             if p2_adhan_raw:
                 p2_adhan_min = hhmm_to_minutes(p2_adhan_raw)
-                if p2_adhan_min < arr_min:
+                if p2_adhan_min < arr_min_dest:
                     p2_adhan_min += 1440
-                if 0 <= p2_adhan_min - arr_min <= 45:
+                if 0 <= p2_adhan_min - arr_min_dest <= 45:
                     prayers_at_dest = [prayer1, prayer2]
                     dest_combination_label = "Jam' Ta'kheer"
         elif s1_dest and s2_dest:
             dest_combination_label = "Jam' Taqdeem"
 
     if prayers_at_dest:
-        dest_mosque = _find_nearby_mosque(dest_lat, dest_lng, route_mosques, prayers_at_dest[0], arr_min,
+        dest_mosque = _find_nearby_mosque(dest_lat, dest_lng, route_mosques, prayers_at_dest[0], arr_min_dest,
                                           anchor_mosques=dest_mosques)
         if dest_mosque:
             dm_status = (prayer_status_at_arrival(prayers_at_dest[0], dest_mosque["schedule"], dest_mosque["local_arrival_minutes"])
@@ -1498,6 +1522,7 @@ async def build_travel_plan(
                 departure_dt, arrival_dt, dest_schedule, timezone_str,
                 origin_lat, origin_lng, dest_lat, dest_lng,
                 origin_mosques=origin_mosques, dest_mosques=dest_mosques,
+                dest_tz_str=dest_tz_str,
             )
             prayer_pairs.append(plan)
     else:
@@ -1523,6 +1548,7 @@ async def build_travel_plan(
                 dest_lng=dest_lng,
                 origin_mosques=origin_mosques,
                 dest_mosques=dest_mosques,
+                dest_tz_str=dest_tz_str,
             )
             if plan is not None:
                 prayer_pairs.append(plan)
