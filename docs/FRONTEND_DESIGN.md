@@ -58,18 +58,21 @@ The app is a **full-screen, single-page layout** with no scrolling at the root l
 
 ## Two-Mode Theme System
 
-Two complete color schemes, toggled via a single pill button (top right, always visible).
+Two color schemes built from **teal** (`#0d9488`) and **dark** (`#2e3d44`), toggled via a single pill button (top right, always visible). Both modes share teal for text, borders, and light backgrounds — they differ in which color is used for **buttons/badges** vs **route polylines**.
 
 | Key | Muqeem (resident) | Musafir (traveler) |
 |-----|-------------------|--------------------|
-| Primary bg | `bg-teal-600` | `bg-indigo-600` |
-| Dark bg | `bg-teal-700` | `bg-indigo-700` |
-| Light bg | `bg-teal-50` | `bg-indigo-50` |
-| Hex | `#0d9488` | `#6366f1` |
-| Polyline | teal | indigo |
-| User dot | teal | indigo |
-| Map pins | teal | indigo |
-| Spot circles | teal dashed | indigo dashed |
+| Buttons / badges (`bg`) | teal `#0d9488` | dark `#2e3d44` |
+| Route polyline | dark `#2e3d44` | teal `#0d9488` |
+| Text / borders | teal | teal |
+| Light bg | teal-50 | teal-50 |
+| `bgAccent` (Navigate bar) | dark `#2e3d44` | teal `#0d9488` |
+| `bgAccentHover` | darker variant | darker teal variant |
+| User dot | teal | teal |
+| Map pins | teal | teal |
+| Spot circles | teal dashed | teal dashed |
+
+The Navigate bar uses `bgAccent` / `bgAccentHover` — the contrasting color from the pair — so it visually stands out from other buttons.
 
 All theme values live in `client/src/theme.ts`. `useTheme()` reads `travelMode` from Zustand and returns the active theme object.
 
@@ -110,6 +113,7 @@ All elements (pill, search bar, chip, form) are standardized to `h-12` (48px) to
    [● Destination name            ✕]  [🏠 Muqeem] [⚙]
    ```
    - Shows "Pray on Route →" CTA button to trigger planning
+   - Selecting a destination sets `bottomSheetHeight('peek')` explicitly; preview uses 100ms delay
    - ✕ → `clearAll()`
 
 4. **Chip** (destination + plan loaded, not editing):
@@ -123,6 +127,7 @@ All elements (pill, search bar, chip, form) are standardized to `h-12` (48px) to
    - Back button (chevron left, top-left only) → calls `clearAll()` which cancels the trip entirely
    - Field order: Destination → From (with GPS reset button) → waypoints → departure time → Plan button
    - "Add stop" button between From and destination (up to 4 stops)
+   - Waypoint rows have a stable `id`; React key uses `wp.id` (not index); all reorder callbacks match by `r.id === wp.id`
    - Plan My Prayers button (disabled while loading)
    - Long-trip Musafir suggestion: trips > 160 km in Muqeem mode → modal dialog (not inline banner)
 
@@ -147,7 +152,7 @@ When a trip > 160 km is planned in Muqeem mode, a centered modal dialog appears 
 
 Single pill button — shows current mode, always positioned `absolute top-3 right-3` inside the top overlay (never shifts between form states):
 - `🏠 Muqeem` → teal background
-- `✈️ Musafir` → indigo background
+- `✈️ Musafir` → dark background
 
 ### SettingsButton
 
@@ -168,7 +173,7 @@ Draggable sheet using `position: fixed; top: var(--top-bar-bottom, 140px); botto
 Drag handle at top activates touch drag. On release, snaps to nearest state using `DOMMatrix` to read current transform.
 
 **`--sheet-visible` CSS variable:**
-Updated in real-time during drag (`handleTouchMove`) and on every snap (`useEffect` on `[bottomSheetHeight, tripPlannerOpen]`). Value = sheet `offsetHeight - translateY` (pixels currently visible). Used by FAB and LocationButton to track the sheet without React re-renders. When `tripPlannerOpen=true`, set to `0` (sheet fully off-screen).
+Computed synchronously in `useLayoutEffect` from the same `offsetHeight` and `translateY` values used for snapping. Value = sheet `offsetHeight - translateY` (pixels currently visible). Also updated in real-time during drag (`handleTouchMove`). A `topbar-resized` custom event re-syncs `--sheet-visible` whenever `--top-bar-bottom` changes. Used by FAB and LocationButton to track the sheet without React re-renders. When `tripPlannerOpen=true`, set to `0` (sheet fully off-screen). Buttons are hidden during `tripPlannerOpen`.
 
 **Auto-transitions:**
 - `travelPlan` loads → snap to `half` (shows itinerary options)
@@ -194,26 +199,40 @@ Tapping the ✕ button (top-right of the mosque detail header) calls `onDismiss`
 - `rounded-2xl border shadow-sm` with status-color left border accent
 - Status icons (from `STATUS_CONFIG`) with colored header background
 - Musafir combining section: shows `{pair.label} — Musafir` text only (no emoji)
-- "Already prayed" inline button: neutral `border-gray-200 text-gray-500`
+- No inline "Already prayed" buttons — only the top `PrayedBanner` has "Yes, I prayed"
 - **Tap** → sets `singleMosqueNav(mosque)` + `setSelectedMosqueId` + snaps sheet to `half`; does NOT open a modal overlay
 
 ### MosqueDetailSheet
 
 Rendered **inline inside `MapBottomSheet`** when `singleMosqueNav` is set (no longer a floating modal overlay for mosque details).
 
-**Header row** (`flex items-center justify-between`):
-- Left: mosque address (small gray text) — or empty space if no address
-- Right (top-right icon buttons):
-  - **Globe icon** — links to mosque website (shown only if `mosque.website` exists); `bg-gray-100` rounded circle
-  - **Directions diamond-arrow icon** (Google Maps style) — theme-colored rounded circle; opens navigate action sheet
+**Header layout:**
+- **Row 1**: mosque name (left) + globe icon + navigate diamond-arrow icon + ✕ close button (right)
+- **Row 2**: address in gray text below the name
+- Peek label is hidden when mosque detail is shown
 
-**No bottom action bar** — all actions are in the top-right icons.
+**Icon buttons (Row 1 right side):**
+- **Globe icon** — links to mosque website (shown only if `mosque.website` exists); `bg-gray-100` rounded circle
+- **Navigate diamond-arrow icon** — theme-colored rounded circle; opens navigate action sheet
+- **✕ close button** — calls `onDismiss` to return to the mosque list
 
-**✕ close button** — top-right of the header row; calls `onDismiss` to return to the mosque list.
+**No bottom action bar** — all actions are in the header row. No "Leave by" line (the message text already contains it).
 
-**Navigate action sheet** — portaled to `document.body`; shows `Navigate to {address}` (falls back to mosque name if no address). Options: Google Maps / Apple Maps (iOS only) / Share Route.
+**Navigate action sheet** — portaled to `document.body`; no heading text, just shows "Open in..." with options: Google Maps / Apple Maps (iOS only) / Share Route.
 
 **`onDismiss` prop** — passed from `MapBottomSheet`; calls `setSingleMosqueNav(null)` + `setSelectedMosqueId(null)` + `setBottomSheetHeight('peek')`.
+
+### PrayedBanner
+
+"Yes, I prayed" buttons use theme color (not hardcoded green). Row backgrounds are also theme-colored. This is the only place users can mark a prayer as prayed — inline buttons were removed from mosque cards.
+
+**Prayer fallback after marking prayed:** Uses `PRAYER_ORDER` starting from the current prayer period (not from Fajr). Handles the case where Asr adhan has already passed.
+
+### Prayer Spot Card
+
+The spot detail card has a navigate diamond-arrow icon in its header. Tapping it opens a navigate action sheet with options: Google Maps / Apple Maps / Share. The bottom "Get Directions" link has been removed.
+
+**Navigate action sheet** — no heading text, just shows "Open in..." with the map/share options.
 
 ### NavigateBar
 
@@ -255,7 +274,7 @@ Rendered via `ReactDOM.createPortal` into `document.body`.
 - **Mosque pins**: status-colored teardrops; selected pin is larger
 - **Prayer spot circles**: dashed circle, theme `hex` stroke, `hexLight` fill
 - **User location**: theme-colored dot + pulse ring
-- **Trip route polyline**: theme color, weight 4, opacity 0.7; `key` prop forces remount on plan/itinerary change; only shown when `travelDestination` is set
+- **Trip route polyline**: theme color, weight 4, opacity 0.7; `key` uses `travelPlanVersion` counter (increments on each new plan) for guaranteed unique keys; only shown when `travelDestination` is set
 - **Single-mosque route polyline**: real road geometry fetched from OSRM (`router.project-osrm.org`) when a mosque is selected; theme color, weight 4, opacity 0.75; cleared when `singleMosqueNav` is null
 - **Route stop pins**: theme-colored teardrops with permanent tooltip (mosque name)
 - **Origin/destination markers**: circle badges labeled A (theme) / B (red)
@@ -292,6 +311,7 @@ Key UI state fields:
 | `travelPlan` | `TravelPlan\|null` | Computed prayer route plan |
 | `travelPlanLoading` | `boolean` | Plan button disabled while true; hides LocationButton |
 | `navShareOpen` | `boolean` | Nav action sheet visible → hides LocationButton |
+| `travelPlanVersion` | `number` | Counter incremented on each new plan; used as polyline `key` for guaranteed remount |
 
 **CSS variables** (written by React, read by CSS):
 - `--top-bar-bottom`: px value of top overlay's bottom edge + 8px margin; caps sheet `top`
@@ -312,6 +332,8 @@ When `travelMode=true`, mosque cards and detail sheets show combining options (J
 - If both available (before second prayer): show Taqdeem as primary, Ta'kheer as secondary
 - Section header shows `{pair.label} — Musafir` text only — no emojis
 
+**Sequential inference:** If Asr is marked as prayed, Dhuhr is implicitly treated as prayed. If Isha is marked as prayed, Maghrib is implicitly prayed. This inference applies to the `PrayedBanner`, the `MosqueCard` filter, and the `travel_combinations` filter.
+
 ---
 
 ## Per-Itinerary Route Geometry
@@ -320,7 +342,7 @@ Each `TripItinerary` has its own `route_geometry: [lat, lng][]` computed server-
 
 `MapView` shows `selectedItinerary.route_geometry` when an itinerary is selected; falls back to `travelPlan.route.route_geometry`. Route is only rendered when `travelDestination` is set (guards against stale geometry after `clearAll()`).
 
-The `Polyline` component uses `key={route-${selectedItineraryIndex}-${departure_time}}` to force remount and clear old routes when switching itineraries.
+The `Polyline` component uses `key` based on `travelPlanVersion` (a counter that increments on each new plan) to force remount and guarantee unique keys across plans.
 
 ---
 
@@ -333,6 +355,14 @@ When a user taps any mosque (from the nearby list or directly on the map pin):
 3. `MapBottomSheet` snaps to `half` and renders `MosqueDetailSheet` inline
 4. `MapView` fetches the real road route from OSRM and renders it as a solid polyline
 5. `FitBoundsController` fits the map to show user + mosque with half-sheet padding
-6. The mosque detail shows: address, prayer times table, status badge, Jumu'ah times, data source
-7. Top-right icons: globe (website) + directions diamond-arrow (opens Google/Apple Maps action sheet) + ✕ (dismiss)
+6. The mosque detail shows: name (row 1), address in gray (row 2), prayer times table, status badge, Jumu'ah times, data source
+7. Row 1 right side: globe (website) + navigate diamond-arrow (opens action sheet) + ✕ (dismiss)
 8. Dismiss: tap ✕ → clears `singleMosqueNav` + `selectedMosqueId`, snaps sheet to `peek`, mosque list reappears
+
+---
+
+## Miscellaneous UI Details
+
+- **Loading spinner**: Mosque list loading state uses the same SVG spinner as route planning (consistent spinner across the app).
+- **App icon**: Mosque pin logo from `logo_pin.png`, centered on a white square.
+- **"No nearby spots?" message**: No car emoji — plain text only.

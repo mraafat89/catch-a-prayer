@@ -133,13 +133,15 @@ function FitBoundsController() {
   // 2) Destination preview: fly to destination when selected (before plan loads)
   useEffect(() => {
     if (!travelDestination || travelPlan) return;
-    const zoom = 14;
-    const sheetVisible = parseFloat(
-      getComputedStyle(document.documentElement).getPropertyValue('--sheet-visible')
-    ) || 80;
-    const offset = sheetVisible / 2;
-    const p = map.project([travelDestination.lat, travelDestination.lng], zoom);
-    map.flyTo(map.unproject(p.subtract([0, offset]), zoom), zoom, { animate: true, duration: 0.8 });
+    // Small delay to let the sheet transition from search mode to peek
+    const timer = setTimeout(() => {
+      const zoom = 14;
+      // Use 125px (peek height) as the sheet visible area — sheet is in peek at this point
+      const offset = 125 / 2;
+      const p = map.project([travelDestination.lat, travelDestination.lng], zoom);
+      map.flyTo(map.unproject(p.subtract([0, offset]), zoom), zoom, { animate: true, duration: 0.8 });
+    }, 100);
+    return () => clearTimeout(timer);
   }, [travelDestination]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // 3) Edit mode: fit to show all configured points, accounting for the expanded edit panel height
@@ -234,6 +236,7 @@ function LocationButton() {
   const bottomSheet       = useStore((s) => s.bottomSheet); // any modal open (mosque/spot/settings)
   const navShareOpen      = useStore((s) => s.navShareOpen); // navigate action sheet is visible
   const travelPlanLoading = useStore((s) => s.travelPlanLoading);
+  const tripPlannerOpen   = useStore((s) => s.tripPlannerOpen);
   const th                = useTheme();
   const [inView, setInView] = useState(true);
 
@@ -248,8 +251,8 @@ function LocationButton() {
     return () => { map.off('moveend', check); };
   }, [map, userLocation]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Hide when sheet is maximized, any modal is open, nav-share action sheet is showing, or route is loading
-  if (!userLocation || bottomSheetHeight === 'full' || bottomSheet !== null || navShareOpen || travelPlanLoading) return null;
+  // Hide when: sheet maximized, modal open, nav-share showing, loading, or edit mode (sheet off-screen)
+  if (!userLocation || bottomSheetHeight === 'full' || bottomSheet !== null || navShareOpen || travelPlanLoading || tripPlannerOpen) return null;
 
   return ReactDOM.createPortal(
     <button
@@ -257,9 +260,7 @@ function LocationButton() {
         const targetZoom = Math.max(map.getZoom(), 14);
         const sheetVisible = parseFloat(
           getComputedStyle(document.documentElement).getPropertyValue('--sheet-visible')
-        ) || 0;
-        // Shift target upward by half the sheet height so the pin lands in the
-        // center of the visible map area (above the sheet), not the screen center.
+        ) || 125;
         const offset = sheetVisible / 2;
         const targetPoint = map.project([userLocation.latitude, userLocation.longitude], targetZoom);
         const adjustedLatLng = map.unproject(targetPoint.subtract([0, offset]), targetZoom);
@@ -298,6 +299,7 @@ const MapView: React.FC = () => {
   const travelDestination        = useStore((s) => s.travelDestination);
   const travelOrigin             = useStore((s) => s.travelOrigin);
   const travelPlan               = useStore((s) => s.travelPlan);
+  const travelPlanVersion        = useStore((s) => s.travelPlanVersion);
   const selectedItineraryIndex   = useStore((s) => s.selectedItineraryIndex);
   const tripWaypoints            = useStore((s) => s.tripWaypoints);
   const tripPlannerOpen          = useStore((s) => s.tripPlannerOpen);
@@ -399,7 +401,7 @@ const MapView: React.FC = () => {
       {/* Trip route polyline */}
       {routeGeometry && routeGeometry.length > 1 && (
         <Polyline
-          key={`route-${selectedItineraryIndex}-${travelPlan?.departure_time ?? ''}`}
+          key={`route-${travelPlanVersion}-${selectedItineraryIndex}`}
           positions={routeGeometry}
           pathOptions={{ color: th.hex, weight: 4, opacity: 0.7, dashArray: undefined }}
         />

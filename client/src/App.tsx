@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState, Suspense, lazy } from 'react';
+import React, { useEffect, useLayoutEffect, useRef, useState, Suspense, lazy } from 'react';
 import ReactDOM from 'react-dom';
 // MapView is lazy-loaded to defer Leaflet initialization until after mount (fixes iOS/WKWebView startup crash)
 import { apiService } from './services/api';
@@ -257,7 +257,6 @@ function MosqueCard({ mosque }: { mosque: Mosque }) {
   const setSingleMosqueNav  = useStore((s) => s.setSingleMosqueNav);
   const setBottomSheetHeight = useStore((s) => s.setBottomSheetHeight);
   const prayedToday         = useStore((s) => s.prayedToday);
-  const togglePrayed        = useStore((s) => s.togglePrayed);
   const travelMode          = useStore((s) => s.travelMode);
   const th                  = useTheme();
   const badge               = dataSourceBadge(mosque.prayers);
@@ -266,9 +265,66 @@ function MosqueCard({ mosque }: { mosque: Mosque }) {
     ? mosque.catchable_prayers
     : mosque.next_catchable ? [mosque.next_catchable] : []);
 
-  // Remove prayers the user already marked as prayed
-  const visible = catchable.filter(p => !prayedToday.has(p.prayer));
-  if (visible.length === 0) return null;
+  // In Musafir mode, praying the later prayer implies the earlier is done too
+  const effectivePrayed = new Set(prayedToday);
+  if (travelMode) {
+    if (effectivePrayed.has('asr'))  effectivePrayed.add('dhuhr');
+    if (effectivePrayed.has('isha')) effectivePrayed.add('maghrib');
+  }
+
+  // Remove prayers the user already marked as prayed (including implied ones)
+  let visible = catchable.filter(p => !effectivePrayed.has(p.prayer));
+
+  // If all catchable prayers are prayed, find the next unprayed prayer starting from
+  // the current prayer period (not from Fajr). This avoids showing Fajr when Dhuhr is prayed.
+  if (visible.length === 0) {
+    const PRAYER_ORDER = ['fajr', 'dhuhr', 'asr', 'maghrib', 'isha'];
+    const prayerMap = new Map((mosque.prayers ?? []).map(p => [p.prayer, p]));
+    const nowMin = new Date().getHours() * 60 + new Date().getMinutes();
+
+    // Build ordered prayers with adhan minutes
+    const ordered = PRAYER_ORDER
+      .map(name => prayerMap.get(name))
+      .filter((p): p is NonNullable<typeof p> => !!p && !!p.adhan_time)
+      .map(p => {
+        const [h, m] = p.adhan_time!.split(':').map(Number);
+        return { ...p, adhanMin: h * 60 + m };
+      });
+
+    // Find the current prayer period (last prayer whose adhan has passed)
+    let startIdx = 0;
+    for (let i = ordered.length - 1; i >= 0; i--) {
+      if (ordered[i].adhanMin <= nowMin) { startIdx = i; break; }
+    }
+
+    // From the current period forward, find the first unprayed prayer
+    let nextPrayer: typeof ordered[0] | null = null;
+    for (let i = startIdx; i < ordered.length; i++) {
+      if (!effectivePrayed.has(ordered[i].prayer)) { nextPrayer = ordered[i]; break; }
+    }
+
+    if (nextPrayer) {
+      const isUpcoming = nextPrayer.adhanMin > nowMin;
+      const pName = nextPrayer.prayer.charAt(0).toUpperCase() + nextPrayer.prayer.slice(1);
+      visible = [{
+        prayer: nextPrayer.prayer,
+        status: isUpcoming ? 'upcoming' : 'can_pray_solo_at_mosque',
+        status_label: isUpcoming ? 'Upcoming' : `${pName} time`,
+        message: isUpcoming
+          ? `${pName} at ${nextPrayer.adhan_time}`
+          : `${pName} is active — pray at mosque`,
+        adhan_time: nextPrayer.adhan_time,
+        iqama_time: nextPrayer.iqama_time ?? null,
+        urgency: 'low' as const,
+        arrival_time: null,
+        minutes_until_iqama: null,
+        leave_by: null,
+        period_ends_at: null,
+      }];
+    } else {
+      return null; // all remaining prayers today are prayed
+    }
+  }
 
   // Separate into active (current prayer window) and upcoming
   const active   = visible.find(p => ACTIVE_STATUSES.has(p.status)) ?? null;
@@ -311,15 +367,6 @@ function MosqueCard({ mosque }: { mosque: Mosque }) {
         {primary.leave_by && (
           <p className={`text-xs mt-0.5 ${cfg.text} opacity-80`}>Leave by {fmtTime(primary.leave_by)}</p>
         )}
-        {/* Inline "Prayed" button on the current (active) prayer row when it's primary */}
-        {active && primary === active && ACTIVE_STATUSES.has(active.status) && (
-          <button
-            className="mt-1.5 text-xs font-medium px-2 py-0.5 rounded-full border border-gray-200 text-gray-500 bg-white hover:bg-gray-50 transition-colors"
-            onClick={(e) => { e.stopPropagation(); togglePrayed(active.prayer); }}
-          >
-            ✓ Already prayed
-          </button>
-        )}
       </div>
 
       {/* Secondary row — muted, smaller, no left border */}
@@ -330,66 +377,69 @@ function MosqueCard({ mosque }: { mosque: Mosque }) {
               ? `${secondary.prayer.charAt(0).toUpperCase() + secondary.prayer.slice(1)} at ${fmtTime(secondary.adhan_time)}`
               : secondary.message}
           </p>
-          {/* Inline "Prayed" button on the current prayer row when it's secondary */}
-          {active && secondary === active && ACTIVE_STATUSES.has(active.status) && (
-            <button
-              className="text-xs font-medium px-2 py-0.5 rounded-full border border-green-400 text-green-700 bg-white hover:bg-green-50 transition-colors flex-shrink-0"
-              onClick={(e) => { e.stopPropagation(); togglePrayed(active.prayer); }}
-            >
-              ✓ Prayed
-            </button>
-          )}
         </div>
       )}
 
-      {/* Combination options (Musafir mode, no route) */}
-      {travelMode && mosque.travel_combinations.length > 0 && (
-        <div className={`px-3 pt-2 pb-3 border-t space-y-2 ${th.bgLight} ${th.border}`}>
-          {mosque.travel_combinations.map((pair: TravelPairPlan) => {
-            const taqdeem = pair.options.find((o: TravelOption) => o.option_type === 'combine_early');
-            const takheer = pair.options.find((o: TravelOption) => o.option_type === 'combine_late');
-            const takheerOnly = !taqdeem && !!takheer;
-            return (
-              <div key={pair.pair}>
-                <p className={`text-xs font-semibold mb-1.5 ${th.text}`}>
-                  {pair.label} — Musafir
-                </p>
+      {/* Combination options (Musafir mode, no route) — hide pairs where both prayers are prayed */}
+      {travelMode && mosque.travel_combinations.length > 0 && (() => {
+        const PAIR_PRAYERS: Record<string, [string, string]> = {
+          dhuhr_asr: ['dhuhr', 'asr'],
+          maghrib_isha: ['maghrib', 'isha'],
+        };
+        const visiblePairs = mosque.travel_combinations.filter((pair: TravelPairPlan) => {
+          const prayers = PAIR_PRAYERS[pair.pair];
+          if (!prayers) return true;
+          return !(effectivePrayed.has(prayers[0]) && effectivePrayed.has(prayers[1]));
+        });
+        if (visiblePairs.length === 0) return null;
+        return (
+          <div className={`px-3 pt-2 pb-3 border-t space-y-2 ${th.bgLight} ${th.border}`}>
+            {visiblePairs.map((pair: TravelPairPlan) => {
+              const taqdeem = pair.options.find((o: TravelOption) => o.option_type === 'combine_early');
+              const takheer = pair.options.find((o: TravelOption) => o.option_type === 'combine_late');
+              const takheerOnly = !taqdeem && !!takheer;
+              return (
+                <div key={pair.pair}>
+                  <p className={`text-xs font-semibold mb-1.5 ${th.text}`}>
+                    {pair.label} — Musafir
+                  </p>
 
-                {/* Ta'kheer only: p1 time passed but NOT missed */}
-                {takheerOnly && (
-                  <div className="bg-white rounded-lg border border-blue-200 px-2.5 py-2 space-y-1">
-                    <p className="text-xs font-semibold text-blue-800">{pair.label.split(' + ')[0]} is not missed ✓</p>
-                    <p className="text-xs text-blue-700">{takheer!.description}</p>
-                    <span className="inline-block text-xs bg-blue-50 text-blue-700 border border-blue-200 px-1.5 py-0.5 rounded-full">
-                      Jam' Ta'kheer — Combine Late
-                    </span>
-                  </div>
-                )}
+                  {/* Ta'kheer only: p1 time passed but NOT missed */}
+                  {takheerOnly && (
+                    <div className="bg-white rounded-lg border border-blue-200 px-2.5 py-2 space-y-1">
+                      <p className="text-xs font-semibold text-blue-800">{pair.label.split(' + ')[0]} is not missed ✓</p>
+                      <p className="text-xs text-blue-700">{takheer!.description}</p>
+                      <span className="inline-block text-xs bg-blue-50 text-blue-700 border border-blue-200 px-1.5 py-0.5 rounded-full">
+                        Jam' Ta'kheer — Combine Late
+                      </span>
+                    </div>
+                  )}
 
-                {/* Taqdeem — primary when both available or only Taqdeem */}
-                {taqdeem && (
-                  <div className={`bg-white rounded-lg border border-green-200 px-2.5 py-2 space-y-1 ${takheer ? 'mb-1.5' : ''}`}>
-                    <p className="text-xs text-green-800">{taqdeem.description}</p>
-                    <span className="inline-block text-xs bg-green-50 text-green-700 border border-green-200 px-1.5 py-0.5 rounded-full">
-                      Jam' Taqdeem — Combine Early
-                    </span>
-                  </div>
-                )}
+                  {/* Taqdeem — primary when both available or only Taqdeem */}
+                  {taqdeem && (
+                    <div className={`bg-white rounded-lg border border-green-200 px-2.5 py-2 space-y-1 ${takheer ? 'mb-1.5' : ''}`}>
+                      <p className="text-xs text-green-800">{taqdeem.description}</p>
+                      <span className="inline-block text-xs bg-green-50 text-green-700 border border-green-200 px-1.5 py-0.5 rounded-full">
+                        Jam' Taqdeem — Combine Early
+                      </span>
+                    </div>
+                  )}
 
-                {/* Ta'kheer as secondary when Taqdeem also available */}
-                {taqdeem && takheer && (
-                  <div className="bg-white rounded-lg border border-blue-100 px-2.5 py-2 space-y-1">
-                    <p className="text-xs text-blue-700">{takheer.description}</p>
-                    <span className="inline-block text-xs bg-blue-50 text-blue-600 border border-blue-200 px-1.5 py-0.5 rounded-full">
-                      Jam' Ta'kheer — Combine Late
-                    </span>
-                  </div>
-                )}
-              </div>
-            );
-          })}
-        </div>
-      )}
+                  {/* Ta'kheer as secondary when Taqdeem also available */}
+                  {taqdeem && takheer && (
+                    <div className="bg-white rounded-lg border border-blue-100 px-2.5 py-2 space-y-1">
+                      <p className="text-xs text-blue-700">{takheer.description}</p>
+                      <span className="inline-block text-xs bg-blue-50 text-blue-600 border border-blue-200 px-1.5 py-0.5 rounded-full">
+                        Jam' Ta'kheer — Combine Late
+                      </span>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        );
+      })()}
 
       {/* Source badge */}
       <div className={`px-3 py-1.5 border-t ${cfg.border} bg-white`}>
@@ -522,47 +572,46 @@ function MosqueDetailSheet({ mosque, onDismiss }: { mosque: Mosque; onDismiss?: 
     : null;
 
   return (
-    <div>
-      {/* Row 1: address on left, ✕ on right */}
-      <div className="flex items-center justify-between mb-2">
-        {mosque.location.address
-          ? <p className="text-sm text-gray-500 flex-1 pr-3 leading-snug">{mosque.location.address}</p>
-          : <div className="flex-1" />
-        }
-        <button
-          onClick={onDismiss ?? closeSheet}
-          className="w-9 h-9 flex items-center justify-center rounded-full bg-gray-100 hover:bg-gray-200 text-gray-500 hover:text-gray-700 active:scale-95 transition-all flex-shrink-0"
-          aria-label="Close"
-        >✕</button>
+    <div className="-mt-1">
+      {/* Row 1: mosque name on left, navigate + website + ✕ on right */}
+      <div className="flex items-center justify-between mb-1">
+        <h2 className="text-base font-bold text-gray-900 flex-1 pr-3 leading-tight truncate">{mosque.name}</h2>
+        <div className="flex items-center gap-2 flex-shrink-0">
+          {mosque.website && (
+            <a
+              href={mosque.website}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="w-9 h-9 flex items-center justify-center rounded-full bg-gray-100 hover:bg-gray-200 text-gray-600 active:scale-95 transition-all"
+              aria-label="Website"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/>
+                <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>
+              </svg>
+            </a>
+          )}
+          <button
+            onClick={() => setNavSheetOpen(true)}
+            className={`w-9 h-9 flex items-center justify-center rounded-full ${th.bg} ${th.bgHover} text-white active:scale-95 transition-all`}
+            aria-label="Navigate"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" className="w-5 h-5" viewBox="0 0 24 24" fill="currentColor">
+              <path d="M21.71 11.29l-9-9c-.39-.39-1.02-.39-1.41 0l-9 9c-.39.39-.39 1.02 0 1.41l9 9c.39.39 1.02.39 1.41 0l9-9c.39-.38.39-1.01 0-1.41zM14 14.5V12h-4v3H8v-4c0-.55.45-1 1-1h5V7.5l3.5 3.5-3.5 3.5z"/>
+            </svg>
+          </button>
+          <button
+            onClick={onDismiss ?? closeSheet}
+            className="w-9 h-9 flex items-center justify-center rounded-full bg-gray-100 hover:bg-gray-200 text-gray-500 hover:text-gray-700 active:scale-95 transition-all"
+            aria-label="Close"
+          >✕</button>
+        </div>
       </div>
 
-      {/* Row 2: action icons (website + navigate) right-aligned */}
-      <div className="flex items-center justify-end gap-2 mb-3">
-        {mosque.website && (
-          <a
-            href={mosque.website}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="w-9 h-9 flex items-center justify-center rounded-full bg-gray-100 hover:bg-gray-200 text-gray-600 active:scale-95 transition-all"
-            aria-label="Website"
-          >
-            <svg xmlns="http://www.w3.org/2000/svg" className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/>
-              <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>
-            </svg>
-          </a>
-        )}
-        <button
-          onClick={() => setNavSheetOpen(true)}
-          className={`w-9 h-9 flex items-center justify-center rounded-full ${th.bg} ${th.bgHover} text-white active:scale-95 transition-all`}
-          aria-label="Navigate"
-        >
-          {/* Directions diamond-arrow (Google Maps style) */}
-          <svg xmlns="http://www.w3.org/2000/svg" className="w-5 h-5" viewBox="0 0 24 24" fill="currentColor">
-            <path d="M21.71 11.29l-9-9c-.39-.39-1.02-.39-1.41 0l-9 9c-.39.39-.39 1.02 0 1.41l9 9c.39.39 1.02.39 1.41 0l9-9c.39-.38.39-1.01 0-1.41zM14 14.5V12h-4v3H8v-4c0-.55.45-1 1-1h5V7.5l3.5 3.5-3.5 3.5z"/>
-          </svg>
-        </button>
-      </div>
+      {/* Row 2: address */}
+      {mosque.location.address && (
+        <p className="text-sm text-gray-500 mb-3 leading-snug">{mosque.location.address}</p>
+      )}
 
       {/* Status badge — hidden when nc prayer is already marked as prayed */}
       {nc && cfg && (
@@ -587,9 +636,6 @@ function MosqueDetailSheet({ mosque, onDismiss }: { mosque: Mosque; onDismiss?: 
               <p className={`text-sm mt-0.5 ${cfg.text}`}>{nc.message}</p>
               {nc.iqama_time && !isMissed && (
                 <p className="text-xs text-gray-500 mt-1">Iqama: {fmtTime(nc.iqama_time)}</p>
-              )}
-              {nc.leave_by && !isMissed && (
-                <p className="text-xs text-gray-500">Leave by: {fmtTime(nc.leave_by)}</p>
               )}
             </>
           )}
@@ -759,6 +805,26 @@ function SpotDetailSheet({ spot }: { spot: PrayerSpot }) {
   const th         = useTheme();
   const [submitting, setSubmitting] = useState(false);
   const [voted, setVoted]           = useState<boolean | null>(null);
+  const [navSheetOpen, setNavSheetOpen] = useState(false);
+
+  const destLat = spot.location.latitude;
+  const destLng = spot.location.longitude;
+  const destName = spot.location.address ? `${spot.name}, ${spot.location.address}` : spot.name;
+  const navPoints: MapPoint[] = [
+    { lat: 0, lng: 0, is_gps: true },
+    { lat: destLat, lng: destLng, name: destName },
+  ];
+  const spotGoogleUrl = buildGoogleMapsUrl(navPoints);
+  const spotAppleUrl  = buildAppleMapsUrl(navPoints);
+
+  const handleSpotShare = async () => {
+    if (navigator.share) {
+      try { await navigator.share({ title: `Navigate to ${destName}`, url: spotGoogleUrl }); return; }
+      catch { /* cancelled */ }
+    }
+    try { await navigator.clipboard.writeText(spotGoogleUrl); }
+    catch { window.open(spotGoogleUrl, '_blank'); }
+  };
 
   const handleVerify = async (isPositive: boolean) => {
     if (submitting) return;
@@ -779,15 +845,28 @@ function SpotDetailSheet({ spot }: { spot: PrayerSpot }) {
 
   return (
     <div>
-      <div className="flex items-start justify-between mb-3">
+      {/* Row 1: spot name + ✕ */}
+      <div className="flex items-start justify-between mb-2">
         <h2 className="text-lg font-bold text-gray-900 pr-4 leading-tight">{spot.name}</h2>
         <button onClick={closeSheet} className="w-9 h-9 flex items-center justify-center rounded-full bg-gray-100 hover:bg-gray-200 text-gray-500 hover:text-gray-700 text-lg flex-shrink-0 transition-colors">✕</button>
       </div>
 
-      <p className="text-sm text-gray-500 mb-3">
-        {SPOT_TYPE_LABELS[spot.spot_type] ?? spot.spot_type}
-        {spot.location.address ? ` · ${spot.location.address}` : ''}
-      </p>
+      {/* Row 2: type + address on left, navigate icon on right */}
+      <div className="flex items-center justify-between mb-3">
+        <p className="text-sm text-gray-500 flex-1 pr-3">
+          {SPOT_TYPE_LABELS[spot.spot_type] ?? spot.spot_type}
+          {spot.location.address ? ` · ${spot.location.address}` : ''}
+        </p>
+        <button
+          onClick={() => setNavSheetOpen(true)}
+          className={`w-9 h-9 flex items-center justify-center rounded-full ${th.bg} ${th.bgHover} text-white active:scale-95 transition-all flex-shrink-0`}
+          aria-label="Navigate"
+        >
+          <svg xmlns="http://www.w3.org/2000/svg" className="w-5 h-5" viewBox="0 0 24 24" fill="currentColor">
+            <path d="M21.71 11.29l-9-9c-.39-.39-1.02-.39-1.41 0l-9 9c-.39.39-.39 1.02 0 1.41l9 9c.39.39 1.02.39 1.41 0l9-9c.39-.38.39-1.01 0-1.41zM14 14.5V12h-4v3H8v-4c0-.55.45-1 1-1h5V7.5l3.5 3.5-3.5 3.5z"/>
+          </svg>
+        </button>
+      </div>
 
       <div className="flex flex-wrap gap-2 mb-3">
         {spot.has_wudu_facilities === true && (
@@ -846,14 +925,45 @@ function SpotDetailSheet({ spot }: { spot: PrayerSpot }) {
         </div>
       )}
 
-      <a
-        href={`https://www.google.com/maps/dir/?api=1&destination=${spot.location.latitude},${spot.location.longitude}`}
-        target="_blank"
-        rel="noopener noreferrer"
-        className={`mt-3 block ${th.bg} ${th.bgHover} text-white text-sm py-2 rounded-lg text-center font-medium`}
-      >
-        Get Directions
-      </a>
+      {/* Navigate action sheet — portal to document.body */}
+      {navSheetOpen && ReactDOM.createPortal(
+        <div className="fixed inset-0 z-[900] flex items-end" onClick={() => setNavSheetOpen(false)}>
+          <div className="w-full bg-white rounded-t-2xl shadow-2xl pb-8 px-4 pt-3" onClick={(e) => e.stopPropagation()}>
+            <div className="flex justify-center mb-4"><div className="w-10 h-1 bg-gray-300 rounded-full" /></div>
+            <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-2">Open in…</p>
+            <div className="space-y-2">
+              <button onClick={() => { window.open(spotGoogleUrl, '_blank'); setNavSheetOpen(false); }}
+                className="w-full flex items-center gap-3 px-4 py-3.5 rounded-xl bg-gray-50 active:bg-gray-100 text-sm font-medium text-gray-800">
+                <img src="https://www.google.com/favicon.ico" alt="" className="w-5 h-5 rounded" />
+                Google Maps
+              </button>
+              {IS_IOS && (
+                <button onClick={() => { window.open(spotAppleUrl, '_blank'); setNavSheetOpen(false); }}
+                  className="w-full flex items-center gap-3 px-4 py-3.5 rounded-xl bg-gray-50 active:bg-gray-100 text-sm font-medium text-gray-800">
+                  <svg xmlns="http://www.w3.org/2000/svg" className="w-5 h-5" viewBox="0 0 814 1000" fill="currentColor">
+                    <path d="M788.1 340.9c-5.8 4.5-108.2 62.2-108.2 190.5 0 148.4 130.3 200.9 134.2 202.2-.6 3.2-20.7 71.9-68.7 141.9-42.8 61.6-87.5 123.1-155.5 123.1s-85.5-39.5-164-39.5c-76 0-103.7 40.8-165.9 40.8s-105-42.8-155.5-127.5c-43.5-74.2-77.5-188.6-77.5-297.5 0-179 116.7-273.8 231.5-273.8 61.5 0 112.8 40.8 150.7 40.8 36.2 0 93.8-43.4 162.8-43.4 26.2 0 108.2 2.6 168.3 92.8zm-107-99.4C720.8 168 743.1 111.8 743.1 55c0-5.8-.6-11.6-1.9-16.5-57.3 2.6-124.9 38.9-166.2 89.7-36.2 43.4-70.1 113.1-70.1 182.7 0 6.4 1.3 12.8 1.9 15.5 3.9.6 10.2 1.3 16.5 1.3 50.6 0 113.5-33.9 157.8-86.1z"/>
+                  </svg>
+                  Apple Maps
+                </button>
+              )}
+              <button onClick={async () => { await handleSpotShare(); setNavSheetOpen(false); }}
+                className="w-full flex items-center gap-3 px-4 py-3.5 rounded-xl bg-gray-50 active:bg-gray-100 text-sm font-medium text-gray-800">
+                <svg xmlns="http://www.w3.org/2000/svg" className="w-5 h-5 text-gray-500" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/>
+                  <line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/>
+                </svg>
+                Share Route
+              </button>
+            </div>
+            <button
+              onClick={() => setNavSheetOpen(false)}
+              onTouchEnd={(e) => { e.stopPropagation(); setNavSheetOpen(false); }}
+              className="w-full mt-3 py-3 text-sm font-semibold text-gray-400 active:text-gray-600"
+            >Cancel</button>
+          </div>
+        </div>,
+        document.body
+      )}
     </div>
   );
 }
@@ -1242,6 +1352,15 @@ function PrayedBanner({ mosques }: { mosques: Mosque[] }) {
   const togglePrayed     = useStore((s) => s.togglePrayed);
   const togglePrayedPair = useStore((s) => s.togglePrayedPair);
   const travelMode       = useStore((s) => s.travelMode);
+  const th               = useTheme();
+
+  // In Musafir mode, praying the later prayer implies the earlier one is done too.
+  // e.g. if Asr is prayed → Dhuhr is implicitly prayed. If Isha is prayed → Maghrib too.
+  const effectivePrayed = new Set(prayedToday);
+  if (travelMode) {
+    if (effectivePrayed.has('asr'))  effectivePrayed.add('dhuhr');
+    if (effectivePrayed.has('isha')) effectivePrayed.add('maghrib');
+  }
 
   // Collect active (non-upcoming) prayers across all mosques
   const activePrayers = new Set<string>();
@@ -1266,12 +1385,9 @@ function PrayedBanner({ mosques }: { mosques: Mosque[] }) {
     if (seen.has(prayer)) continue;
     if (travelMode && MUSAFIR_PAIR_MAP[prayer]) {
       const { p1, p2, label } = MUSAFIR_PAIR_MAP[prayer];
-      // Only show the pair if neither p1 nor p2 has been individually prayed
-      if (!prayedToday.has(p1) && !prayedToday.has(p2)) {
-        items.push({ kind: 'pair', p1, p2, label });
-        seen.add(p1); seen.add(p2);
-      }
-      // If one of the pair is already prayed, fall through to individual handling
+      // Show as a pair — either both prayed (with undo) or both unprayed
+      items.push({ kind: 'pair', p1, p2, label });
+      seen.add(p1); seen.add(p2);
     } else {
       items.push({ kind: 'solo', prayer });
       seen.add(prayer);
@@ -1282,12 +1398,13 @@ function PrayedBanner({ mosques }: { mosques: Mosque[] }) {
     <div className="space-y-1.5">
       {items.map((item) => {
         if (item.kind === 'pair') {
-          const prayed = prayedToday.has(item.p1) && prayedToday.has(item.p2);
+          // In Musafir mode, praying the later prayer implies the earlier is done
+          const prayed = effectivePrayed.has(item.p1) && effectivePrayed.has(item.p2);
           return (
             <div
               key={item.label}
               className={`flex items-center justify-between rounded-xl px-3 py-2 border text-sm ${
-                prayed ? 'bg-green-50 border-green-200 text-green-800' : 'bg-white border-gray-200 text-gray-700'
+                prayed ? `${th.bgLight} ${th.border} ${th.textDark}` : 'bg-white border-gray-200 text-gray-700'
               }`}
             >
               <span className="flex items-center gap-1.5">
@@ -1300,8 +1417,8 @@ function PrayedBanner({ mosques }: { mosques: Mosque[] }) {
                 onClick={() => togglePrayedPair(item.p1, item.p2)}
                 className={`ml-3 text-xs font-medium px-2 py-1 rounded-full border transition-colors ${
                   prayed
-                    ? 'border-green-300 text-green-700 hover:bg-green-100'
-                    : 'bg-green-600 border-green-600 text-white hover:bg-green-700'
+                    ? `${th.border} ${th.text} ${th.bgHoverLight}`
+                    : `${th.bg} ${th.borderStrong} text-white ${th.bgHover}`
                 }`}
               >
                 {prayed ? 'Undo' : 'Yes, I prayed'}
@@ -1314,7 +1431,7 @@ function PrayedBanner({ mosques }: { mosques: Mosque[] }) {
           <div
             key={item.prayer}
             className={`flex items-center justify-between rounded-xl px-3 py-2 border text-sm ${
-              prayed ? 'bg-green-50 border-green-200 text-green-800' : 'bg-white border-gray-200 text-gray-700'
+              prayed ? `${th.bgLight} ${th.border} ${th.textDark}` : 'bg-white border-gray-200 text-gray-700'
             }`}
           >
             <span className="flex items-center gap-1.5">
@@ -1327,8 +1444,8 @@ function PrayedBanner({ mosques }: { mosques: Mosque[] }) {
               onClick={() => togglePrayed(item.prayer)}
               className={`ml-3 text-xs font-medium px-2 py-1 rounded-full border transition-colors ${
                 prayed
-                  ? 'border-green-300 text-green-700 hover:bg-green-100'
-                  : 'bg-green-600 border-green-600 text-white hover:bg-green-700'
+                  ? `${th.border} ${th.text} ${th.bgHoverLight}`
+                  : `${th.bg} ${th.borderStrong} text-white ${th.bgHover}`
               }`}
             >
               {prayed ? 'Undo' : 'Yes, I prayed'}
@@ -1345,7 +1462,7 @@ function PrayedBanner({ mosques }: { mosques: Mosque[] }) {
 function LastResortCard() {
   return (
     <div className="rounded-xl border border-gray-200 bg-gray-50 p-3">
-      <p className="text-sm font-semibold text-gray-700 mb-1">🚗 No nearby spots?</p>
+      <p className="text-sm font-semibold text-gray-700 mb-1">No nearby spots?</p>
       <p className="text-xs text-gray-500">
         Look for a quiet corner in a parking lot, a gas station, or any clean outdoor area.
         Face the qibla and make tayammum if water isn't available.
@@ -1421,7 +1538,9 @@ function GeoInput({
 }
 
 // Waypoint row state (local — not persisted between form open/close)
+let _wpIdCounter = 0;
 interface WaypointRow {
+  id: number;  // stable key for React reconciliation — survives reordering
   dest: TravelDestination | null;
   query: string;
   sugg: GeocodeSuggestion[];
@@ -1531,24 +1650,25 @@ function DestinationInput() {
     }, 400);
   }
 
-  function debounceGeocodeWp(index: number, val: string) {
+  function debounceGeocodeWp(rowId: number, index: number, val: string) {
     if (wpDebounces.current[index]) clearTimeout(wpDebounces.current[index]!);
-    setWaypointRows(rows => rows.map((r, i) => i === index ? { ...r, query: val, sugg: val.length < 3 ? [] : r.sugg } : r));
+    // Use rowId (stable) instead of index (changes on reorder) for matching in functional updaters
+    setWaypointRows(rows => rows.map(r => r.id === rowId ? { ...r, query: val, sugg: val.length < 3 ? [] : r.sugg } : r));
     if (val.length < 3) return;
     wpDebounces.current[index] = setTimeout(async () => {
-      setWaypointRows(rows => rows.map((r, i) => i === index ? { ...r, loading: true } : r));
+      setWaypointRows(rows => rows.map(r => r.id === rowId ? { ...r, loading: true } : r));
       try {
         const sugg = await apiService.geocodeDestination(val, userLocation?.latitude, userLocation?.longitude);
-        setWaypointRows(rows => rows.map((r, i) => i === index ? { ...r, sugg, loading: false } : r));
+        setWaypointRows(rows => rows.map(r => r.id === rowId ? { ...r, sugg, loading: false } : r));
       } catch {
-        setWaypointRows(rows => rows.map((r, i) => i === index ? { ...r, sugg: [], loading: false } : r));
+        setWaypointRows(rows => rows.map(r => r.id === rowId ? { ...r, sugg: [], loading: false } : r));
       }
     }, 400);
   }
 
   function addWaypoint() {
     if (waypointRows.length >= 4) return;
-    setWaypointRows(rows => [...rows, { dest: null, query: '', sugg: [], loading: false }]);
+    setWaypointRows(rows => [...rows, { id: ++_wpIdCounter, dest: null, query: '', sugg: [], loading: false }]);
     wpDebounces.current.push(null);
   }
 
@@ -1757,6 +1877,7 @@ function DestinationInput() {
                     setDestSugg([]);
                     setSearchMode(false);
                     useStore.getState().setTripPlannerOpen(false);
+                    useStore.getState().setBottomSheetHeight('peek');
                   }}
                   className="w-full text-left px-4 py-3.5 text-sm text-gray-800 border-b border-gray-50 last:border-0 hover:bg-gray-50"
                 >
@@ -1889,7 +2010,7 @@ function DestinationInput() {
           {waypointRows.map((wp, i) => {
             const letter = String.fromCharCode(65 + i); // A, B, C, D
             return (
-              <div key={i} className="flex items-start gap-1">
+              <div key={wp.id} className="flex items-start gap-1">
                 <div className="flex flex-col gap-0.5 pt-1.5">
                   <button onClick={() => moveWaypoint(i, -1)} disabled={i === 0} className="text-gray-400 hover:text-gray-600 disabled:opacity-20 text-xs leading-none px-0.5">▲</button>
                   <button onClick={() => moveWaypoint(i, 1)} disabled={i === waypointRows.length - 1} className="text-gray-400 hover:text-gray-600 disabled:opacity-20 text-xs leading-none px-0.5">▼</button>
@@ -1899,11 +2020,11 @@ function DestinationInput() {
                     placeholder={`Stop ${letter}`}
                     icon={`${letter}:`}
                     value={wp.query}
-                    onChange={(v) => debounceGeocodeWp(i, v)}
+                    onChange={(v) => debounceGeocodeWp(wp.id, i, v)}
                     suggestions={wp.sugg}
-                    onSelect={(s) => setWaypointRows(rows => rows.map((r, ri) => ri === i ? { ...r, dest: s, query: s.place_name, sugg: [] } : r))}
+                    onSelect={(s) => setWaypointRows(rows => rows.map(r => r.id === wp.id ? { ...r, dest: s, query: s.place_name, sugg: [] } : r))}
                     loading={wp.loading}
-                    onClear={() => setWaypointRows(rows => rows.map((r, ri) => ri === i ? { ...r, dest: null, query: '', sugg: [] } : r))}
+                    onClear={() => setWaypointRows(rows => rows.map(r => r.id === wp.id ? { ...r, dest: null, query: '', sugg: [] } : r))}
                   />
                 </div>
                 <button onClick={() => removeWaypoint(i)} className="text-gray-400 hover:text-red-500 text-base leading-none pt-2 px-1 flex-shrink-0">✕</button>
@@ -2102,7 +2223,7 @@ function NavigateBar() {
       <div className="px-3 pb-2 pointer-events-auto">
         <button
           onClick={openSheet}
-          className={`w-full flex items-center justify-center gap-2 active:scale-95 text-white text-sm font-semibold rounded-xl py-3 shadow-lg transition-all ${th.bg} ${th.bgHover}`}
+          className={`w-full flex items-center justify-center gap-2 active:scale-95 text-white text-sm font-semibold rounded-xl py-3 shadow-lg transition-all ${th.bgAccent} ${th.bgAccentHover}`}
         >
           <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4" viewBox="0 0 24 24" fill="currentColor">
             <path d="M12 2L4.5 20.29l.71.71L12 18l6.79 3 .71-.71z"/>
@@ -2260,9 +2381,10 @@ function AddSpotFAB() {
   const showSpots          = useStore((s) => s.showSpots);
   const travelDestination  = useStore((s) => s.travelDestination);
   const bottomSheetHeight  = useStore((s) => s.bottomSheetHeight);
+  const tripPlannerOpen    = useStore((s) => s.tripPlannerOpen);
   const th                 = useTheme();
 
-  if (!showSpots || travelDestination || bottomSheetHeight === 'full') return null;
+  if (!showSpots || travelDestination || bottomSheetHeight === 'full' || tripPlannerOpen) return null;
 
   return (
     <button
@@ -2313,19 +2435,47 @@ function MapBottomSheet() {
     return Math.max(0, sheetH - 125); // peek: show 125px
   }
 
-  // Animate sheet when state changes, or hide fully when trip form is open
-  useEffect(() => {
+  // Animate sheet when state changes, or hide fully when trip form is open.
+  //
+  // IMPORTANT: --sheet-visible is computed purely from the snap state formula,
+  // NOT from DOM measurements. DOM measurements (offsetHeight) are unreliable
+  // because --top-bar-bottom changes asynchronously (ResizeObserver), causing
+  // offsetHeight to shift between the sync read and a rAF callback. This was
+  // the root cause of buttons flying to the top on first render.
+  //
+  // The visible height for each state:
+  //   peek: always 125px (by definition — getSnappedY returns sheetH - 125)
+  //   half: sheetH * 0.55 (getSnappedY returns sheetH - sheetH*0.55 = sheetH*0.45)
+  //   full: sheetH (getSnappedY returns 0)
+  //
+  // For half, we need the actual sheetH. We compute it at snap time (not in rAF)
+  // so the value is consistent with the translateY we just set.
+  useLayoutEffect(() => {
     if (!sheetRef.current) return;
     sheetRef.current.style.transition = 'transform 0.35s cubic-bezier(0.32, 0.72, 0, 1)';
+    const sheetH = sheetRef.current.offsetHeight;
     const y = tripPlannerOpen
-      ? window.innerHeight   // fully off-screen
+      ? window.innerHeight
       : getSnappedY(bottomSheetHeight);
     sheetRef.current.style.transform = `translateY(${y}px)`;
-    // Update --sheet-visible so FAB and location button track the sheet
-    const sheetH = sheetRef.current.offsetHeight;
+    // Compute visible from the SAME sheetH used for y — no timing mismatch possible
     const visible = tripPlannerOpen ? 0 : Math.max(0, sheetH - y);
     document.documentElement.style.setProperty('--sheet-visible', `${visible}px`);
-  }, [bottomSheetHeight, tripPlannerOpen]);
+  }, [bottomSheetHeight, tripPlannerOpen, travelDestination]);
+
+  // Re-sync --sheet-visible when --top-bar-bottom changes (the sheet's offsetHeight shifts)
+  useEffect(() => {
+    function resync() {
+      if (!sheetRef.current || tripPlannerOpen) return;
+      const sheetH = sheetRef.current.offsetHeight;
+      const y = getSnappedY(bottomSheetHeight);
+      sheetRef.current.style.transform = `translateY(${y}px)`;
+      const visible = Math.max(0, sheetH - y);
+      document.documentElement.style.setProperty('--sheet-visible', `${visible}px`);
+    }
+    window.addEventListener('topbar-resized', resync);
+    return () => window.removeEventListener('topbar-resized', resync);
+  }); // no deps — always uses latest state via closure
 
   // Auto-transitions
   useEffect(() => {
@@ -2375,7 +2525,8 @@ function MapBottomSheet() {
     sheetRef.current.style.transform = `translateY(${newY}px)`;
     // Keep buttons tracking the sheet in real-time during drag
     const sheetH = sheetRef.current.offsetHeight;
-    document.documentElement.style.setProperty('--sheet-visible', `${Math.max(0, sheetH - newY)}px`);
+    const dragVisible = Math.min(Math.max(0, sheetH - newY), window.innerHeight * 0.8);
+    document.documentElement.style.setProperty('--sheet-visible', `${dragVisible}px`);
   }
 
   function handleTouchEnd() {
@@ -2398,7 +2549,7 @@ function MapBottomSheet() {
   // Peek label
   let peekLabel = '';
   if (singleMosqueNav && !travelDestination) {
-    peekLabel = singleMosqueNav.name;
+    peekLabel = '';
   } else if (selectedItineraryIndex !== null && travelPlan?.itineraries?.[selectedItineraryIndex]) {
     const it = travelPlan.itineraries[selectedItineraryIndex];
     const detour = it.total_detour_minutes > 0 ? ` · +${fmtDuration(it.total_detour_minutes)} detour` : '';
@@ -2434,9 +2585,13 @@ function MapBottomSheet() {
         <div className="pt-3 pb-1 flex justify-center">
           <div className="w-10 h-1 bg-gray-300 rounded-full" />
         </div>
-        <div className="px-4 py-2 active:bg-gray-50">
-          <p className="text-sm font-semibold text-gray-800 leading-tight truncate">{peekLabel}</p>
-        </div>
+        {peekLabel ? (
+          <div className="px-4 py-2 active:bg-gray-50">
+            <p className="text-sm font-semibold text-gray-800 leading-tight truncate">{peekLabel}</p>
+          </div>
+        ) : (
+          <div className="pb-1" />
+        )}
       </div>
 
       {/* Scrollable content */}
@@ -2453,9 +2608,12 @@ function MapBottomSheet() {
           <>
             {/* Loading mosques */}
             {mosquesLoading && (
-              <div className="flex flex-col items-center py-12 gap-3 text-slate-400">
-                <div className={`animate-spin rounded-full h-7 w-7 border-2 border-slate-200 ${th.spinnerTop}`} />
-                <p className="text-sm">Finding mosques nearby…</p>
+              <div className="mx-3 py-10 flex flex-col items-center gap-3">
+                <svg className={`animate-spin h-7 w-7 ${th.textMid}`} xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z" />
+                </svg>
+                <p className="text-sm text-gray-400">Finding mosques nearby…</p>
               </div>
             )}
 
@@ -2531,8 +2689,9 @@ function App() {
   const travelDestination = useStore((s) => s.travelDestination);
   const setTravelPlan = useStore((s) => s.setTravelPlan);
 
-  // Initialize --sheet-visible immediately so LocationButton is positioned correctly on first render
-  useEffect(() => {
+  // Initialize --sheet-visible immediately so LocationButton/FAB are positioned correctly on first render
+  // useLayoutEffect fires synchronously before paint, preventing the flash of wrong position
+  useLayoutEffect(() => {
     document.documentElement.style.setProperty('--sheet-visible', '125px');
   }, []);
 
@@ -2546,7 +2705,15 @@ function App() {
       const bottom = el!.getBoundingClientRect().bottom;
       // Guard against pre-layout 0 values; +8px adds visual gap below search bar
       if (bottom > 20) {
-        document.documentElement.style.setProperty('--top-bar-bottom', `${bottom + 8}px`);
+        const val = `${bottom + 8}px`;
+        const prev = document.documentElement.style.getPropertyValue('--top-bar-bottom');
+        document.documentElement.style.setProperty('--top-bar-bottom', val);
+        // When --top-bar-bottom changes, the sheet's offsetHeight changes too.
+        // Re-sync --sheet-visible so buttons don't fly to the wrong position.
+        if (prev !== val) {
+          // Dispatch a custom event that MapBottomSheet listens to
+          window.dispatchEvent(new Event('topbar-resized'));
+        }
       }
     }
     // Multiple attempts: rAF catches the first paint, timeout catches iOS deferred safe-area layout

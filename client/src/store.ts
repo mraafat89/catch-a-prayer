@@ -85,6 +85,7 @@ interface AppState {
   tripWaypoints: TravelDestination[];            // intermediate stops (0–4)
   setTripWaypoints: (wps: TravelDestination[]) => void;
   travelPlan: TravelPlan | null;
+  travelPlanVersion: number;  // increments on each new plan — used to force Polyline remount
   setTravelPlan: (p: TravelPlan | null) => void;
   travelPlanLoading: boolean;
   setTravelPlanLoading: (v: boolean) => void;
@@ -157,7 +158,8 @@ export const useStore = create<AppState>((set) => ({
   tripWaypoints: [],
   setTripWaypoints: (tripWaypoints) => set({ tripWaypoints }),
   travelPlan: null,
-  setTravelPlan: (travelPlan) => set({ travelPlan }),
+  travelPlanVersion: 0,
+  setTravelPlan: (travelPlan) => set((s) => ({ travelPlan, travelPlanVersion: travelPlan ? s.travelPlanVersion + 1 : s.travelPlanVersion })),
   travelPlanLoading: false,
   setTravelPlanLoading: (travelPlanLoading) => set({ travelPlanLoading }),
 
