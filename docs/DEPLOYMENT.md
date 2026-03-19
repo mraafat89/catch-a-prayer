@@ -233,74 +233,190 @@ All cron jobs run on the host and execute inside the `cap-api` container via `do
 
 ---
 
-## Backups
+## Backup & Disaster Recovery
 
-### Daily Database Backup
+### Backup Layers
 
-```bash
-#!/bin/bash
-# /opt/cap/scripts/backup.sh
+Three independent layers — any one of them can restore the full system:
 
-set -euo pipefail
-
-TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-BACKUP_DIR="/mnt/storage-box/cap/db"
-BACKUP_FILE="${BACKUP_DIR}/cap_${TIMESTAMP}.sql.gz"
-
-mkdir -p "$BACKUP_DIR"
-
-# Dump and compress
-docker exec cap-db pg_dump \
-  -U "$POSTGRES_USER" \
-  -d "$POSTGRES_DB" \
-  --format=custom \
-  --compress=9 \
-  > "$BACKUP_FILE"
-
-# Delete backups older than 30 days
-find "$BACKUP_DIR" -name "cap_*.sql.gz" -mtime +30 -delete
-
-echo "[$(date)] Backup complete: $BACKUP_FILE ($(du -h "$BACKUP_FILE" | cut -f1))"
+```
+Layer 1: Database dumps (daily)     → restores mosque data + prayer schedules
+Layer 2: Hetzner VPS snapshots      → restores entire server (OS + Docker + data)
+Layer 3: Git repo + DB dump on laptop → rebuild from scratch in 15 minutes
 ```
 
-### Hetzner Storage Box Mount
+| Layer | What | Frequency | Retention | Restore Time | Cost |
+|-------|------|-----------|-----------|--------------|------|
+| DB dump (local on VPS) | PostgreSQL custom dump | Daily 4 AM | 7 daily + 4 weekly | 2 min | $0 |
+| DB dump (off-server) | Copy to Hetzner Storage Box | Daily 5 AM | 30 days | 5 min | $1/mo |
+| VPS snapshot | Full disk image | Weekly (auto) | 3 snapshots | 5 min | ~$1/mo |
+| Local laptop | git repo + manual DB export | On demand | Always | 15 min | $0 |
+
+### Layer 1: Database Dumps (on server)
+
+Already set up via `scripts/backup.sh` and cron:
 
 ```bash
-# Mount via CIFS (add to /etc/fstab)
-//u123456.your-storagebox.de/backup /mnt/storage-box cifs \
-  credentials=/etc/smbcredentials,uid=0,gid=0,dir_mode=0700,file_mode=0600 0 0
+# Runs daily at 4 AM UTC via cron
+0 4 * * * /opt/cap/scripts/backup.sh >> /var/log/cap/backup.log 2>&1
 ```
 
-### Weekly VPS Snapshots
+Backups stored at `/opt/cap/backups/`:
+```
+backups/
+├── daily/
+│   ├── cap_20260319_040000.dump   ← today
+│   ├── cap_20260318_040000.dump   ← yesterday
+│   └── ... (7 days)
+└── weekly/
+    ├── cap_20260316_040000.dump   ← last Sunday
+    └── ... (4 weeks)
+```
 
-Enable via Hetzner Cloud Console or CLI:
+### Layer 2: Off-Server Backup (Hetzner Storage Box)
 
 ```bash
-# Using hcloud CLI
-hcloud server enable-backup cap-vps
-# Hetzner takes automatic snapshots — costs 20% of server price ($1/mo for CX22)
+# One-time setup: order a Storage Box ($1/mo for 100GB) from Hetzner
+# Then add SSH key and rsync daily backups off-server
+
+# Add to crontab (runs 1 hour after backup):
+0 5 * * * rsync -avz /opt/cap/backups/ u123456@u123456.your-storagebox.de:cap-backups/ 2>> /var/log/cap/backup.log
 ```
 
-### Retention Policy
+**Why this matters:** If the VPS disk fails or gets compromised, backups on the same disk are lost. The Storage Box is independent hardware.
 
-| Backup Type | Frequency | Retention |
-|-------------|-----------|-----------|
-| pg_dump to Storage Box | Daily | 30 days |
-| Hetzner VPS snapshot | Weekly (auto) | 3 snapshots |
-
-### Restore Procedure
+### Layer 3: Hetzner VPS Snapshots
 
 ```bash
-# Restore from pg_dump
-docker exec -i cap-db pg_restore \
-  -U "$POSTGRES_USER" \
-  -d "$POSTGRES_DB" \
-  --clean --if-exists \
-  < /mnt/storage-box/cap/db/cap_20260318_030000.sql.gz
+# Enable via Hetzner Cloud Console:
+# Cloud Console → Server → Backups → Enable Backups
+# Cost: ~$1/mo (20% of server price)
+# Hetzner takes automatic weekly snapshots, keeps last 3
 
-# Restore from VPS snapshot
-# Done via Hetzner Cloud Console — select snapshot, click "Rebuild"
+# Or take a manual snapshot before risky changes:
+hcloud server create-image catchaprayer --type=snapshot --description="pre-migration"
 ```
+
+### Layer 4: Local Laptop (Manual)
+
+```bash
+# Export production DB to laptop (before risky deploys)
+ssh root@5.78.187.171 "docker exec cap-db pg_dump -U cap -d catchaprayer --format=custom" > ~/cap-backup-$(date +%Y%m%d).dump
+
+# This + git repo = can rebuild the entire server from scratch
+```
+
+---
+
+### Restore Procedures
+
+#### Scenario 1: Bad deploy broke the app (most common)
+
+```bash
+# Option A: Roll back code (fastest — 30 seconds)
+ssh root@5.78.187.171 << 'EOF'
+cd /opt/cap
+git log --oneline -5                    # find the last good commit
+git checkout <good-commit-hash>         # revert code
+docker compose -f docker-compose.prod.yml up --build -d api
+EOF
+
+# Option B: If the deploy also broke the DB (migration issue)
+ssh root@5.78.187.171 << 'EOF'
+cd /opt/cap
+# Restore yesterday's DB
+docker compose -f docker-compose.prod.yml exec -T db pg_restore \
+  -U cap -d catchaprayer --clean --if-exists \
+  < /opt/cap/backups/daily/cap_LATEST.dump
+# Roll back code
+git checkout <good-commit-hash>
+docker compose -f docker-compose.prod.yml up --build -d api
+EOF
+```
+
+#### Scenario 2: Scraper corrupted mosque data
+
+```bash
+# Restore DB from before the scrape ran (scraper runs Tuesday 2 AM)
+ssh root@5.78.187.171 << 'EOF'
+# Find Monday's backup
+ls -la /opt/cap/backups/daily/
+
+# Restore it
+docker compose -f docker-compose.prod.yml exec -T db pg_restore \
+  -U cap -d catchaprayer --clean --if-exists \
+  < /opt/cap/backups/daily/cap_20260317_040000.dump
+
+echo "DB restored to Monday backup"
+EOF
+```
+
+#### Scenario 3: VPS disk failure / server compromised
+
+```bash
+# 1. Create new VPS from Hetzner Console (using VPS snapshot)
+#    Cloud Console → Snapshots → select latest → Rebuild Server
+#    Takes ~2 minutes. Server comes back exactly as it was.
+
+# 2. OR rebuild from scratch + Storage Box backup:
+#    a. Create fresh VPS
+#    b. Run setup script
+curl -sSL https://raw.githubusercontent.com/mraafat89/catch-a-prayer/main/scripts/setup-server.sh | bash
+#    c. Copy .env.prod, deploy, restore DB from Storage Box
+rsync -avz u123456@u123456.your-storagebox.de:cap-backups/daily/LATEST.dump /opt/cap/
+./scripts/deploy.sh first-time
+docker compose -f docker-compose.prod.yml exec -T db pg_restore \
+  -U cap -d catchaprayer --clean --if-exists < /opt/cap/LATEST.dump
+```
+
+#### Scenario 4: Total loss (VPS + Storage Box both gone)
+
+```bash
+# Rebuild from laptop (git repo + local DB dump)
+# 1. Provision new VPS
+# 2. Run setup, deploy
+# 3. Upload local DB dump:
+scp ~/cap-backup-20260318.dump root@NEW_SERVER_IP:/opt/cap/
+ssh root@NEW_SERVER_IP "cd /opt/cap && docker compose -f docker-compose.prod.yml exec -T db pg_restore -U cap -d catchaprayer --clean --if-exists < /opt/cap/cap-backup-20260318.dump"
+```
+
+---
+
+### Pre-Deploy Safety Checklist
+
+Run before any risky deploy (DB migrations, major features):
+
+```bash
+# 1. Take a manual snapshot
+ssh root@5.78.187.171 "cd /opt/cap && ./scripts/backup.sh"
+
+# 2. Download backup to laptop
+scp root@5.78.187.171:/opt/cap/backups/daily/cap_$(date +%Y%m%d)*.dump ~/cap-pre-deploy.dump
+
+# 3. Deploy
+git push origin main
+ssh root@5.78.187.171 "cd /opt/cap && ./scripts/deploy.sh update"
+
+# 4. Verify
+curl -sf http://5.78.187.171/health && echo "✅ OK" || echo "❌ ROLLBACK!"
+
+# 5. If broken:
+ssh root@5.78.187.171 "cd /opt/cap && docker compose -f docker-compose.prod.yml exec -T db pg_restore -U cap -d catchaprayer --clean --if-exists < /opt/cap/backups/daily/cap_$(date +%Y%m%d)*.dump && git checkout HEAD~1 && docker compose -f docker-compose.prod.yml up --build -d api"
+```
+
+### Backup Monitoring
+
+OpenClaw checks backup health daily:
+
+```
+Backup report: ✅
+- Latest DB dump: 2026-03-19 04:00 UTC (6 hours ago, 1.2 MB)
+- Storage Box sync: 2026-03-19 05:00 UTC
+- VPS snapshot: 2026-03-16 (3 days ago)
+- Backup disk usage: 45 MB / 40 GB (0.1%)
+```
+
+Alert if: no backup in 48 hours, backup size drops >50% (empty dump), Storage Box unreachable.
 
 ---
 
