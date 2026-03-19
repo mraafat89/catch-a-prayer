@@ -426,6 +426,8 @@ def validate_time(t: Optional[str]) -> Optional[str]:
 
 def count_prayers(pt: dict) -> int:
     """Count how many prayers have at least adhan or iqama (including special values)."""
+    if not pt or not isinstance(pt, dict):
+        return 0
     count = 0
     for p in ["fajr", "dhuhr", "asr", "maghrib", "isha"]:
         d = pt.get(p, {})
@@ -449,7 +451,9 @@ def validate_result(data: dict) -> dict:
     }
 
     # Validate prayer times
-    pt = data.get("prayer_times", {})
+    pt = data.get("prayer_times") or {}
+    if not isinstance(pt, dict):
+        pt = {}
     for prayer in ["fajr", "dhuhr", "asr", "maghrib", "isha"]:
         d = pt.get(prayer, {}) if isinstance(pt.get(prayer), dict) else {}
         adhan = validate_time(d.get("adhan"))
@@ -588,6 +592,16 @@ async def scrape_mosque(mosque_id: str, name: str, website: str,
     logger.info(f"   {website}")
 
     start = time.time()
+    try:
+        return await _scrape_mosque_impl(mosque_id, name, website, dry_run, start)
+    except Exception as e:
+        logger.error(f"   💥 Unexpected error: {type(e).__name__}: {e}")
+        return _fail(mosque_id, name, website, f"crash_{type(e).__name__}", start)
+
+
+async def _scrape_mosque_impl(mosque_id: str, name: str, website: str,
+                               dry_run: bool, start: float) -> dict:
+    """Internal implementation — wrapped by scrape_mosque for error handling."""
     final_result = None
     final_step = 0
     enrichment = {}
