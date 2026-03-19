@@ -605,7 +605,7 @@ async def _try_mawaqit(name: str, lat: float, lng: float) -> Optional[dict]:
     try:
         # Search by name
         search_name = name.split("(")[0].strip()[:40]  # clean up name
-        async with httpx.AsyncClient(timeout=10) as client:
+        async with httpx.AsyncClient(timeout=5) as client:
             resp = await client.get(
                 "https://mawaqit.net/api/2.0/mosque/search",
                 params={"word": search_name},
@@ -783,12 +783,12 @@ async def _scrape_mosque_impl(mosque_id: str, name: str, website: str,
             _log_jumuah(v1)
             return _success(mosque_id, name, website, v1, enrichment, 1, start)
 
-        # If Claude didn't find a prayer URL, try finding it via Playwright nav scan
-        if not prayer_url and v1["prayers_found"] == 0:
+        # Try finding prayer page link via Playwright nav scan
+        if v1["prayers_found"] == 0 and not prayer_url:
             nav_links = await _find_prayer_links_playwright(website)
             if nav_links:
                 prayer_url = nav_links[0]
-                logger.info(f"   🔍 Found prayer link via Playwright nav: {prayer_url}")
+                logger.info(f"   🔍 Found prayer link via nav scan: {prayer_url}")
 
         # If Claude found a prayer page URL, try it with Jina first
         if prayer_url:
@@ -865,10 +865,10 @@ async def _scrape_mosque_impl(mosque_id: str, name: str, website: str,
     # ── STEP 2b: Try top 3 prayer subpages with Playwright ──────────────────
     # But only if we haven't spent too long already (time budget: 45s)
     elapsed_so_far = time.time() - start
-    if not prayer_url and elapsed_so_far < 60:
+    if not prayer_url and elapsed_so_far < 50:
         base_url = website.rstrip("/")
         for subpage in ["/prayer-times", "/prayers", "/salah"]:
-            if time.time() - start > 60:
+            if time.time() - start > 50:
                 logger.info(f"   ⏱ Time budget exceeded, skipping remaining subpages")
                 break
             sub_url = f"{base_url}{subpage}"
