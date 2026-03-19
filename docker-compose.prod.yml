@@ -1,0 +1,109 @@
+version: "3.9"
+
+services:
+  # ─── Reverse Proxy (auto HTTPS) ──────────────────────────────────────────────
+  caddy:
+    image: caddy:2-alpine
+    container_name: cap-caddy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+      - ./client/build:/srv/web:ro
+    depends_on:
+      - api
+    networks:
+      - cap-network
+
+  # ─── API Server ──────────────────────────────────────────────────────────────
+  api:
+    build:
+      context: ./server
+      dockerfile: Dockerfile
+    container_name: cap-api
+    restart: unless-stopped
+    env_file: ./server/.env.prod
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER:-cap}:${POSTGRES_PASSWORD:-cap}@db:5432/${POSTGRES_DB:-catchaprayer}
+      - ENVIRONMENT=production
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      start_period: 10s
+      retries: 3
+    networks:
+      - cap-network
+
+  # ─── Database ────────────────────────────────────────────────────────────────
+  db:
+    image: postgis/postgis:16-3.4
+    container_name: cap-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-catchaprayer}
+      POSTGRES_USER: ${POSTGRES_USER:-cap}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-cap} -d ${POSTGRES_DB:-catchaprayer}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - cap-network
+    # No ports exposed — only accessible from within the Docker network
+
+  # ─── Metrics ─────────────────────────────────────────────────────────────────
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: cap-prometheus
+    restart: unless-stopped
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
+      - prometheus-data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.retention.time=30d"
+      - "--storage.tsdb.retention.size=5GB"
+    networks:
+      - cap-network
+    # No ports exposed externally — Caddy proxies /prometheus for admin access
+
+  # ─── AI Agent (WhatsApp monitoring) ──────────────────────────────────────────
+  openclaw:
+    image: openclaw/openclaw:latest
+    container_name: cap-openclaw
+    restart: unless-stopped
+    volumes:
+      - openclaw-data:/app/data
+      - ./scripts:/app/scripts:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    environment:
+      - OPENCLAW_GATEWAY_TOKEN=${OPENCLAW_GATEWAY_TOKEN}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - WHATSAPP_NUMBER=${WHATSAPP_NUMBER}
+    ports:
+      - "127.0.0.1:3100:3000"  # admin UI — local only
+    networks:
+      - cap-network
+
+volumes:
+  postgres-data:
+  caddy-data:
+  caddy-config:
+  prometheus-data:
+  openclaw-data:
+
+networks:
+  cap-network:
+    driver: bridge

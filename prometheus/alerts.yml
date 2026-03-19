@@ -1,0 +1,50 @@
+groups:
+  - name: cap_alerts
+    rules:
+      - alert: APIDown
+        expr: up{job="cap-api"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "API container is down"
+
+      - alert: APILatencyHigh
+        expr: histogram_quantile(0.99, rate(cap_request_latency_seconds_bucket[5m])) > 2
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "API p99 latency above 2 seconds for 5 minutes"
+
+      - alert: ErrorRateHigh
+        expr: rate(cap_errors_total[5m]) > 0.1
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "5xx error rate above 0.1/sec"
+
+      - alert: ScraperFailureHigh
+        expr: cap_scrape_success_rate < 0.9
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: "Scraper success rate dropped below 90%"
+
+      - alert: DBPoolExhausted
+        expr: cap_db_pool_checked_out / cap_db_pool_size > 0.9
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Database connection pool >90% utilized"
+
+      - alert: CoverageGapSpike
+        expr: increase(cap_coverage_gap_queries_total[1h]) > 20
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Spike in zero-result queries — possible data issue"

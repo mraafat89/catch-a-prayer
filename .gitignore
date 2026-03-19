@@ -79,3 +79,6 @@ catch-a-prayer-backup/
 # Temporary files
 tmp/
 temp/
+# Production secrets
+server/.env.prod
+backups/
