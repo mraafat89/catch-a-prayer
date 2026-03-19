@@ -585,6 +585,7 @@ async def _find_prayer_links_playwright(website: str) -> list[str]:
 # ---------------------------------------------------------------------------
 
 async def scrape_mosque(mosque_id: str, name: str, website: str,
+                        lat: float = 0.0, lng: float = 0.0,
                         dry_run: bool = False) -> dict:
     """Run the 3-step pipeline for a single mosque."""
     logger.info(f"\n{'='*70}")
@@ -593,18 +594,143 @@ async def scrape_mosque(mosque_id: str, name: str, website: str,
 
     start = time.time()
     try:
-        return await _scrape_mosque_impl(mosque_id, name, website, dry_run, start)
+        return await _scrape_mosque_impl(mosque_id, name, website, lat, lng, dry_run, start)
     except Exception as e:
         logger.error(f"   💥 Unexpected error: {type(e).__name__}: {e}")
         return _fail(mosque_id, name, website, f"crash_{type(e).__name__}", start)
 
 
+async def _try_mawaqit(name: str, lat: float, lng: float) -> Optional[dict]:
+    """Search Mawaqit API for this mosque. Returns validated result or None."""
+    try:
+        # Search by name
+        search_name = name.split("(")[0].strip()[:40]  # clean up name
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.get(
+                "https://mawaqit.net/api/2.0/mosque/search",
+                params={"word": search_name},
+                headers={"Accept": "application/json"},
+            )
+            if resp.status_code != 200:
+                return None
+
+            mosques = resp.json()
+            if not mosques:
+                return None
+
+            # Find the closest match (within 50km)
+            from math import radians, sin, cos, sqrt, atan2
+            def haversine(lat1, lng1, lat2, lng2):
+                R = 6371
+                dlat = radians(lat2 - lat1)
+                dlng = radians(lng2 - lng1)
+                a = sin(dlat/2)**2 + cos(radians(lat1)) * cos(radians(lat2)) * sin(dlng/2)**2
+                return R * 2 * atan2(sqrt(a), sqrt(1-a))
+
+            best = None
+            best_dist = 50  # max 50km
+            for m in mosques:
+                dist = haversine(lat, lng, m.get("latitude", 0), m.get("longitude", 0))
+                if dist < best_dist:
+                    best_dist = dist
+                    best = m
+
+            if not best:
+                return None
+
+            # Parse Mawaqit response
+            times = best.get("times", [])  # [fajr, sunrise, dhuhr, asr, maghrib, isha]
+            iqamas = best.get("iqama", [])  # can be HH:MM or "+N"
+
+            if len(times) < 6:
+                return None
+
+            def fmt_time(t):
+                if not t:
+                    return None
+                t = str(t).strip()
+                if ":" in t and len(t) >= 4:
+                    return t[:5]
+                return None
+
+            def fmt_iqama(iq):
+                if not iq:
+                    return None
+                iq = str(iq).strip()
+                if iq.startswith("+"):
+                    return iq
+                if ":" in iq:
+                    return iq[:5]
+                return None
+
+            prayer_times = {
+                "fajr": {"adhan": fmt_time(times[0]), "iqama": fmt_iqama(iqamas[0]) if len(iqamas) > 0 else None},
+                "dhuhr": {"adhan": fmt_time(times[2]), "iqama": fmt_iqama(iqamas[1]) if len(iqamas) > 1 else None},
+                "asr": {"adhan": fmt_time(times[3]), "iqama": fmt_iqama(iqamas[2]) if len(iqamas) > 2 else None},
+                "maghrib": {"adhan": fmt_time(times[4]), "iqama": fmt_iqama(iqamas[3]) if len(iqamas) > 3 else None},
+                "isha": {"adhan": fmt_time(times[5]), "iqama": fmt_iqama(iqamas[4]) if len(iqamas) > 4 else None},
+            }
+
+            jumuah = []
+            for jkey in ["jumua", "jumua2", "jumua3"]:
+                jt = best.get(jkey)
+                if jt:
+                    jumuah.append({"khutbah_time": None, "prayer_time": fmt_time(jt), "language": None, "imam": None})
+
+            enrichment = {
+                "has_womens_section": best.get("womenSpace"),
+                "wheelchair_accessible": best.get("handicapAccessibility"),
+                "address": best.get("localisation"),
+                "phone": best.get("phone"),
+                "email": best.get("email"),
+            }
+
+            prayers_found = sum(1 for p in prayer_times.values()
+                                if p.get("adhan") or p.get("iqama"))
+
+            logger.info(f"   🌐 Mawaqit: {best['name']} ({best_dist:.1f}km) — "
+                         f"{prayers_found}/5 prayers, {len(jumuah)} jumuah")
+
+            return {
+                "prayer_times": prayer_times,
+                "sunrise": fmt_time(times[1]),
+                "jumuah": jumuah,
+                "prayers_found": prayers_found,
+                "enrichment": enrichment,
+                "mawaqit_uuid": best.get("uuid"),
+                "mawaqit_slug": best.get("slug"),
+            }
+    except Exception as e:
+        logger.debug(f"   Mawaqit search failed: {e}")
+        return None
+
+
 async def _scrape_mosque_impl(mosque_id: str, name: str, website: str,
+                               lat: float, lng: float,
                                dry_run: bool, start: float) -> dict:
     """Internal implementation — wrapped by scrape_mosque for error handling."""
     final_result = None
     final_step = 0
     enrichment = {}
+
+    # ── STEP 0: Mawaqit API (free, instant, most reliable) ────────────────
+    if lat and lng:
+        mawaqit = await _try_mawaqit(name, lat, lng)
+        if mawaqit and mawaqit["prayers_found"] >= 3:
+            logger.info(f"   ✅ Mawaqit: {mawaqit['prayers_found']}/5 prayers!")
+            return {
+                "mosque_id": mosque_id, "name": name, "website": website,
+                "success": True,
+                "prayers_found": mawaqit["prayers_found"],
+                "prayer_times": mawaqit["prayer_times"],
+                "sunrise": mawaqit.get("sunrise"),
+                "jumuah": mawaqit["jumuah"],
+                "enrichment": mawaqit.get("enrichment", {}),
+                "source": "mawaqit",
+                "source_detail": mawaqit.get("mawaqit_slug"),
+                "step": 0,
+                "elapsed": time.time() - start,
+            }
 
     # ── Pre-check: is the website even responding? ─────────────────────────
     # Only reject on clear failures (connection refused, DNS fail, timeout).
@@ -823,6 +949,182 @@ def get_db():
     return create_engine(sync_url)
 
 
+SOURCE_MAP = {
+    "mawaqit": ("mawaqit_api", "high"),
+    "step1": ("claude_jina", "medium"),
+    "step2": ("claude_playwright", "medium"),
+    "step3": ("claude_sonnet", "medium"),
+    "iframe": ("iframe_widget", "high"),
+}
+
+
+def save_result(engine, result: dict, target_date: date):
+    """Save scrape result to prayer_schedules, scraping_jobs, mosques, and jumuah_sessions."""
+    mosque_id = result["mosque_id"]
+    source = result.get("source", "none")
+    source_label, confidence = SOURCE_MAP.get(source, (source, "low"))
+
+    with engine.begin() as conn:
+        # ── 1. Update scraping_jobs ────────────────────────────────────────
+        now = datetime.utcnow()
+        scrape_method = source_label
+        extraction_url = result.get("source_detail")
+        website_alive = result.get("success", False) or result.get("error") not in ("unreachable", "fetch_failed")
+
+        conn.execute(text("""
+            UPDATE scraping_jobs SET
+                status = :status,
+                last_attempted_at = :now,
+                last_success_at = CASE WHEN :success THEN :now ELSE last_success_at END,
+                attempts_count = attempts_count + 1,
+                consecutive_failures = CASE WHEN :success THEN 0 ELSE consecutive_failures + 1 END,
+                tier_reached = :step,
+                scrape_method = :method,
+                extraction_url = :extraction_url,
+                website_alive = :alive,
+                website_checked_at = :now,
+                error_message = :error,
+                raw_extracted_json = :raw_json,
+                scraped_at = :now,
+                updated_at = :now
+            WHERE mosque_id = :mid
+        """), {
+            "mid": mosque_id, "status": "success" if result.get("success") else "failed",
+            "now": now, "success": result.get("success", False),
+            "step": result.get("step", 0), "method": scrape_method,
+            "extraction_url": extraction_url, "alive": website_alive,
+            "error": result.get("error"),
+            "raw_json": json.dumps({
+                "prayers_found": result.get("prayers_found", 0),
+                "source": source, "step": result.get("step", 0),
+            }),
+        })
+
+        if not result.get("success") or result.get("prayers_found", 0) == 0:
+            # Still save enrichment even on prayer failure
+            _save_enrichment(conn, mosque_id, result.get("enrichment", {}))
+            _save_jumuah(conn, mosque_id, result.get("jumuah", []), target_date, source_label, confidence)
+            return
+
+        # ── 2. Save prayer_schedules ───────────────────────────────────────
+        pt = result.get("prayer_times", {})
+
+        values = {"mid": mosque_id, "date": target_date, "now": now}
+        set_clauses = []
+
+        for prayer in ["fajr", "dhuhr", "asr", "maghrib", "isha"]:
+            d = pt.get(prayer, {})
+            adhan = d.get("adhan") if isinstance(d, dict) else None
+            iqama = d.get("iqama") if isinstance(d, dict) else None
+
+            # Only overwrite if we have real data
+            if adhan:
+                values[f"{prayer}_adhan"] = adhan
+                values[f"{prayer}_adhan_source"] = source_label
+                values[f"{prayer}_adhan_confidence"] = confidence
+                set_clauses.append(f"{prayer}_adhan = :{prayer}_adhan")
+                set_clauses.append(f"{prayer}_adhan_source = :{prayer}_adhan_source")
+                set_clauses.append(f"{prayer}_adhan_confidence = :{prayer}_adhan_confidence")
+
+            if iqama:
+                values[f"{prayer}_iqama"] = iqama
+                values[f"{prayer}_iqama_source"] = source_label
+                values[f"{prayer}_iqama_confidence"] = confidence
+                set_clauses.append(f"{prayer}_iqama = :{prayer}_iqama")
+                set_clauses.append(f"{prayer}_iqama_source = :{prayer}_iqama_source")
+                set_clauses.append(f"{prayer}_iqama_confidence = :{prayer}_iqama_confidence")
+
+        sunrise = result.get("sunrise")
+        if sunrise:
+            values["sunrise"] = sunrise
+            values["sunrise_source"] = source_label
+            set_clauses.append("sunrise = :sunrise")
+            set_clauses.append("sunrise_source = :sunrise_source")
+
+        if set_clauses:
+            set_clauses.append("scraped_at = :now")
+            set_clauses.append("updated_at = :now")
+
+            # Upsert: insert or update
+            conn.execute(text(f"""
+                INSERT INTO prayer_schedules (id, mosque_id, date, {', '.join(k for k in values if k not in ('mid','date','now'))}, scraped_at, created_at, updated_at)
+                VALUES (gen_random_uuid(), :mid, :date, {', '.join(':'+k for k in values if k not in ('mid','date','now'))}, :now, :now, :now)
+                ON CONFLICT (mosque_id, date)
+                DO UPDATE SET {', '.join(set_clauses)}
+            """), values)
+
+            logger.info(f"   💾 Saved prayer schedule ({source_label})")
+
+        # ── 3. Save enrichment ─────────────────────────────────────────────
+        _save_enrichment(conn, mosque_id, result.get("enrichment", {}))
+
+        # ── 4. Save jumuah ─────────────────────────────────────────────────
+        _save_jumuah(conn, mosque_id, result.get("jumuah", []), target_date, source_label, confidence)
+
+
+def _save_enrichment(conn, mosque_id: str, enrichment: dict):
+    """Update mosque enrichment fields (only non-null values)."""
+    if not enrichment:
+        return
+
+    updates = []
+    values = {"mid": mosque_id}
+
+    for field, col in [
+        ("has_womens_section", "has_womens_section"),
+        ("wheelchair_accessible", "wheelchair_accessible"),
+        ("denomination", "denomination"),
+        ("phone", "phone"),
+        ("email", "email"),
+    ]:
+        v = enrichment.get(field)
+        if v is not None:
+            updates.append(f"{col} = :{col}")
+            values[col] = v
+
+    langs = enrichment.get("languages_spoken")
+    if langs and isinstance(langs, list) and len(langs) > 0:
+        updates.append("languages_spoken = :langs")
+        values["langs"] = langs
+
+    if updates:
+        updates.append("updated_at = now()")
+        conn.execute(text(f"UPDATE mosques SET {', '.join(updates)} WHERE id = :mid"), values)
+        logger.info(f"   💾 Saved enrichment ({len(updates)-1} fields)")
+
+
+def _save_jumuah(conn, mosque_id: str, jumuah: list, target_date: date,
+                  source_label: str, confidence: str):
+    """Save jumuah sessions — replace existing for this date."""
+    if not jumuah:
+        return
+
+    # Delete existing for this date
+    conn.execute(text(
+        "DELETE FROM jumuah_sessions WHERE mosque_id = :mid AND valid_date = :date"
+    ), {"mid": mosque_id, "date": target_date})
+
+    for i, j in enumerate(jumuah):
+        if not isinstance(j, dict):
+            continue
+        kh = j.get("khutbah_time")
+        pr = j.get("prayer_time")
+        if not kh and not pr:
+            continue
+
+        conn.execute(text("""
+            INSERT INTO jumuah_sessions (id, mosque_id, valid_date, session_number, khutba_start, prayer_start,
+                                         imam_name, language, source, confidence, scraped_at, created_at)
+            VALUES (gen_random_uuid(), :mid, :date, :num, :kh, :pr, :imam, :lang, :source, :conf, now(), now())
+        """), {
+            "mid": mosque_id, "date": target_date, "num": i + 1,
+            "kh": kh, "pr": pr, "imam": j.get("imam"), "lang": j.get("language"),
+            "source": source_label, "conf": confidence,
+        })
+
+    logger.info(f"   💾 Saved {len(jumuah)} jumuah session(s)")
+
+
 # ---------------------------------------------------------------------------
 # Runner
 # ---------------------------------------------------------------------------
@@ -833,15 +1135,17 @@ async def run(args):
     total_output_tokens = 0
 
     engine = get_db()
+    today = date.today()
+
     with engine.connect() as conn:
         if args.mosque_id:
             rows = conn.execute(text(
-                "SELECT id::text, name, website FROM mosques WHERE id = :id"
+                "SELECT id::text, name, website, lat, lng FROM mosques WHERE id = :id"
             ), {"id": args.mosque_id}).fetchall()
         else:
             limit = args.test or args.batch or 1000
             rows = conn.execute(text("""
-                SELECT id::text, name, website FROM mosques
+                SELECT id::text, name, website, lat, lng FROM mosques
                 WHERE is_active = true AND website IS NOT NULL
                   AND website NOT LIKE '%%facebook.com%%'
                   AND LENGTH(website) > 10
@@ -852,10 +1156,23 @@ async def run(args):
     logger.info(f"Processing {len(rows)} mosques")
 
     results = []
+    dry_run = args.test is not None or args.dry_run
+
     for i, row in enumerate(rows):
         mosque_id, name, website = row[0], row[1], row[2]
-        r = await scrape_mosque(mosque_id, name, website, dry_run=args.dry_run)
+        lat = float(row[3]) if row[3] else 0.0
+        lng = float(row[4]) if row[4] else 0.0
+
+        r = await scrape_mosque(mosque_id, name, website, lat=lat, lng=lng, dry_run=dry_run)
         results.append(r)
+
+        # Save to DB (unless test/dry-run mode)
+        if not dry_run:
+            try:
+                save_result(engine, r, today)
+            except Exception as e:
+                logger.error(f"   💾 DB save failed: {e}")
+
         if i < len(rows) - 1:
             await asyncio.sleep(1)
 
