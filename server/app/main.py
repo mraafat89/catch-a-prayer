@@ -8,7 +8,7 @@ from fastapi.responses import JSONResponse
 from app.config import get_settings
 from app.database import engine, Base
 from app.api import mosques, settings as settings_router, spots as spots_router
-from app.api import travel as travel_router
+from app.api import travel as travel_router, suggestions as suggestions_router
 
 logging.basicConfig(
     level=logging.INFO,
@@ -45,6 +45,7 @@ app.include_router(mosques.router, prefix="/api")
 app.include_router(spots_router.router, prefix="/api")
 app.include_router(settings_router.router, prefix="/api")
 app.include_router(travel_router.router, prefix="/api")
+app.include_router(suggestions_router.router, prefix="/api")
 
 
 @app.exception_handler(Exception)

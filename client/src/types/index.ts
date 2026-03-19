@@ -144,12 +144,47 @@ export const STATUS_CONFIG: Record<string, { dot: string; icon: string; bg: stri
 
 export const SPOT_TYPE_LABELS: Record<string, string> = {
   prayer_room:      'Prayer room',
+  multifaith_room:  'Multifaith room',
+  quiet_room:       'Quiet room',
   community_hall:   'Community hall',
   halal_restaurant: 'Halal restaurant',
   campus:           'Campus prayer room',
-  rest_area:        'Rest area',
-  library:          'Library',
+  rest_area:        'Rest area / gas station',
+  airport:          'Airport prayer room',
+  hospital:         'Hospital chapel / quiet room',
+  office:           'Office prayer room',
   other:            'Other',
+};
+
+// Mosque suggestion types
+export interface MosqueSuggestion {
+  id: string;
+  mosque_id: string;
+  field_name: string;
+  suggested_value: string;
+  current_value: string | null;
+  status: string;
+  upvote_count: number;
+  downvote_count: number;
+  submitted_by_session: string;
+  created_at: string;
+}
+
+export interface MosqueSuggestionsResponse {
+  suggestions: MosqueSuggestion[];
+}
+
+export const SUGGESTION_FIELD_LABELS: Record<string, string> = {
+  fajr_iqama:          'Fajr iqama',
+  dhuhr_iqama:         'Dhuhr iqama',
+  asr_iqama:           'Asr iqama',
+  maghrib_iqama:       'Maghrib iqama',
+  isha_iqama:          'Isha iqama',
+  phone:               'Phone number',
+  website:             'Website',
+  has_womens_section:  'Women\'s section',
+  has_parking:         'Parking',
+  wheelchair_accessible: 'Wheelchair accessible',
 };
 
 // Travel Plan types

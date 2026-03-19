@@ -103,7 +103,7 @@ class SpotNearbyResponse(BaseModel):
 
 class SpotSubmitRequest(BaseModel):
     name: str = Field(..., min_length=2, max_length=500)
-    spot_type: str = Field(..., pattern="^(prayer_room|community_hall|halal_restaurant|campus|rest_area|library|other)$")
+    spot_type: str = Field(..., pattern="^(prayer_room|multifaith_room|quiet_room|community_hall|halal_restaurant|campus|rest_area|airport|hospital|office|other)$")
     latitude: float = Field(..., ge=-90, le=90)
     longitude: float = Field(..., ge=-180, le=180)
     address: Optional[str] = None
@@ -137,6 +137,55 @@ class SpotVerifyResponse(BaseModel):
     rejection_count: int
     status: str
     verification_label: str
+
+
+# ---------------------------------------------------------------------------
+# Mosque Suggestions (community corrections)
+# ---------------------------------------------------------------------------
+
+SUGGESTION_IQAMA_FIELDS = {
+    "fajr_iqama", "dhuhr_iqama", "asr_iqama", "maghrib_iqama", "isha_iqama",
+}
+SUGGESTION_FACILITY_FIELDS = {
+    "phone", "website", "has_womens_section", "has_parking", "wheelchair_accessible",
+}
+SUGGESTION_ALLOWED_FIELDS = SUGGESTION_IQAMA_FIELDS | SUGGESTION_FACILITY_FIELDS
+
+
+class MosqueSuggestionSubmitRequest(BaseModel):
+    mosque_id: str
+    field_name: str = Field(..., pattern="^(fajr_iqama|dhuhr_iqama|asr_iqama|maghrib_iqama|isha_iqama|phone|website|has_womens_section|has_parking|wheelchair_accessible)$")
+    suggested_value: str = Field(..., min_length=1, max_length=500)
+    session_id: str = Field(..., min_length=8, max_length=200)
+
+
+class MosqueSuggestionResponse(BaseModel):
+    id: str
+    mosque_id: str
+    field_name: str
+    suggested_value: str
+    current_value: Optional[str]
+    status: str
+    upvote_count: int
+    downvote_count: int
+    submitted_by_session: str
+    created_at: str
+
+
+class MosqueSuggestionVoteRequest(BaseModel):
+    session_id: str = Field(..., min_length=8, max_length=200)
+    is_positive: bool
+
+
+class MosqueSuggestionVoteResponse(BaseModel):
+    suggestion_id: str
+    upvote_count: int
+    downvote_count: int
+    status: str
+
+
+class MosqueSuggestionsListResponse(BaseModel):
+    suggestions: list[MosqueSuggestionResponse]
 
 
 # ---------------------------------------------------------------------------

@@ -226,7 +226,8 @@ class PrayerSpot(Base):
     # Identity
     name: Mapped[str] = mapped_column(String(500), nullable=False)
     spot_type: Mapped[str] = mapped_column(String(50), nullable=False)
-    # prayer_room / community_hall / halal_restaurant / campus / rest_area / library / other
+    # prayer_room / multifaith_room / quiet_room / community_hall / halal_restaurant /
+    # campus / rest_area / airport / hospital / office / other
 
     # Location
     lat: Mapped[float] = mapped_column(Float, nullable=False)
@@ -292,6 +293,65 @@ class PrayerSpotVerification(Base):
     __table_args__ = (
         UniqueConstraint("spot_id", "session_id", name="uq_spot_verification"),
         Index("spot_verifications_spot_idx", "spot_id"),
+    )
+
+
+class MosqueSuggestion(Base):
+    __tablename__ = "mosque_suggestions"
+
+    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=new_uuid)
+    mosque_id: Mapped[str] = mapped_column(UUID(as_uuid=False), ForeignKey("mosques.id", ondelete="CASCADE"), nullable=False)
+
+    # What is being suggested
+    field_name: Mapped[str] = mapped_column(String(50), nullable=False)
+    # Iqama fields: fajr_iqama, dhuhr_iqama, asr_iqama, maghrib_iqama, isha_iqama
+    # Facility fields: phone, website, has_womens_section, has_parking, wheelchair_accessible
+    suggested_value: Mapped[str] = mapped_column(Text, nullable=False)
+    current_value: Mapped[Optional[str]] = mapped_column(Text)
+
+    # Submission tracking (anonymous)
+    submitted_by_session: Mapped[str] = mapped_column(String(200), nullable=False)
+    submitted_ip_hash: Mapped[Optional[str]] = mapped_column(String(64))
+
+    # Community consensus
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="pending")
+    # pending / accepted / rejected / expired
+    upvote_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    downvote_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+    # Auto-expiry for time-sensitive data
+    expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    votes: Mapped[list["MosqueSuggestionVote"]] = relationship(
+        back_populates="suggestion", cascade="all, delete-orphan"
+    )
+
+    __table_args__ = (
+        Index("mosque_suggestions_mosque_idx", "mosque_id"),
+        Index("mosque_suggestions_status_idx", "status"),
+    )
+
+
+class MosqueSuggestionVote(Base):
+    __tablename__ = "mosque_suggestion_votes"
+
+    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=new_uuid)
+    suggestion_id: Mapped[str] = mapped_column(UUID(as_uuid=False), ForeignKey("mosque_suggestions.id", ondelete="CASCADE"), nullable=False)
+
+    session_id: Mapped[str] = mapped_column(String(200), nullable=False)
+    ip_hash: Mapped[Optional[str]] = mapped_column(String(64))
+    is_positive: Mapped[bool] = mapped_column(Boolean, nullable=False)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    suggestion: Mapped["MosqueSuggestion"] = relationship(back_populates="votes")
+
+    __table_args__ = (
+        UniqueConstraint("suggestion_id", "session_id", name="uq_suggestion_vote_session"),
+        Index("suggestion_votes_suggestion_idx", "suggestion_id"),
     )
 
 

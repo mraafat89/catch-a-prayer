@@ -357,12 +357,16 @@ CREATE TABLE prayer_spots (
     -- Identity
     name                  TEXT NOT NULL,
     spot_type             TEXT NOT NULL,
-                          -- 'prayer_room'       dedicated prayer room (airport, mall, hospital, etc.)
+                          -- 'prayer_room'       dedicated prayer room (mall, convention center, etc.)
+                          -- 'multifaith_room'   multi-faith or meditation room
+                          -- 'quiet_room'        quiet room or designated quiet area
                           -- 'community_hall'    community center or Islamic cultural center (non-mosque)
                           -- 'halal_restaurant'  restaurant with a verified prayer space
                           -- 'campus'            university / school prayer room
                           -- 'rest_area'         highway rest area or gas station
-                          -- 'library'           public library quiet room
+                          -- 'airport'           airport prayer room or chapel
+                          -- 'hospital'          hospital chapel or quiet room
+                          -- 'office'            office building prayer room
                           -- 'other'             anything else user-identified
 
     -- Location
@@ -465,6 +469,88 @@ Status transitions driven by net score (verification_count − rejection_count):
 | net ≤ −3 | `rejected` | Hidden from results |
 
 A spot with `pending` status is shown in results with a clear "unverified" disclaimer. Users are never shown rejected spots.
+
+---
+
+### `mosque_suggestions`
+
+Community-submitted corrections for mosque data — iqama times, contact info, and facility details. Uses the same anonymous identity model as prayer spots (session_id + IP hash).
+
+```sql
+CREATE TABLE mosque_suggestions (
+    id                      UUID PRIMARY KEY,
+    mosque_id               UUID NOT NULL REFERENCES mosques(id) ON DELETE CASCADE,
+
+    -- What is being suggested
+    field_name              TEXT NOT NULL,
+                            -- Iqama: fajr_iqama / dhuhr_iqama / asr_iqama / maghrib_iqama / isha_iqama
+                            -- Facility: phone / website / has_womens_section / has_parking / wheelchair_accessible
+    suggested_value         TEXT NOT NULL,
+    current_value           TEXT,               -- snapshot at submission time (for diff display)
+
+    -- Submission tracking (anonymous)
+    submitted_by_session    TEXT NOT NULL,
+    submitted_ip_hash       TEXT,               -- sha256(IP)
+
+    -- Community consensus
+    status                  TEXT NOT NULL DEFAULT 'pending',
+                            -- pending / accepted / rejected / expired
+    upvote_count            INTEGER NOT NULL DEFAULT 0,
+    downvote_count          INTEGER NOT NULL DEFAULT 0,
+
+    -- Auto-expiry
+    expires_at              TIMESTAMPTZ,        -- iqama: 7 days, facility: 90 days
+
+    created_at              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at              TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX mosque_suggestions_mosque_idx ON mosque_suggestions (mosque_id);
+CREATE INDEX mosque_suggestions_status_idx ON mosque_suggestions (status);
+CREATE INDEX mosque_suggestions_expires_idx ON mosque_suggestions (expires_at) WHERE status = 'pending';
+```
+
+---
+
+### `mosque_suggestion_votes`
+
+One row per user vote on a suggestion. Same anti-abuse pattern as spot verifications.
+
+```sql
+CREATE TABLE mosque_suggestion_votes (
+    id                      UUID PRIMARY KEY,
+    suggestion_id           UUID NOT NULL REFERENCES mosque_suggestions(id) ON DELETE CASCADE,
+
+    session_id              TEXT NOT NULL,
+    ip_hash                 TEXT,               -- sha256(IP)
+    is_positive             BOOLEAN NOT NULL,
+
+    created_at              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+    CONSTRAINT uq_suggestion_vote_session UNIQUE (suggestion_id, session_id)
+);
+
+CREATE INDEX suggestion_votes_suggestion_idx ON mosque_suggestion_votes (suggestion_id);
+CREATE INDEX suggestion_votes_ip_idx ON mosque_suggestion_votes (suggestion_id, ip_hash);
+```
+
+---
+
+### Mosque Suggestion Consensus Logic
+
+Different thresholds by field type (iqama times are urgent, need faster consensus):
+
+| Field type | Accept threshold | Reject threshold | Expiry |
+|-----------|-----------------|-----------------|--------|
+| Iqama times | net ≥ 2 | net ≤ -2 | 7 days |
+| Facility / contact | net ≥ 3 | net ≤ -2 | 90 days |
+
+When a suggestion is accepted:
+- Iqama fields → update `prayer_schedules` for today, source set to `user_submitted`
+- Contact fields (phone, website) → update `mosques` table directly
+- Boolean fields (has_womens_section, etc.) → update `mosques` table directly
+
+Nightly scraper auto-closes pending suggestions when it finds fresh data for those fields.
 
 ---
 

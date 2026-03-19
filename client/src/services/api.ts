@@ -3,6 +3,7 @@ import {
   NearbyResponse, SpotNearbyResponse,
   SpotSubmitRequest, SpotVerifyRequest,
   GeocodeSuggestion, TravelPlan,
+  MosqueSuggestionsResponse,
 } from '../types';
 
 const API_BASE_URL = process.env.REACT_APP_API_URL || '';
@@ -100,6 +101,30 @@ export const apiService = {
       trip_mode: tripMode || 'travel',
       waypoints: waypoints || [],
       prayed_prayers: prayedPrayers || [],
+    });
+    return res.data;
+  },
+
+  // Mosque suggestions (community corrections)
+  getMosqueSuggestions: async (mosqueId: string): Promise<MosqueSuggestionsResponse> => {
+    const res = await api.get(`/api/mosques/${mosqueId}/suggestions`);
+    return res.data;
+  },
+
+  submitMosqueSuggestion: async (mosqueId: string, fieldName: string, suggestedValue: string, sessionId: string) => {
+    const res = await api.post(`/api/mosques/${mosqueId}/suggestions`, {
+      mosque_id: mosqueId,
+      field_name: fieldName,
+      suggested_value: suggestedValue,
+      session_id: sessionId,
+    });
+    return res.data;
+  },
+
+  voteMosqueSuggestion: async (suggestionId: string, sessionId: string, isPositive: boolean) => {
+    const res = await api.post(`/api/suggestions/${suggestionId}/vote`, {
+      session_id: sessionId,
+      is_positive: isPositive,
     });
     return res.data;
   },

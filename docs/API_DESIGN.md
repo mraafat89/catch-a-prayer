@@ -451,6 +451,87 @@ Returns `409 Conflict` if this `session_id` has already verified this spot.
 
 ---
 
+### `GET /api/mosques/{mosque_id}/suggestions`
+
+List pending community suggestions for a mosque.
+
+**Response**:
+```json
+{
+  "suggestions": [
+    {
+      "id": "uuid",
+      "mosque_id": "uuid",
+      "field_name": "dhuhr_iqama",
+      "suggested_value": "13:15",
+      "current_value": "13:00",
+      "status": "pending",
+      "upvote_count": 1,
+      "downvote_count": 0,
+      "submitted_by_session": "cap-...",
+      "created_at": "2026-03-19T12:00:00Z"
+    }
+  ]
+}
+```
+
+---
+
+### `POST /api/mosques/{mosque_id}/suggestions`
+
+Submit a correction for a mosque field.
+
+**Request**:
+```json
+{
+  "mosque_id": "uuid",
+  "field_name": "dhuhr_iqama",
+  "suggested_value": "13:15",
+  "session_id": "cap-..."
+}
+```
+
+Allowed `field_name` values:
+- Iqama: `fajr_iqama`, `dhuhr_iqama`, `asr_iqama`, `maghrib_iqama`, `isha_iqama`
+- Facility: `phone`, `website`, `has_womens_section`, `has_parking`, `wheelchair_accessible`
+
+**Response 201**: Same shape as suggestion object above.
+
+**Anti-abuse**:
+- Rate limit: 5 per session per 24h, 3 per IP per 24h
+- One pending suggestion per field per mosque (dedup)
+- Self-vote prevention
+- Value validation (HH:MM for iqama, true/false for booleans)
+- Auto-expiry: 7 days for iqama, 90 days for facility
+
+---
+
+### `POST /api/suggestions/{suggestion_id}/vote`
+
+Upvote or downvote a mosque suggestion.
+
+**Request**:
+```json
+{
+  "session_id": "cap-...",
+  "is_positive": true
+}
+```
+
+**Response 200**:
+```json
+{
+  "suggestion_id": "uuid",
+  "upvote_count": 2,
+  "downvote_count": 0,
+  "status": "accepted"
+}
+```
+
+When status transitions to `accepted`, the correction is automatically applied to the mosque data.
+
+---
+
 ### `GET /api/settings`
 
 Get default user settings.

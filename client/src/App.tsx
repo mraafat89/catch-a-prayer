@@ -6,8 +6,8 @@ import { useStore, SESSION_ID } from './store';
 import { useTheme } from './theme';
 import {
   Mosque, PrayerSpot, PrayerTime, JumuahSession,
-  STATUS_CONFIG, SPOT_TYPE_LABELS,
-  SpotSubmitRequest,
+  STATUS_CONFIG, SPOT_TYPE_LABELS, SUGGESTION_FIELD_LABELS,
+  SpotSubmitRequest, MosqueSuggestion,
   TravelPairPlan, TravelOption, TravelDestination, TravelStop, GeocodeSuggestion,
   TripItinerary, PairChoice,
 } from './types';
@@ -520,6 +520,218 @@ function SpotCard({ spot }: { spot: PrayerSpot }) {
 
 // ─── Mosque Detail Sheet ────────────────────────────────────────────────────
 
+// ─── Mosque Community Suggestions ────────────────────────────────────────────
+
+const IQAMA_FIELDS = ['fajr_iqama', 'dhuhr_iqama', 'asr_iqama', 'maghrib_iqama', 'isha_iqama'];
+const FACILITY_FIELDS = ['phone', 'website', 'has_womens_section', 'has_parking', 'wheelchair_accessible'];
+
+function MosqueSuggestions({ mosqueId, mosque }: { mosqueId: string; mosque: Mosque }) {
+  const th = useTheme();
+  const [suggestions, setSuggestions] = useState<MosqueSuggestion[]>([]);
+  const [showForm, setShowForm] = useState(false);
+  const [fieldName, setFieldName] = useState('');
+  const [value, setValue] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState('');
+  const [success, setSuccess] = useState('');
+  const [votedIds, setVotedIds] = useState<Set<string>>(new Set());
+
+  useEffect(() => {
+    apiService.getMosqueSuggestions(mosqueId)
+      .then(r => setSuggestions(r.suggestions))
+      .catch(() => {});
+  }, [mosqueId]);
+
+  async function handleSubmit() {
+    if (!fieldName || !value.trim()) return;
+    setSubmitting(true);
+    setError('');
+    try {
+      const res = await apiService.submitMosqueSuggestion(mosqueId, fieldName, value.trim(), SESSION_ID);
+      setSuggestions(prev => [res, ...prev]);
+      setSuccess('Suggestion submitted. Others nearby can confirm it.');
+      setShowForm(false);
+      setFieldName('');
+      setValue('');
+    } catch (e: any) {
+      setError(e?.response?.data?.detail ?? 'Failed to submit suggestion.');
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function handleVote(suggestionId: string, isPositive: boolean) {
+    try {
+      const res = await apiService.voteMosqueSuggestion(suggestionId, SESSION_ID, isPositive);
+      setSuggestions(prev => prev.map(s =>
+        s.id === suggestionId
+          ? { ...s, upvote_count: res.upvote_count, downvote_count: res.downvote_count, status: res.status }
+          : s
+      ).filter(s => s.status === 'pending'));
+      setVotedIds(prev => new Set(prev).add(suggestionId));
+    } catch {}
+  }
+
+  // Pre-fill value field based on selected field
+  function onFieldSelect(fn: string) {
+    setFieldName(fn);
+    setValue('');
+    // Pre-fill with current value if it exists
+    if (IQAMA_FIELDS.includes(fn)) {
+      const prayer = fn.replace('_iqama', '');
+      const pt = mosque.prayers.find(p => p.prayer === prayer);
+      if (pt?.iqama_time) setValue(pt.iqama_time);
+    } else if (fn === 'phone' && mosque.phone) {
+      setValue(mosque.phone);
+    } else if (fn === 'website' && mosque.website) {
+      setValue(mosque.website);
+    } else if (fn === 'has_womens_section') {
+      setValue(mosque.has_womens_section ? 'true' : 'false');
+    } else if (fn === 'wheelchair_accessible') {
+      setValue(mosque.wheelchair_accessible ? 'true' : 'false');
+    }
+  }
+
+  const pendingSuggestions = suggestions.filter(s => s.status === 'pending' && s.submitted_by_session !== SESSION_ID);
+
+  return (
+    <div className="mb-4">
+      {/* Pending suggestions from others — show as verification cards */}
+      {pendingSuggestions.length > 0 && (
+        <div className="mb-3">
+          <h3 className="text-sm font-semibold text-gray-700 mb-2">Pending corrections</h3>
+          <div className="space-y-2">
+            {pendingSuggestions.map(s => (
+              <div key={s.id} className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2.5">
+                <div className="flex items-center justify-between mb-1">
+                  <span className="text-sm font-medium text-amber-800">
+                    {SUGGESTION_FIELD_LABELS[s.field_name] || s.field_name}
+                  </span>
+                  <span className="text-xs text-amber-600">
+                    {s.upvote_count} confirm{s.upvote_count !== 1 ? 's' : ''}
+                  </span>
+                </div>
+                <div className="flex items-center gap-2 text-sm mb-2">
+                  {s.current_value && (
+                    <>
+                      <span className="text-gray-500 line-through">
+                        {IQAMA_FIELDS.includes(s.field_name) ? fmtTime(s.current_value) : s.current_value}
+                      </span>
+                      <span className="text-gray-400">→</span>
+                    </>
+                  )}
+                  <span className="font-medium text-amber-900">
+                    {IQAMA_FIELDS.includes(s.field_name) ? fmtTime(s.suggested_value) : s.suggested_value}
+                  </span>
+                </div>
+                {votedIds.has(s.id) ? (
+                  <p className="text-xs text-gray-500 text-center py-1">Thanks for your feedback</p>
+                ) : (
+                  <div className="grid grid-cols-2 gap-2">
+                    <button
+                      onClick={() => handleVote(s.id, true)}
+                      className={`${th.bg} ${th.bgHover} text-white py-1.5 rounded-lg text-xs font-medium`}
+                    >Confirm</button>
+                    <button
+                      onClick={() => handleVote(s.id, false)}
+                      className="bg-slate-100 text-slate-600 border border-slate-200 py-1.5 rounded-lg text-xs font-medium hover:bg-slate-200"
+                    >That's wrong</button>
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Success message */}
+      {success && (
+        <p className="text-xs text-green-700 bg-green-50 border border-green-200 rounded-lg px-3 py-2 mb-3">{success}</p>
+      )}
+
+      {/* Suggest a correction link / form */}
+      {!showForm ? (
+        <button
+          onClick={() => { setShowForm(true); setSuccess(''); setError(''); }}
+          className="text-xs text-gray-400 hover:text-gray-600 underline underline-offset-2"
+        >
+          Times look wrong? Suggest a correction
+        </button>
+      ) : (
+        <div className="rounded-lg border border-gray-200 bg-gray-50 p-3 space-y-3">
+          <div className="flex items-center justify-between">
+            <h4 className="text-sm font-semibold text-gray-700">Suggest a correction</h4>
+            <button onClick={() => { setShowForm(false); setError(''); }} className="text-xs text-gray-400 hover:text-gray-600">Cancel</button>
+          </div>
+
+          {/* Field selector */}
+          <div>
+            <label className="block text-xs font-medium text-gray-700 mb-1">What needs correcting?</label>
+            <select
+              className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-current bg-white"
+              value={fieldName}
+              onChange={e => onFieldSelect(e.target.value)}
+            >
+              <option value="">Select a field</option>
+              <optgroup label="Prayer times">
+                {IQAMA_FIELDS.map(f => (
+                  <option key={f} value={f}>{SUGGESTION_FIELD_LABELS[f]}</option>
+                ))}
+              </optgroup>
+              <optgroup label="Mosque info">
+                {FACILITY_FIELDS.map(f => (
+                  <option key={f} value={f}>{SUGGESTION_FIELD_LABELS[f]}</option>
+                ))}
+              </optgroup>
+            </select>
+          </div>
+
+          {/* Value input — type depends on field */}
+          {fieldName && (
+            <div>
+              <label className="block text-xs font-medium text-gray-700 mb-1">
+                {IQAMA_FIELDS.includes(fieldName) ? 'Correct time (HH:MM, 24h)' : 'Correct value'}
+              </label>
+              {['has_womens_section', 'has_parking', 'wheelchair_accessible'].includes(fieldName) ? (
+                <select
+                  className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-current bg-white"
+                  value={value}
+                  onChange={e => setValue(e.target.value)}
+                >
+                  <option value="">Select</option>
+                  <option value="true">Yes</option>
+                  <option value="false">No</option>
+                </select>
+              ) : (
+                <input
+                  type={IQAMA_FIELDS.includes(fieldName) ? 'time' : 'text'}
+                  className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-current"
+                  placeholder={IQAMA_FIELDS.includes(fieldName) ? '14:30' : ''}
+                  value={value}
+                  onChange={e => setValue(e.target.value)}
+                />
+              )}
+            </div>
+          )}
+
+          {error && <p className="text-xs text-red-600">{error}</p>}
+
+          <button
+            onClick={handleSubmit}
+            disabled={submitting || !fieldName || !value.trim()}
+            className={`w-full ${th.bg} ${th.bgHover} text-white py-2 rounded-lg font-medium text-sm disabled:opacity-50 disabled:cursor-not-allowed`}
+          >
+            {submitting ? 'Submitting…' : 'Submit Suggestion'}
+          </button>
+          <p className="text-xs text-gray-400 text-center">
+            Your suggestion goes live once confirmed by {IQAMA_FIELDS.includes(fieldName) ? '2' : '3'} other users nearby.
+          </p>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function MosqueDetailSheet({ mosque, onDismiss }: { mosque: Mosque; onDismiss?: () => void }) {
   const closeSheet    = useStore((s) => s.closeSheet);
   const prayedToday   = useStore((s) => s.prayedToday);
@@ -751,6 +963,9 @@ function MosqueDetailSheet({ mosque, onDismiss }: { mosque: Mosque; onDismiss?: 
           </div>
         </div>
       )}
+
+      {/* Community suggestions */}
+      <MosqueSuggestions mosqueId={mosque.id} mosque={mosque} />
 
       {/* Data source */}
       <p className={`text-xs mb-4 ${badge.color}`} title={badge.title}>{badge.label}</p>
