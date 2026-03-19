@@ -96,23 +96,45 @@ CRITICAL RULES:
 - 24-hour time format ONLY: 1:30 PM → 13:30, 6:15 AM → 06:15, 12:00 PM → 12:00
 - null for anything you cannot find — NEVER guess or fabricate
 - Iqama must be AFTER adhan (if iqama is before adhan, you mixed them up)
-- Adhan = when the call to prayer sounds. Iqama = when the congregation prayer starts
-- Some sites show "Athan/Adhan/Azan" and "Iqama/Iqamah/Jamaat" — extract both
+
+PRAYER NAME VARIATIONS (all mean the same thing):
+- Fajr / Fajir / Fajar / Subh / Dawn
+- Dhuhr / Zuhr / Zohr / Duhr / Thuhr / Noon
+- Asr / Asar / Afternoon
+- Maghrib / Magrib / Maghreb / Sunset — if it says "sunset" or "at sunset", use "sunset" as the adhan value
+- Isha / Esha / Ishaa / Night
+
+TIME COLUMN VARIATIONS (all mean the same):
+- Adhan / Athan / Azan / Azaan / Start / Begins / Time
+- Iqama / Iqamah / Jamaat / Jamaah / Congregation / Start Time / Prayer Start
+
+SUNRISE/SHUROOQ:
+- Sunrise / Shurooq / Shorooq / Ishraq — extract the time
+
+MAGHRIB SPECIAL CASE:
+- If Maghrib shows "sunset", "at sunset", or "SUNSET" → set adhan to "sunset"
+- If Maghrib iqama shows "+5 min" or "5 min after sunset" → set iqama to "+5"
+
+JUMUAH/FRIDAY VARIATIONS:
+- Jumuah / Jummah / Juma / Friday Prayer / Friday Salah / Friday Congregational
+- Khutbah / Khutba / Sermon / Talk
+- 1st Jumuah / 2nd Jumuah / Session 1 / Session 2
+
 - Look for prayer time widgets, tables, schedules, sidebars
 - Look in navigation/menu for links to "Prayer Times", "Salah", "Iqama", "Schedule"
 - Include ALL Jumuah sessions — many mosques have 2-3 Friday prayers
-- For Jumuah: khutbah_time = when sermon starts, prayer_time = when salah starts"""
+- For Jumuah: khutbah_time = when sermon/khutba starts, prayer_time = when salah starts"""
 
 STEP2_PROMPT = """Extract prayer times and Jumuah info from this mosque page.
 
 Return ONLY valid JSON:
 {
   "prayer_times": {
-    "fajr": {"adhan": "HH:MM", "iqama": "HH:MM"},
-    "dhuhr": {"adhan": "HH:MM", "iqama": "HH:MM"},
-    "asr": {"adhan": "HH:MM", "iqama": "HH:MM"},
-    "maghrib": {"adhan": "HH:MM", "iqama": "HH:MM"},
-    "isha": {"adhan": "HH:MM", "iqama": "HH:MM"}
+    "fajr": {"adhan": "HH:MM or null", "iqama": "HH:MM or offset like '+20'"},
+    "dhuhr": {"adhan": "HH:MM or null", "iqama": "HH:MM or offset like '+15'"},
+    "asr": {"adhan": "HH:MM or null", "iqama": "HH:MM or offset like '+10'"},
+    "maghrib": {"adhan": "HH:MM or 'sunset'", "iqama": "HH:MM or offset like '+5'"},
+    "isha": {"adhan": "HH:MM or null", "iqama": "HH:MM or offset like '+15'"}
   },
   "sunrise": "HH:MM or null",
   "jumuah": [
@@ -128,8 +150,13 @@ Return ONLY valid JSON:
 RULES:
 - 24h format: 1:30 PM → 13:30
 - null for unknown — NEVER guess
-- Iqama is always AFTER adhan
-- Look for tables, widgets, schedules — the data IS on this page"""
+- Iqama is AFTER adhan — if they look swapped, swap them
+- If iqama is shown as offset: "+20 min", "20 min after athan", "SUNSET" → use "+20" or "sunset"
+- Maghrib adhan is often "sunset" — that's valid, use "sunset"
+- Prayer names: Fajr/Fajir/Subh, Dhuhr/Zuhr/Thuhr/Noon, Asr/Asar, Maghrib/Magrib/Sunset, Isha/Esha
+- Column names: Adhan/Athan/Azan/Start/Begins, Iqama/Iqamah/Jamaat/Congregation/Start Time
+- Jumuah/Jummah/Juma/Friday: khutbah=Khutba/Sermon/Talk, prayer=Salah/Prayer
+- Include ALL Friday sessions (1st, 2nd, 3rd)"""
 
 STEP3_PROMPT = """You are an expert at finding prayer times on mosque websites. This page LIKELY
 contains prayer schedule data that a previous extraction attempt missed.
@@ -344,29 +371,69 @@ def claude_extract(content: str, prompt: str, mosque_name: str,
 # ---------------------------------------------------------------------------
 
 def validate_time(t: Optional[str]) -> Optional[str]:
-    """Validate HH:MM format."""
+    """Validate and normalize a time value. Accepts HH:MM, 'sunset', '+N' offset."""
     if not t or not isinstance(t, str):
         return None
-    t = t.strip()
-    if ":" not in t:
-        return None
-    try:
-        parts = t.split(":")
-        h, m = int(parts[0]), int(parts[1])
-        if 0 <= h <= 23 and 0 <= m <= 59:
-            return f"{h:02d}:{m:02d}"
-    except (ValueError, IndexError):
-        pass
+    t = t.strip().lower()
+
+    # Special values
+    if t in ("sunset", "at sunset"):
+        return "sunset"
+
+    # Offset values — must have explicit "+" prefix OR "min/minutes after" keyword
+    # Examples: "+20", "+5 min", "20 min after athan", "20 minutes after adhan"
+    # NOT matching plain numbers like "6" or "13" (those are hours)
+    if t.startswith("+"):
+        offset_match = re.match(r'^\+(\d{1,2})\s*(min|minutes|mins)?$', t)
+        if offset_match:
+            mins = int(offset_match.group(1))
+            if 1 <= mins <= 60:
+                return f"+{mins}"
+
+    # "20 min after athan" / "15 minutes after adhan"
+    offset_match2 = re.match(r'(\d{1,2})\s*(min|minutes|mins)\s*(after|from|past)', t)
+    if offset_match2:
+        mins = int(offset_match2.group(1))
+        if 1 <= mins <= 60:
+            return f"+{mins}"
+
+    # Standard HH:MM — handle AM/PM conversion
+    if ":" in t:
+        try:
+            is_pm = "pm" in t or "p.m" in t
+            is_am = "am" in t or "a.m" in t
+            cleaned = re.sub(r'[apm.\s]', '', t)
+            parts = cleaned.split(":")
+            h, m = int(parts[0]), int(parts[1][:2])
+
+            # Convert 12h to 24h
+            if is_pm and h < 12:
+                h += 12
+            elif is_am and h == 12:
+                h = 0
+
+            # Heuristic: if no AM/PM specified and hour < 8, likely PM for
+            # Dhuhr(1-2), Asr(3-5), Maghrib(6-8), Isha(7-9)
+            # But we can't know prayer context here, so leave as-is
+
+            if 0 <= h <= 23 and 0 <= m <= 59:
+                return f"{h:02d}:{m:02d}"
+        except (ValueError, IndexError):
+            pass
+
     return None
 
 
 def count_prayers(pt: dict) -> int:
-    """Count how many prayers have at least adhan or iqama."""
+    """Count how many prayers have at least adhan or iqama (including special values)."""
     count = 0
     for p in ["fajr", "dhuhr", "asr", "maghrib", "isha"]:
         d = pt.get(p, {})
         if isinstance(d, dict):
-            if validate_time(d.get("adhan")) or validate_time(d.get("iqama")):
+            adhan = d.get("adhan")
+            iqama = d.get("iqama")
+            # Count if either has any valid value (time, sunset, or offset)
+            if adhan or iqama:
                 count += 1
     return count
 
@@ -388,14 +455,13 @@ def validate_result(data: dict) -> dict:
         adhan = validate_time(d.get("adhan"))
         iqama = validate_time(d.get("iqama"))
 
-        # Sanity: iqama should be after adhan (or equal for maghrib)
-        if adhan and iqama:
+        # Sanity: iqama should be after adhan — only check for HH:MM times (not sunset/offset)
+        if adhan and iqama and ":" in adhan and ":" in iqama:
             ah, am = map(int, adhan.split(":"))
             ih, im = map(int, iqama.split(":"))
             adhan_min = ah * 60 + am
             iqama_min = ih * 60 + im
             if iqama_min < adhan_min and (adhan_min - iqama_min) < 120:
-                # Likely swapped — swap them
                 adhan, iqama = iqama, adhan
 
         result["prayer_times"][prayer] = {"adhan": adhan, "iqama": iqama}
@@ -527,15 +593,22 @@ async def scrape_mosque(mosque_id: str, name: str, website: str,
     enrichment = {}
 
     # ── Pre-check: is the website even responding? ─────────────────────────
+    # Only reject on clear failures (connection refused, DNS fail, timeout).
+    # Don't reject on 403/405/406 — some servers block HEAD or non-browser agents
+    # but the actual scraper (Jina/Playwright) may still work.
     try:
-        async with httpx.AsyncClient(timeout=8, follow_redirects=True) as client:
-            head = await client.head(website, headers={"User-Agent": "Mozilla/5.0"})
-            if head.status_code >= 400:
+        async with httpx.AsyncClient(timeout=5, follow_redirects=True) as client:
+            head = await client.head(website, headers={
+                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
+            })
+            if head.status_code in (404, 410, 502, 503, 520, 521, 522, 523, 524):
                 logger.info(f"   ❌ Website returned {head.status_code}")
                 return _fail(mosque_id, name, website, f"http_{head.status_code}", start)
-    except Exception as e:
+    except (httpx.ConnectError, httpx.ConnectTimeout) as e:
         logger.info(f"   ❌ Website unreachable: {type(e).__name__}")
         return _fail(mosque_id, name, website, "unreachable", start)
+    except Exception:
+        pass  # Other errors (403, 406, etc.) — let the scraper try
 
     # ── STEP 1: Jina + Haiku (quick scan) ──────────────────────────────────
 
@@ -650,12 +723,17 @@ async def scrape_mosque(mosque_id: str, name: str, website: str,
                 return _success(mosque_id, name, website, v3, enrichment, 3, start)
 
     # ── STEP 2b: Try top 3 prayer subpages with Playwright ──────────────────
-    if not prayer_url:
+    # But only if we haven't spent too long already (time budget: 45s)
+    elapsed_so_far = time.time() - start
+    if not prayer_url and elapsed_so_far < 60:
         base_url = website.rstrip("/")
         for subpage in ["/prayer-times", "/prayers", "/salah"]:
+            if time.time() - start > 60:
+                logger.info(f"   ⏱ Time budget exceeded, skipping remaining subpages")
+                break
             sub_url = f"{base_url}{subpage}"
             logger.info(f"   Step 2b: Trying Playwright on {subpage}")
-            sub_rendered = await playwright_fetch(sub_url, timeout=10000)
+            sub_rendered = await playwright_fetch(sub_url, timeout=8000)
             if sub_rendered and len(sub_rendered) > 200:
                 sub_data = claude_extract(sub_rendered, STEP2_PROMPT, name, model=HAIKU)
                 if sub_data:
