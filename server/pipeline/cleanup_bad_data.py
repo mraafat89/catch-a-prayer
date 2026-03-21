@@ -67,18 +67,25 @@ def main():
 
             # Non-fatal: null out specific bad fields
             updates = []
+            # Known columns in prayer_schedules
+            valid_columns = {
+                "fajr_adhan", "fajr_iqama", "fajr_adhan_source", "fajr_iqama_source",
+                "dhuhr_adhan", "dhuhr_iqama", "dhuhr_adhan_source", "dhuhr_iqama_source",
+                "asr_adhan", "asr_iqama", "asr_adhan_source", "asr_iqama_source",
+                "maghrib_adhan", "maghrib_iqama", "maghrib_adhan_source", "maghrib_iqama_source",
+                "isha_adhan", "isha_iqama", "isha_adhan_source", "isha_iqama_source",
+                "sunrise", "sunrise_source",
+            }
             for issue in vr.issues:
                 field = issue["field"]
                 action = issue["action"]
-                if action == "nulled" and field in scraped:
+                if action == "nulled" and field in valid_columns:
                     updates.append(f"{field} = NULL")
                     nulled_fields += 1
-                # Also null corresponding source column
-                if action == "nulled":
-                    for suffix in ["_source", "_confidence"]:
-                        src_field = field + suffix
-                        if src_field.replace("_source", "").replace("_confidence", "") in scraped:
-                            updates.append(f"{field}{suffix} = NULL")
+                    # Also null source column
+                    src = field + "_source"
+                    if src in valid_columns:
+                        updates.append(f"{src} = NULL")
 
             if updates and not args.dry_run:
                 update_sql = ", ".join(set(updates))
