@@ -183,7 +183,7 @@ def _normalize_time(h: str, m: str, ampm: str | None) -> str | None:
 VALID_RANGES = {
     "fajr":    (2, 30,  7, 30),   # 2:30 AM - 7:30 AM
     "sunrise": (4, 30,  8, 30),   # 4:30 AM - 8:30 AM
-    "dhuhr":   (11, 0,  14, 0),   # 11:00 AM - 2:00 PM
+    "dhuhr":   (11, 0,  14, 30),  # 11:00 AM - 2:30 PM
     "asr":     (13, 0,  19, 0),   # 1:00 PM - 7:00 PM
     "maghrib": (16, 0,  21, 30),  # 4:00 PM - 9:30 PM
     "isha":    (18, 0,  23, 59),  # 6:00 PM - 11:59 PM

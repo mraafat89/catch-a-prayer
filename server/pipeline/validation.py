@@ -67,7 +67,7 @@ def normalize_time_format(val: str) -> Optional[str]:
 ADHAN_RANGES = {
     "fajr_adhan":    (180, 450),   # 03:00 - 07:30
     "sunrise":       (300, 480),   # 05:00 - 08:00
-    "dhuhr_adhan":   (660, 810),   # 11:00 - 13:30
+    "dhuhr_adhan":   (660, 840),   # 11:00 - 14:00
     "asr_adhan":     (810, 1110),  # 13:30 - 18:30
     "maghrib_adhan": (960, 1290),  # 16:00 - 21:30
     "isha_adhan":    (1050, 1380), # 17:30 - 23:00
