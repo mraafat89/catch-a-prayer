@@ -2401,9 +2401,30 @@ function TravelItineraryCard({ itinerary, index }: { itinerary: TripItinerary; i
             {isSelected ? '▶ ' : ''}Option {index + 1}
           </p>
           <p className="text-sm font-semibold text-gray-800 mt-0.5 leading-snug">{stripEmoji(itinerary.label)}</p>
-          {itinerary.total_detour_minutes > 0 && (
-            <p className="text-xs text-gray-500 mt-0.5">+{fmtDuration(itinerary.total_detour_minutes)} detour</p>
-          )}
+          {(() => {
+            // Compute arrival time for this itinerary (base + detour)
+            try {
+              const plan = useStore.getState().travelPlan;
+              if (!plan) return null;
+              const baseArr = new Date(plan.estimated_arrival_time);
+              const withDetour = new Date(baseArr.getTime() + itinerary.total_detour_minutes * 60000);
+              const arrTime = withDetour.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+              const dep = new Date(plan.departure_time);
+              const depDay = dep.toLocaleDateString([], { month: 'short', day: 'numeric' });
+              const arrDay = withDetour.toLocaleDateString([], { month: 'short', day: 'numeric' });
+              const dayLabel = depDay !== arrDay
+                ? ` ${withDetour.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' })}`
+                : '';
+              const detourLabel = itinerary.total_detour_minutes > 0
+                ? ` · +${fmtDuration(itinerary.total_detour_minutes)} detour`
+                : '';
+              return (
+                <p className="text-xs text-gray-500 mt-0.5">
+                  Arrive {arrTime}{dayLabel}{detourLabel}
+                </p>
+              );
+            } catch { return null; }
+          })()}
         </button>
         <button
           className="shrink-0 w-8 h-8 flex items-center justify-center text-gray-400 hover:text-gray-600"
