@@ -164,11 +164,12 @@ def extract_times_from_text(text_content: str) -> dict:
 
 def _extract_from_grid(lines: list[str], results: dict):
     """Look for a dense block of 5-6 times that might be a prayer schedule."""
-    # Find lines with multiple times
+    from pipeline.validation import hhmm_to_minutes
+
+    # Strategy A: Single line with 5+ times (horizontal table row)
     for i, line in enumerate(lines):
         times = TIME_RE.findall(line)
         if len(times) >= 5:
-            # This might be a row of all prayer times
             prayer_order = ["fajr", "sunrise", "dhuhr", "asr", "maghrib", "isha"]
             for j, (h, m, ampm) in enumerate(times[:6]):
                 if j < len(prayer_order):
@@ -185,6 +186,36 @@ def _extract_from_grid(lines: list[str], results: dict):
                             t = _normalize_time(h, m, ampm)
                             if t:
                                 results["iqama"][iqama_order[j]] = t
+            return
+
+    # Strategy B: Look for ascending time sequence across consecutive lines
+    # (vertical table — each line has 1-2 times, times go from early to late)
+    all_times = []
+    for i, line in enumerate(lines):
+        times = TIME_RE.findall(line)
+        for h, m, ampm in times:
+            t = _normalize_time(h, m, ampm)
+            if t:
+                mins = hhmm_to_minutes(t)
+                if mins and 120 <= mins <= 1440:  # 2AM to midnight
+                    all_times.append((i, t, mins))
+
+    # Find the longest ascending subsequence of 5+ times
+    if len(all_times) >= 5:
+        best_seq = []
+        for start in range(len(all_times)):
+            seq = [all_times[start]]
+            for j in range(start + 1, min(start + 20, len(all_times))):
+                if all_times[j][2] > seq[-1][2] and all_times[j][0] - seq[-1][0] <= 3:
+                    seq.append(all_times[j])
+            if len(seq) >= 5 and len(seq) > len(best_seq):
+                best_seq = seq
+
+        if len(best_seq) >= 5:
+            prayer_order = ["fajr", "sunrise", "dhuhr", "asr", "maghrib", "isha"]
+            for j, (line_idx, t, mins) in enumerate(best_seq[:6]):
+                if j < len(prayer_order) and prayer_order[j] not in results["adhan"]:
+                    results["adhan"][prayer_order[j]] = t
 
 
 def _normalize_time(h: str, m: str, ampm: str | None) -> str | None:
