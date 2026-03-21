@@ -76,6 +76,8 @@ def extract_times_from_text(text_content: str) -> dict:
     Extract prayer times from rendered page text.
     Returns dict with prayer names as keys and time strings as values.
     """
+    # Normalize: tabs to spaces, collapse whitespace, split by newlines
+    text_content = text_content.replace('\t', '  ')
     lines = text_content.split('\n')
     results = {"adhan": {}, "iqama": {}, "jumuah": []}
 
@@ -95,18 +97,18 @@ def extract_times_from_text(text_content: str) -> dict:
         if not found_prayer:
             # Check jumuah
             if any(j in line_lower for j in JUMUAH_NAMES):
-                # Look for times on this line and next few lines
-                context = " ".join(lines[i:i+3])
-                times = TIME_RE.findall(context)
+                times = TIME_RE.findall(line)
                 for h, m, ampm in times:
                     t = _normalize_time(h, m, ampm)
                     if t and 11 <= int(t.split(":")[0]) <= 15:  # Jumuah is around noon
                         results["jumuah"].append(t)
             continue
 
-        # Found a prayer name — look for times on this line and next 2 lines
-        context = " ".join(lines[i:i+3])
-        times = TIME_RE.findall(context)
+        # Found a prayer name — look for times on THIS LINE first
+        times = TIME_RE.findall(line)
+        if not times and i + 1 < len(lines):
+            # If no times on this line, check next line only
+            times = TIME_RE.findall(lines[i + 1])
 
         if len(times) >= 2:
             # First time = adhan, second = iqama (common pattern)
