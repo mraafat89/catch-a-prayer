@@ -933,6 +933,29 @@ def build_combination_plan(
     _p1_dep = prayer_status_at_arrival(prayer1, schedule, dep_min)
     _p2_dep = prayer_status_at_arrival(prayer2, schedule, dep_min)
 
+    # ── Stale prayer check ────────────────────────────────────────────────
+    # If the prayer's adhan was more than 3 hours before departure AND status
+    # is "can_pray_solo", it's a stale period (e.g., Isha adhan at 8:30 PM,
+    # departure at 1:30 AM — technically in Isha window but 5 hours stale).
+    # Don't include stale prayers in "pray before leaving" options.
+    STALE_THRESHOLD = 180  # 3 hours
+    for prayer_name, status_ref in [(prayer1, '_p1_dep'), (prayer2, '_p2_dep')]:
+        status = locals()[status_ref]
+        if status and status.get("status") == "can_pray_solo_at_mosque":
+            adhan_str = schedule.get(f"{prayer_name}_adhan")
+            if adhan_str:
+                adhan_m = hhmm_to_minutes(adhan_str)
+                # Time since adhan (handle midnight wrap)
+                if dep_min < adhan_m:
+                    time_since = (dep_min + 1440) - adhan_m
+                else:
+                    time_since = dep_min - adhan_m
+                if time_since > STALE_THRESHOLD:
+                    if status_ref == '_p1_dep':
+                        _p1_dep = None
+                    else:
+                        _p2_dep = None
+
     # ── Period-closed check (Muqeem mode only) ─────────────────────────────
     # In Muqeem mode (no combining), if prayer1's window has already closed at departure
     # AND prayer2 is now active, redirect to a solo plan for prayer2 only.
@@ -1699,20 +1722,8 @@ async def build_travel_plan(
             ):
                 continue
 
-            # Skip stale pairs: if departure is after midnight (before 6 AM),
-            # trip is SHORT (arrival also before the prayer's adhan), and both
-            # prayers have evening adhans → pair is from yesterday, skip it.
-            # BUT: long trips that extend into the next day should KEEP the pair.
-            p1_adhan = origin_schedule.get(f"{p1}_adhan")
-            p2_adhan = origin_schedule.get(f"{p2}_adhan")
-            if p1_adhan and p2_adhan and dep_min < 360:  # departure before 6 AM
-                p1_min = hhmm_to_minutes(p1_adhan)
-                p2_min = hhmm_to_minutes(p2_adhan)
-                # Only skip if trip is SHORT — arrival is also before the first adhan
-                # A 20h trip from midnight arrives next evening → not stale
-                effective_arr = arr_min if arr_min >= dep_min else arr_min + 1440
-                if p1_min > 720 and p2_min > 720 and effective_arr < p1_min:
-                    continue
+            # Stale prayer filtering is now handled inside build_combination_plan
+            # (checks if adhan was > 3 hours before departure)
             plan = build_combination_plan(
                 p1, p2, origin_schedule, route_mosques,
                 departure_dt, arrival_dt, dest_schedule, timezone_str,
