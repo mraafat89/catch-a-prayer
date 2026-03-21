@@ -2009,7 +2009,7 @@ function DestinationInput() {
     const originLng = travelOrigin?.lng ?? userLocation?.longitude;
     if (originLat && originLng && !travelModeStore) {
       const distKm = haversineKm(originLat, originLng, travelDestination.lat, travelDestination.lng);
-      if (distKm > 160) {
+      if (distKm > 80) {
         setLongTripModal(Math.round(distKm));
         return;
       }
@@ -2022,8 +2022,8 @@ function DestinationInput() {
     return (
       <div className="fixed inset-0 z-[600] flex items-center justify-center p-6 pointer-events-auto" style={{ background: 'rgba(0,0,0,0.4)' }}>
         <div className="bg-white rounded-2xl shadow-2xl p-6 w-full max-w-sm space-y-4">
-          <h3 className="text-base font-bold text-gray-900">Long trip — ~{Math.round(longTripModal / 1.609)} mi</h3>
-          <p className="text-sm text-gray-600">This trip is over 80 miles. As a Musafir (traveler) you can combine prayers (Dhuhr+Asr, Maghrib+Isha). Would you like to switch to Musafir mode?</p>
+          <h3 className="text-base font-bold text-gray-900">Long trip — ~{USE_METRIC ? `${longTripModal} km` : `${Math.round(longTripModal / 1.609)} mi`}</h3>
+          <p className="text-sm text-gray-600">This trip is over {USE_METRIC ? '80 km' : '48 miles'}. As a Musafir (traveler) you can combine prayers (Dhuhr+Asr, Maghrib+Isha). Would you like to switch to Musafir mode?</p>
           <div className="flex gap-3">
             <button
               onClick={() => { setLongTripModal(null); setTravelMode(true); executePlan('travel'); }}
@@ -2271,7 +2271,7 @@ function DestinationInput() {
           {/* Long-trip suggestion */}
           {longTripKm !== null && (
             <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 space-y-2">
-              <p className="text-xs font-semibold text-amber-800">Long trip — ~{Math.round(longTripKm / 1.609)} mi</p>
+              <p className="text-xs font-semibold text-amber-800">Long trip — ~{USE_METRIC ? `${longTripKm} km` : `${Math.round(longTripKm / 1.609)} mi`}</p>
               <p className="text-xs text-amber-700">As Musafir you can combine prayers (Dhuhr+Asr, Maghrib+Isha).</p>
               <div className="flex gap-2">
                 <button onClick={() => { setTravelMode(true); executePlan('travel'); }} className={`flex-1 text-white text-xs font-semibold py-1.5 rounded-lg ${th.bg} ${th.bgHover}`}>Switch to Musafir</button>
