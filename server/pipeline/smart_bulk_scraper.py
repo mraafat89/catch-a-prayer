@@ -239,14 +239,14 @@ async def check_alive(websites: list[dict], engine) -> dict:
                 conn.execute(text("""
                     INSERT INTO scraping_jobs (id, mosque_id, status, website_alive, website_checked_at)
                     SELECT gen_random_uuid(), m.id, 'pending', true, now()
-                    FROM mosques m WHERE m.id = ANY(:ids)
+                    FROM mosques m WHERE m.id::text = ANY(:ids)
                     ON CONFLICT (mosque_id) DO UPDATE SET website_alive = true, website_checked_at = now()
                 """), {"ids": alive_ids})
             if dead_ids:
                 conn.execute(text("""
                     INSERT INTO scraping_jobs (id, mosque_id, status, website_alive, website_checked_at)
                     SELECT gen_random_uuid(), m.id, 'failed', false, now()
-                    FROM mosques m WHERE m.id = ANY(:ids)
+                    FROM mosques m WHERE m.id::text = ANY(:ids)
                     ON CONFLICT (mosque_id) DO UPDATE SET website_alive = false, website_checked_at = now()
                 """), {"ids": dead_ids})
 
