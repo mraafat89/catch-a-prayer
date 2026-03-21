@@ -121,8 +121,14 @@ async def get_mapbox_travel_times(
 # ---------------------------------------------------------------------------
 
 def hhmm_to_minutes(t: str) -> int:
-    h, m = map(int, t.split(":"))
-    return h * 60 + m
+    if not t or ":" not in str(t):
+        return 0
+    try:
+        parts = str(t).split(":")
+        h, m = int(parts[0]), int(parts[1])
+        return h * 60 + m
+    except (ValueError, IndexError):
+        return 0
 
 
 def minutes_to_hhmm(total: int) -> str:
