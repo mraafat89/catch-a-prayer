@@ -167,6 +167,80 @@ async def get_stats(db: AsyncSession = Depends(get_db)):
     row = r.mappings().first()
     stats["scraper_history"] = dict(row) if row else {}
 
+    # === User search locations (from request_logs) ===
+    r = await db.execute(text("""
+        SELECT lat, lng, count(*) as searches
+        FROM request_logs
+        WHERE lat IS NOT NULL AND lng IS NOT NULL
+          AND created_at > now() - interval '30 days'
+        GROUP BY lat, lng
+    """))
+    stats["user_searches"] = [[float(row["lat"]), float(row["lng"]), int(row["searches"])]
+                               for row in r.mappings()]
+
+    # === Route planning origins/destinations ===
+    r = await db.execute(text("""
+        SELECT lat, lng, count(*) as routes
+        FROM request_logs
+        WHERE lat IS NOT NULL AND endpoint LIKE '%%travel%%'
+          AND created_at > now() - interval '30 days'
+        GROUP BY lat, lng
+    """))
+    stats["route_origins"] = [[float(row["lat"]), float(row["lng"]), int(row["routes"])]
+                               for row in r.mappings()]
+
+    # === Coverage gaps (user searched but few mosques nearby) ===
+    r = await db.execute(text("""
+        SELECT rl.lat, rl.lng, count(distinct rl.id) as searches,
+            (SELECT count(*) FROM mosques m
+             WHERE m.is_active AND m.lat BETWEEN rl.lat-0.1 AND rl.lat+0.1
+             AND m.lng BETWEEN rl.lng-0.1 AND rl.lng+0.1) as nearby_mosques
+        FROM request_logs rl
+        WHERE rl.lat IS NOT NULL AND rl.lng IS NOT NULL
+          AND rl.created_at > now() - interval '30 days'
+        GROUP BY rl.lat, rl.lng
+        HAVING (SELECT count(*) FROM mosques m
+                WHERE m.is_active AND m.lat BETWEEN rl.lat-0.1 AND rl.lat+0.1
+                AND m.lng BETWEEN rl.lng-0.1 AND rl.lng+0.1) < 3
+    """))
+    stats["coverage_gaps"] = [[float(row["lat"]), float(row["lng"]), int(row["searches"])]
+                               for row in r.mappings()]
+
+    # === Request volume by day (last 30 days) ===
+    r = await db.execute(text("""
+        SELECT date_trunc('day', created_at)::date::text as day, count(*) as requests
+        FROM request_logs
+        WHERE created_at > now() - interval '30 days'
+        GROUP BY 1 ORDER BY 1
+    """))
+    stats["daily_requests"] = {row["day"]: row["requests"] for row in r.mappings()}
+
+    # === Hourly request volume (last 48 hours) — for live chart ===
+    r = await db.execute(text("""
+        SELECT to_char(date_trunc('hour', created_at), 'MM/DD HH24:00') as hour,
+               count(*) as requests,
+               round(avg(latency_ms)::numeric, 1) as avg_latency,
+               count(*) filter (where response_code >= 500) as errors
+        FROM request_logs
+        WHERE created_at > now() - interval '48 hours'
+        GROUP BY 1 ORDER BY 1
+    """))
+    hourly = [dict(row) for row in r.mappings()]
+    stats["hourly_requests"] = hourly
+
+    # === Endpoint latency breakdown (last 24h) ===
+    r = await db.execute(text("""
+        SELECT endpoint,
+               count(*) as hits,
+               round(avg(latency_ms)::numeric, 1) as avg_ms,
+               round(percentile_cont(0.95) within group (order by latency_ms)::numeric, 1) as p95_ms,
+               max(latency_ms) as max_ms
+        FROM request_logs
+        WHERE created_at > now() - interval '24 hours'
+        GROUP BY endpoint ORDER BY count(*) DESC LIMIT 10
+    """))
+    stats["endpoint_latency"] = [dict(row) for row in r.mappings()]
+
     # === Request metrics (in-memory, since last restart) ===
     try:
         from app.main import request_metrics as rm
@@ -227,6 +301,24 @@ async def dashboard(db: AsyncSession = Depends(get_db)):
     hours_labels = _json.dumps(list(hours_data.keys())[-24:])
     hours_values = _json.dumps(list(hours_data.values())[-24:])
 
+    # Hourly live data for Chart.js
+    hourly = stats.get("hourly_requests", [])
+    hourly_labels_json = _json.dumps([h["hour"] for h in hourly])
+    hourly_reqs_json = _json.dumps([h["requests"] for h in hourly])
+    hourly_latency_json = _json.dumps([float(h["avg_latency"] or 0) for h in hourly])
+    hourly_errors_json = _json.dumps([h["errors"] for h in hourly])
+
+    # Daily volume for bar chart
+    daily_req = stats.get("daily_requests", {})
+    daily_labels_json = _json.dumps(list(daily_req.keys()))
+    daily_values_json = _json.dumps(list(daily_req.values()))
+
+    # Endpoint latency table
+    ep_latency_rows = ""
+    for ep in stats.get("endpoint_latency", []):
+        color = "#dc2626" if float(ep.get("p95_ms", 0)) > 500 else "#666"
+        ep_latency_rows += f"<tr><td><code>{ep['endpoint']}</code></td><td>{ep['hits']}</td><td>{ep['avg_ms']}ms</td><td style='color:{color}'>{ep['p95_ms']}ms</td><td>{ep['max_ms']}ms</td></tr>"
+
     # Top endpoints
     top_ep_rows = ""
     for ep, count in list(usage.get("top_endpoints", {}).items())[:8]:
@@ -238,6 +330,7 @@ async def dashboard(db: AsyncSession = Depends(get_db)):
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script src="https://unpkg.com/leaflet.heat/dist/leaflet-heat.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
 <style>
 body {{ font-family: -apple-system, sans-serif; max-width: 1000px; margin: 20px auto; padding: 0 15px; background: #f8fafb; color: #1a1a1a; }}
 h1 {{ color: #0d9488; margin-bottom: 5px; }}
@@ -272,8 +365,15 @@ h2 {{ color: #2e3d44; font-size: 15px; margin-bottom: 8px; }}
 </div>
 
 <div class="section">
-<h2>🗺️ Mosque Coverage Heatmap</h2>
+<h2>🗺️ Heatmaps</h2>
+<div style="margin-bottom:8px;">
+<button onclick="showLayer('mosques')" id="btn-mosques" style="padding:6px 12px;border-radius:8px;border:1px solid #0d9488;background:#0d9488;color:white;cursor:pointer;margin-right:4px;font-size:12px;">Mosques</button>
+<button onclick="showLayer('searches')" id="btn-searches" style="padding:6px 12px;border-radius:8px;border:1px solid #2563eb;background:white;color:#2563eb;cursor:pointer;margin-right:4px;font-size:12px;">User Searches</button>
+<button onclick="showLayer('routes')" id="btn-routes" style="padding:6px 12px;border-radius:8px;border:1px solid #7c3aed;background:white;color:#7c3aed;cursor:pointer;margin-right:4px;font-size:12px;">Route Planning</button>
+<button onclick="showLayer('gaps')" id="btn-gaps" style="padding:6px 12px;border-radius:8px;border:1px solid #dc2626;background:white;color:#dc2626;cursor:pointer;font-size:12px;">Coverage Gaps</button>
+</div>
 <div id="heatmap"></div>
+<p id="heatmap-label" style="font-size:11px;color:#666;margin-top:4px;"></p>
 </div>
 
 <div class="section two-col">
@@ -332,26 +432,145 @@ h2 {{ color: #2e3d44; font-size: 15px; margin-bottom: 8px; }}
 </div>
 </div>
 
-<div class="section" style="color:#999;font-size:11px;text-align:center;margin-top:20px;">
-Updated: {stats['server']['timestamp'][:19]} UTC
+<div class="section">
+<h2>📈 Live Traffic (Hourly — Last 48h)</h2>
+<div style="background:white;border-radius:12px;padding:14px;box-shadow:0 1px 3px rgba(0,0,0,0.1);">
+<canvas id="traffic-chart" height="180"></canvas>
+</div>
 </div>
 
-<script id="loc-data" type="application/json">""" + locations_json + """</script>"""
+<div class="section two-col">
+<div>
+<h2>📊 Daily Volume (Last 30 Days)</h2>
+<div style="background:white;border-radius:12px;padding:14px;box-shadow:0 1px 3px rgba(0,0,0,0.1);">
+<canvas id="daily-chart" height="200"></canvas>
+</div>
+</div>
+<div>
+<h2>⚡ Latency by Endpoint (24h)</h2>
+<table>
+<tr><th>Endpoint</th><th>Hits</th><th>Avg</th><th>P95</th><th>Max</th></tr>
+{ep_latency_rows if ep_latency_rows else '<tr><td colspan="5" style="color:#999">No data yet</td></tr>'}
+</table>
+</div>
+</div>
 
-    # JavaScript outside the f-string to avoid curly brace conflicts
+<div class="section" style="color:#999;font-size:11px;text-align:center;margin-top:20px;">
+Updated: {stats['server']['timestamp'][:19]} UTC — <span id="refresh-timer">auto-refresh in 60s</span>
+</div>
+
+<script id="loc-data" type="application/json">""" + locations_json + """</script>
+<script id="search-data" type="application/json">""" + _json.dumps(stats.get("user_searches", [])) + """</script>
+<script id="route-data" type="application/json">""" + _json.dumps(stats.get("route_origins", [])) + """</script>
+<script id="gap-data" type="application/json">""" + _json.dumps(stats.get("coverage_gaps", [])) + """</script>
+<script id="hourly-labels" type="application/json">""" + hourly_labels_json + """</script>
+<script id="hourly-reqs" type="application/json">""" + hourly_reqs_json + """</script>
+<script id="hourly-latency" type="application/json">""" + hourly_latency_json + """</script>
+<script id="hourly-errors" type="application/json">""" + hourly_errors_json + """</script>
+<script id="daily-labels" type="application/json">""" + daily_labels_json + """</script>
+<script id="daily-values" type="application/json">""" + daily_values_json + """</script>"""
+
+    chart_script = """<script>
+// --- Traffic chart (requests + latency dual axis) ---
+var hLabels = JSON.parse(document.getElementById('hourly-labels').textContent);
+var hReqs = JSON.parse(document.getElementById('hourly-reqs').textContent);
+var hLatency = JSON.parse(document.getElementById('hourly-latency').textContent);
+var hErrors = JSON.parse(document.getElementById('hourly-errors').textContent);
+
+new Chart(document.getElementById('traffic-chart'), {
+    type: 'line',
+    data: {
+        labels: hLabels,
+        datasets: [
+            {label:'Requests', data:hReqs, borderColor:'#0d9488', backgroundColor:'rgba(13,148,136,0.1)', fill:true, tension:0.3, yAxisID:'y'},
+            {label:'Avg Latency (ms)', data:hLatency, borderColor:'#f59e0b', borderDash:[5,3], tension:0.3, yAxisID:'y1'},
+            {label:'Errors', data:hErrors, borderColor:'#dc2626', backgroundColor:'rgba(220,38,38,0.2)', type:'bar', yAxisID:'y'}
+        ]
+    },
+    options: {
+        responsive:true, interaction:{intersect:false, mode:'index'},
+        scales: {
+            y: {position:'left', title:{display:true, text:'Requests / Errors'}, beginAtZero:true},
+            y1: {position:'right', title:{display:true, text:'Latency (ms)'}, beginAtZero:true, grid:{drawOnChartArea:false}}
+        },
+        plugins: {legend:{position:'bottom', labels:{boxWidth:12, font:{size:11}}}}
+    }
+});
+
+// --- Daily volume bar chart ---
+var dLabels = JSON.parse(document.getElementById('daily-labels').textContent);
+var dValues = JSON.parse(document.getElementById('daily-values').textContent);
+
+new Chart(document.getElementById('daily-chart'), {
+    type: 'bar',
+    data: {
+        labels: dLabels,
+        datasets: [{label:'Daily Requests', data:dValues, backgroundColor:'rgba(13,148,136,0.6)', borderRadius:4}]
+    },
+    options: {
+        responsive:true, plugins:{legend:{display:false}},
+        scales: {x:{ticks:{maxRotation:45, font:{size:9}}}, y:{beginAtZero:true}}
+    }
+});
+
+// --- Auto-refresh every 60 seconds ---
+var countdown = 60;
+setInterval(function() {
+    countdown--;
+    var el = document.getElementById('refresh-timer');
+    if (el) el.textContent = 'auto-refresh in ' + countdown + 's';
+    if (countdown <= 0) location.reload();
+}, 1000);
+</script>"""
+
     map_script = """<script>
 var map = L.map('heatmap').setView([39.8, -98.5], 4);
 L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
     maxZoom: 18, attribution: '&copy; OpenStreetMap'
 }).addTo(map);
-var locs = JSON.parse(document.getElementById('loc-data').textContent);
-if (locs.length > 0) {
-    L.heatLayer(locs, {radius: 15, blur: 20, maxZoom: 10, max: 1.0,
-        gradient: {0.2: '#0d9488', 0.4: '#14b8a6', 0.6: '#f59e0b', 0.8: '#ef4444', 1.0: '#dc2626'}
-    }).addTo(map);
+
+var mosqueData = JSON.parse(document.getElementById('loc-data').textContent);
+var searchData = JSON.parse(document.getElementById('search-data').textContent);
+var routeData = JSON.parse(document.getElementById('route-data').textContent);
+var gapData = JSON.parse(document.getElementById('gap-data').textContent);
+
+var layers = {
+    mosques: L.heatLayer(mosqueData, {radius: 15, blur: 20, maxZoom: 10,
+        gradient: {0.2: '#0d9488', 0.4: '#14b8a6', 0.6: '#f59e0b', 0.8: '#ef4444', 1.0: '#dc2626'}}),
+    searches: L.heatLayer(searchData.map(function(p){return [p[0],p[1],p[2]||1]}), {radius: 25, blur: 25, maxZoom: 12,
+        gradient: {0.2: '#3b82f6', 0.4: '#2563eb', 0.6: '#1d4ed8', 0.8: '#1e40af', 1.0: '#1e3a8a'}}),
+    routes: L.heatLayer(routeData.map(function(p){return [p[0],p[1],p[2]||1]}), {radius: 30, blur: 30, maxZoom: 12,
+        gradient: {0.2: '#8b5cf6', 0.4: '#7c3aed', 0.6: '#6d28d9', 0.8: '#5b21b6', 1.0: '#4c1d95'}}),
+    gaps: L.heatLayer(gapData.map(function(p){return [p[0],p[1],p[2]||1]}), {radius: 35, blur: 30, maxZoom: 12,
+        gradient: {0.2: '#f87171', 0.4: '#ef4444', 0.6: '#dc2626', 0.8: '#b91c1c', 1.0: '#991b1b'}})
+};
+
+var labels = {
+    mosques: mosqueData.length + ' mosques in database',
+    searches: searchData.length + ' unique search locations (last 30 days)',
+    routes: routeData.length + ' route planning origins (last 30 days)',
+    gaps: gapData.length + ' areas with few nearby mosques (coverage gaps)'
+};
+
+var activeLayer = 'mosques';
+layers.mosques.addTo(map);
+document.getElementById('heatmap-label').textContent = labels.mosques;
+
+function showLayer(name) {
+    if (layers[activeLayer]) map.removeLayer(layers[activeLayer]);
+    activeLayer = name;
+    layers[name].addTo(map);
+    document.getElementById('heatmap-label').textContent = labels[name];
+    // Update button styles
+    var colors = {mosques:'#0d9488', searches:'#2563eb', routes:'#7c3aed', gaps:'#dc2626'};
+    ['mosques','searches','routes','gaps'].forEach(function(n) {
+        var btn = document.getElementById('btn-'+n);
+        if (n === name) { btn.style.background = colors[n]; btn.style.color = 'white'; }
+        else { btn.style.background = 'white'; btn.style.color = colors[n]; }
+    });
 }
 </script>"""
 
-    html += map_script + "</body></html>"
+    html += chart_script + map_script + "</body></html>"
 
     return HTMLResponse(content=html)
