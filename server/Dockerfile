@@ -10,8 +10,11 @@ RUN apt-get update && apt-get install -y \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Install Playwright browsers for JS-heavy site scraping (used by pipeline only)
-RUN pip install playwright && playwright install chromium --with-deps
+# Install Playwright + Chromium for JS-heavy site scraping
+RUN pip install --no-cache-dir playwright \
+    && apt-get update \
+    && playwright install --with-deps chromium \
+    && rm -rf /var/lib/apt/lists/*
 
 COPY . .
 
