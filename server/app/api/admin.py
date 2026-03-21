@@ -310,6 +310,40 @@ async def get_stats(db: AsyncSession = Depends(get_db)):
     except Exception:
         stats["api_usage"] = {"error": "metrics not available"}
 
+    # === Trend: real data % by day (last 14 days) ===
+    r = await db.execute(text("""
+        SELECT date::text as day,
+            count(*) as total,
+            count(*) filter (where fajr_adhan_source != 'calculated') as real_data
+        FROM prayer_schedules
+        WHERE date >= CURRENT_DATE - 14
+        GROUP BY date ORDER BY date
+    """))
+    stats["trend_real_data"] = [
+        {"day": row["day"], "pct": round(row["real_data"] * 100 / max(row["total"], 1), 1)}
+        for row in r.mappings()
+    ]
+
+    # === Trend: scraper activity by day (last 14 days) ===
+    r = await db.execute(text("""
+        SELECT date_trunc('day', scraped_at)::date::text as day,
+            count(*) filter (where status = 'success') as success,
+            count(*) filter (where status = 'failed') as failed
+        FROM scraping_jobs
+        WHERE scraped_at > now() - interval '14 days'
+        GROUP BY 1 ORDER BY 1
+    """))
+    stats["trend_scraper"] = [dict(row) for row in r.mappings()]
+
+    # === Trend: validation issues by day (last 14 days) ===
+    r = await db.execute(text("""
+        SELECT scrape_date::text as day, count(*) as issues
+        FROM scraping_validation_log
+        WHERE scrape_date >= CURRENT_DATE - 14
+        GROUP BY 1 ORDER BY 1
+    """))
+    stats["trend_validation"] = [dict(row) for row in r.mappings()]
+
     # === Server info ===
     stats["server"] = {
         "timestamp": datetime.utcnow().isoformat(),
@@ -441,6 +475,20 @@ async def dashboard(db: AsyncSession = Depends(get_db)):
     daily_labels_json = _json.dumps(list(daily_req.keys()))
     daily_values_json = _json.dumps(list(daily_req.values()))
 
+    # Trend data for charts
+    trend_real = stats.get("trend_real_data", [])
+    trend_real_labels = _json.dumps([t["day"][-5:] for t in trend_real])  # MM-DD
+    trend_real_values = _json.dumps([t["pct"] for t in trend_real])
+
+    trend_scraper = stats.get("trend_scraper", [])
+    trend_scraper_labels = _json.dumps([t["day"][-5:] for t in trend_scraper])
+    trend_scraper_success = _json.dumps([t["success"] for t in trend_scraper])
+    trend_scraper_failed = _json.dumps([t["failed"] for t in trend_scraper])
+
+    trend_val = stats.get("trend_validation", [])
+    trend_val_labels = _json.dumps([t["day"][-5:] for t in trend_val])
+    trend_val_values = _json.dumps([t["issues"] for t in trend_val])
+
     # Endpoint latency table
     ep_latency_rows = ""
     for ep in stats.get("endpoint_latency", []):
@@ -487,7 +535,7 @@ th {{ background: #f8fafb; font-weight: 600; color: #555; }}
 h2 {{ color: #2e3d44; font-size: 15px; margin-bottom: 8px; }}
 #heatmap {{ height: 350px; border-radius: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }}
 .two-col {{ display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }}
-@media (max-width: 700px) {{ .two-col {{ grid-template-columns: 1fr; }} }}
+@media (max-width: 700px) {{ .two-col {{ grid-template-columns: 1fr; }} .section > div[style*="grid-template-columns: 1fr 1fr 1fr"] {{ grid-template-columns: 1fr !important; }} }}
 </style></head><body>
 <h1>Catch a Prayer</h1>
 <p class="subtitle">Admin Dashboard &mdash; {stats['server']['date']}</p>
@@ -501,6 +549,24 @@ h2 {{ color: #2e3d44; font-size: 15px; margin-bottom: 8px; }}
   <div class="card"><div class="number">{p.get('calculated',0):,}</div><div class="label">Calculated</div></div>
   <div class="card"><div class="number">{j.get('mosques_with_jumuah',0)}</div><div class="label">Jumuah</div></div>
   <div class="card"><div class="number">{suggestions.get('total',0)}</div><div class="label">Suggestions</div></div>
+</div>
+
+<div class="section">
+<h2>Trends (14 Days)</h2>
+<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;">
+<div style="background:white;border-radius:12px;padding:12px;box-shadow:0 1px 3px rgba(0,0,0,0.1);">
+<div style="font-size:11px;color:#666;margin-bottom:6px;">Real Data %</div>
+<canvas id="trend-real" height="120"></canvas>
+</div>
+<div style="background:white;border-radius:12px;padding:12px;box-shadow:0 1px 3px rgba(0,0,0,0.1);">
+<div style="font-size:11px;color:#666;margin-bottom:6px;">Scraper Activity</div>
+<canvas id="trend-scraper" height="120"></canvas>
+</div>
+<div style="background:white;border-radius:12px;padding:12px;box-shadow:0 1px 3px rgba(0,0,0,0.1);">
+<div style="font-size:11px;color:#666;margin-bottom:6px;">Validation Issues</div>
+<canvas id="trend-validation" height="120"></canvas>
+</div>
+</div>
 </div>
 
 <div class="section">
@@ -641,7 +707,14 @@ Updated: {stats['server']['timestamp'][:19]} UTC — <span id="refresh-timer">au
 <script id="hourly-latency" type="application/json">""" + hourly_latency_json + """</script>
 <script id="hourly-errors" type="application/json">""" + hourly_errors_json + """</script>
 <script id="daily-labels" type="application/json">""" + daily_labels_json + """</script>
-<script id="daily-values" type="application/json">""" + daily_values_json + """</script>"""
+<script id="daily-values" type="application/json">""" + daily_values_json + """</script>
+<script id="trend-real-labels" type="application/json">""" + trend_real_labels + """</script>
+<script id="trend-real-values" type="application/json">""" + trend_real_values + """</script>
+<script id="trend-scraper-labels" type="application/json">""" + trend_scraper_labels + """</script>
+<script id="trend-scraper-success" type="application/json">""" + trend_scraper_success + """</script>
+<script id="trend-scraper-failed" type="application/json">""" + trend_scraper_failed + """</script>
+<script id="trend-val-labels" type="application/json">""" + trend_val_labels + """</script>
+<script id="trend-val-values" type="application/json">""" + trend_val_values + """</script>"""
 
     admin_key = ADMIN_API_KEY
     review_script = f"""<script>
@@ -695,6 +768,44 @@ new Chart(document.getElementById('daily-chart'), {
         responsive:true, plugins:{legend:{display:false}},
         scales: {x:{ticks:{maxRotation:45, font:{size:9}}}, y:{beginAtZero:true}}
     }
+});
+
+// --- Trend: Real Data % ---
+new Chart(document.getElementById('trend-real'), {
+    type: 'line',
+    data: {
+        labels: JSON.parse(document.getElementById('trend-real-labels').textContent),
+        datasets: [{data: JSON.parse(document.getElementById('trend-real-values').textContent),
+            borderColor:'#0d9488', backgroundColor:'rgba(13,148,136,0.1)', fill:true, tension:0.3, pointRadius:3}]
+    },
+    options: {responsive:true, plugins:{legend:{display:false}},
+        scales:{y:{beginAtZero:true, max:100, ticks:{callback:function(v){return v+'%'}}}, x:{ticks:{font:{size:9}}}}}
+});
+
+// --- Trend: Scraper Activity ---
+new Chart(document.getElementById('trend-scraper'), {
+    type: 'bar',
+    data: {
+        labels: JSON.parse(document.getElementById('trend-scraper-labels').textContent),
+        datasets: [
+            {label:'Success', data: JSON.parse(document.getElementById('trend-scraper-success').textContent), backgroundColor:'rgba(13,148,136,0.7)', borderRadius:3},
+            {label:'Failed', data: JSON.parse(document.getElementById('trend-scraper-failed').textContent), backgroundColor:'rgba(220,38,38,0.5)', borderRadius:3}
+        ]
+    },
+    options: {responsive:true, plugins:{legend:{position:'bottom',labels:{boxWidth:8,font:{size:10}}}},
+        scales:{x:{stacked:true,ticks:{font:{size:9}}}, y:{stacked:true,beginAtZero:true}}}
+});
+
+// --- Trend: Validation Issues ---
+new Chart(document.getElementById('trend-validation'), {
+    type: 'line',
+    data: {
+        labels: JSON.parse(document.getElementById('trend-val-labels').textContent),
+        datasets: [{data: JSON.parse(document.getElementById('trend-val-values').textContent),
+            borderColor:'#dc2626', backgroundColor:'rgba(220,38,38,0.1)', fill:true, tension:0.3, pointRadius:3}]
+    },
+    options: {responsive:true, plugins:{legend:{display:false}},
+        scales:{y:{beginAtZero:true}, x:{ticks:{font:{size:9}}}}}
 });
 
 // --- Auto-refresh every 60 seconds ---
