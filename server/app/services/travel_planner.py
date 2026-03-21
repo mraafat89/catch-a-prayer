@@ -45,6 +45,63 @@ PROGRESSIVE_RADII = [25, 50, 75]  # progressive expansion when no mosque found
 WAYPOINT_INTERVAL_MINUTES = 30    # sample route waypoints every 30 minutes
 MAX_DETOUR_MINUTES = 60           # skip mosques requiring > 60 min total detour
 HIGHWAY_SPEED_KMH = 60            # speed used for detour estimate (highway avg)
+MAX_TRIP_HOURS = 72               # max trip duration (3 days)
+PRAYERS = ["fajr", "dhuhr", "asr", "maghrib", "isha"]
+
+
+def validate_trip_duration(departure_dt: datetime, arrival_dt: datetime) -> tuple[bool, str]:
+    """Validate trip duration. Returns (is_valid, error_message)."""
+    duration = arrival_dt - departure_dt
+    hours = duration.total_seconds() / 3600
+    if hours > MAX_TRIP_HOURS:
+        return False, (
+            f"This trip is longer than 3 days ({hours:.0f} hours). "
+            "Please break it into shorter segments for accurate prayer planning."
+        )
+    if hours <= 0:
+        return False, "Arrival must be after departure."
+    return True, ""
+
+
+def enumerate_trip_prayers(
+    departure_dt: datetime,
+    arrival_dt: datetime,
+    schedules_by_date: dict,
+) -> list[dict]:
+    """
+    Enumerate all prayers that fall within a multi-day trip window.
+    Returns list of {prayer, date, adhan_time, iqama_time, day_number}.
+    Each calendar day uses its own prayer schedule.
+    """
+    results = []
+    current_date = departure_dt.date()
+    end_date = arrival_dt.date()
+    day_number = 1
+
+    while current_date <= end_date:
+        schedule = schedules_by_date.get(current_date, {})
+        for prayer in PRAYERS:
+            adhan = schedule.get(f"{prayer}_adhan")
+            if not adhan:
+                continue
+            adhan_min = hhmm_to_minutes(adhan)
+            prayer_dt = datetime(
+                current_date.year, current_date.month, current_date.day,
+                adhan_min // 60, adhan_min % 60,
+                tzinfo=departure_dt.tzinfo,
+            )
+            if departure_dt <= prayer_dt <= arrival_dt:
+                results.append({
+                    "prayer": prayer,
+                    "date": current_date,
+                    "adhan_time": adhan,
+                    "iqama_time": schedule.get(f"{prayer}_iqama"),
+                    "day_number": day_number,
+                })
+        current_date += timedelta(days=1)
+        day_number += 1
+
+    return results
 
 
 def fmt_duration(minutes: int) -> str:
@@ -1496,6 +1553,11 @@ async def build_travel_plan(
         }
 
     arrival_dt = departure_dt + timedelta(seconds=route["duration"])
+
+    # Validate trip duration (max 3 days)
+    valid, error_msg = validate_trip_duration(departure_dt, arrival_dt)
+    if not valid:
+        raise ValueError(error_msg)
 
     # 2. Build checkpoints
     checkpoints = build_checkpoints(route, departure_dt)
