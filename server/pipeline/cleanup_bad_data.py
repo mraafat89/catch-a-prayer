@@ -27,6 +27,7 @@ def main():
     total_checked = 0
 
     with engine.begin() as conn:
+        # Clean ALL dates (not just today) — bad historical data gets carried forward
         rows = conn.execute(text("""
             SELECT ps.id::text, ps.mosque_id::text,
                 ps.fajr_adhan, ps.fajr_iqama, ps.sunrise,
@@ -36,8 +37,8 @@ def main():
                 ps.isha_adhan, ps.isha_iqama,
                 ps.fajr_adhan_source
             FROM prayer_schedules ps
-            WHERE ps.date = :today
-        """), {"today": today}).fetchall()
+            WHERE ps.date >= CURRENT_DATE - 7
+        """)).fetchall()
 
         for r in rows:
             total_checked += 1
@@ -79,13 +80,28 @@ def main():
             for issue in vr.issues:
                 field = issue["field"]
                 action = issue["action"]
-                if action == "nulled" and field in valid_columns:
-                    updates.append(f"{field} = NULL")
-                    nulled_fields += 1
-                    # Also null source column
-                    src = field + "_source"
-                    if src in valid_columns:
-                        updates.append(f"{src} = NULL")
+                if action != "nulled":
+                    continue
+
+                # Handle compound fields like "fajr_adhan->sunrise" or "maghrib_adhan/isha_adhan"
+                fields_to_null = []
+                if "->" in field:
+                    # Gap issue: null the second field (the one that's wrong)
+                    parts = field.split("->")
+                    fields_to_null.append(parts[-1].strip())
+                elif "/" in field:
+                    # Order violation pair — shouldn't reach here (fatal), but handle anyway
+                    fields_to_null.extend([p.strip() for p in field.split("/")])
+                else:
+                    fields_to_null.append(field)
+
+                for f in fields_to_null:
+                    if f in valid_columns:
+                        updates.append(f"{f} = NULL")
+                        nulled_fields += 1
+                        src = f + "_source"
+                        if src in valid_columns:
+                            updates.append(f"{src} = NULL")
 
             if updates and not args.dry_run:
                 update_sql = ", ".join(set(updates))
