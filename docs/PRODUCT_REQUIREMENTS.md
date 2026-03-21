@@ -323,103 +323,300 @@ Functional and non-functional requirements for Catch a Prayer. This document + `
 
 ---
 
-## NFR-1: Performance
+## NFR-1: Latency
 
-### NFR-1.1: Load Time
-- Initial mosque list: < 2 seconds on 4G network
-- Prayer times table render: < 100ms
-- Map tile load: dependent on network, Leaflet handles caching
+### NFR-1.1: API Response Times (p95 targets)
+| Endpoint | Target | Notes |
+|----------|--------|-------|
+| `POST /api/mosques/nearby` | < 500ms | PostGIS spatial query + Mapbox matrix (1 batch call). This is the hot path — every user hits it on app open and every 5 min. |
+| `POST /api/travel/plan` | < 5s | Corridor search + Mapbox routing + itinerary generation. Heavier computation is acceptable because user explicitly triggers it and sees a spinner. |
+| `GET /api/mosques/{id}/suggestions` | < 200ms | Simple DB read. |
+| `POST /api/spots/nearby` | < 300ms | PostGIS spatial query, similar to mosque search. |
+| `POST /api/spots` | < 500ms | Insert + dedup check + rate limit checks. |
+| `POST /api/spots/{id}/verify` | < 300ms | Insert + count update. |
+| `POST /api/mosques/{id}/suggestions` | < 500ms | Insert + dedup + rate limits. |
+| `POST /api/suggestions/{id}/vote` | < 300ms | Insert + count update + possible auto-apply. |
+| `GET /health` | < 50ms | No DB access. |
 
-### NFR-1.2: Memory
-- Plan cache: clear on clearAll() and limit to 10 entries (LRU eviction)
-- Mosque list: max 20 items (server-limited)
-- Map markers: max ~70 (20 mosques + 20 spots + route stops + user)
+### NFR-1.2: Client-Side Render Times
+| Operation | Target | Notes |
+|-----------|--------|-------|
+| Initial mosque list render | < 200ms | 20 MosqueCards with status badges |
+| Prayer times table | < 100ms | 5 rows + Shorooq |
+| Map tile load (cached) | < 500ms | Leaflet tile layer from CARTO |
+| Bottom sheet snap animation | < 16ms per frame (60 FPS) | CSS transform, no layout thrash |
+| Mode toggle → UI repaint | < 100ms | Theme color swap, no API call needed |
 
-### NFR-1.3: Battery
-- Auto-refresh capped at 5-minute intervals with backoff
-- No continuous GPS polling (one-shot with 5 min cache)
-- No background processing (Capacitor app suspends in background)
+### NFR-1.3: Third-Party Dependency Latency
+| Service | Expected | Timeout | Fallback |
+|---------|----------|---------|----------|
+| Mapbox Directions API | 200-800ms | 10s | Straight-line distance + haversine time estimate |
+| Mapbox Matrix API | 100-500ms | 10s | Haversine distance / 40 km/h estimate |
+| OSRM (single mosque route) | 100-400ms | 5s | Straight line between user and mosque |
+| Nominatim geocoding | 200-600ms | 10s | Show "search failed" message |
+| OpenStreetMap tiles | 50-200ms (cached) | 10s | Blank tiles (map still functional) |
+
+### NFR-1.4: Cold Start
+- Server cold start (Docker container): < 10s
+- Client first paint: < 1.5s on 4G (HTML + JS bundle)
+- Client interactive (mosque list visible): < 3s on 4G (geolocation + API call)
+- Subsequent app opens (warm): < 1s (cached JS + cached tiles)
 
 ---
 
-## NFR-2: Reliability
+## NFR-2: Scalability
 
-### NFR-2.1: Crash Prevention
+### NFR-2.1: Data Scale
+| Entity | Current | Target (1 year) | Growth Strategy |
+|--------|---------|-----------------|-----------------|
+| Mosques | ~2,500 | ~5,000 | Weekly OSM seed + community additions |
+| Prayer schedules | ~2,500/day | ~5,000/day | Nightly scraper, 30-day pre-compute |
+| Prayer spots | ~100 | ~10,000 | Community submissions |
+| Mosque suggestions | ~0 | ~5,000/month | Community corrections |
+| Spot verifications | ~0 | ~50,000/month | Community voting |
+
+### NFR-2.2: User Scale
+| Metric | Current | Target (1 year) | Bottleneck |
+|--------|---------|-----------------|------------|
+| DAU | <100 | 10,000 | Mapbox API limits (100k free/month) |
+| Peak concurrent | <10 | 500 | PostgreSQL connection pool (default 20) |
+| Requests/min (peak) | <50 | 5,000 | Single FastAPI instance with uvicorn workers |
+| Travel plans/min | <5 | 200 | Mapbox rate limits + computation |
+
+### NFR-2.3: Scaling Strategy (When Needed)
+**Phase 1 — Current (single VPS, <1,000 DAU):**
+- 1x FastAPI + uvicorn (4 workers)
+- 1x PostgreSQL + PostGIS
+- Caddy reverse proxy
+- All on one Hetzner/DigitalOcean VPS
+
+**Phase 2 — Growth (1,000-10,000 DAU):**
+- Add Redis for: rate limiting (shared state across workers), Mapbox response cache (matrix results, 15 min TTL), session-based rate limit counters
+- Increase uvicorn workers to 8
+- Add connection pooler (PgBouncer) for PostgreSQL
+- Move scraping pipeline to separate worker (not on the API server)
+- CDN for static assets (Cloudflare or similar)
+
+**Phase 3 — Scale (10,000+ DAU):**
+- Horizontal API scaling (2-3 instances behind load balancer)
+- Read replicas for PostgreSQL (nearby search is read-heavy)
+- Mapbox cache at CDN edge
+- Consider Mapbox alternatives if costs scale (OSRM self-hosted for matrix)
+- Background job queue (Celery + Redis) for travel plan computation
+
+### NFR-2.4: Database Performance
+- All spatial queries use PostGIS GIST indexes (already in place)
+- `ST_DWithin` for radius search (uses index, not full table scan)
+- Mosque search: max 20 results per query (LIMIT enforced)
+- Travel corridor search: max 2,000 mosque candidates (LIMIT enforced)
+- Prayer schedule: unique index on (mosque_id, date) for fast lookups
+- Connection pool: 5 min connections, 20 max (configurable via `DATABASE_URL` pool params)
+
+### NFR-2.5: Rate Limiting
+| Endpoint Group | Limit | Window | Scope |
+|----------------|-------|--------|-------|
+| `/api/mosques/nearby` | 30 req | 1 min | Per IP |
+| `/api/travel/plan` | 10 req | 1 min | Per IP |
+| All other endpoints | 60 req | 1 min | Per IP |
+| Spot submissions | 3 | 24h | Per session + per IP |
+| Spot verifications | 30 | 24h | Per session |
+| Mosque suggestions | 5 | 24h | Per session |
+| Suggestion votes | 30 | 24h | Per session |
+
+---
+
+## NFR-3: Availability
+
+### NFR-3.1: Uptime Target
+- **99.5% monthly uptime** (allows ~3.6 hours downtime/month)
+- Planned maintenance: during low-traffic hours (2-5 AM ET, when scraper runs anyway)
+- Unplanned downtime: target < 30 min recovery time
+
+### NFR-3.2: Health Monitoring
+- `GET /health` endpoint returns server status
+- Health check: database connectivity test (simple query)
+- Docker HEALTHCHECK: curl /health every 30s, 3 retries before marking unhealthy
+- External uptime monitoring (e.g., UptimeRobot or similar — ping /health every 5 min)
+
+### NFR-3.3: Failure Modes & Recovery
+
+| Failure | User Impact | Detection | Recovery |
+|---------|-------------|-----------|----------|
+| API server crash | App shows stale data + error on refresh | Docker HEALTHCHECK → auto-restart | Automatic (Docker restart policy: unless-stopped) |
+| Database crash | All API calls fail (500) | Health check fails | Docker auto-restart; WAL recovery for data integrity |
+| Mapbox API down | No travel times on mosque cards; travel plan fails | HTTP timeout (10s) | Fallback to haversine distance estimates; show "Travel time unavailable" |
+| OSRM down | No single-mosque route on map | HTTP timeout (5s) | Straight-line polyline fallback |
+| Nominatim down | Geocoding fails | HTTP timeout (10s) | Backend Mapbox geocoder fallback; then show "Search unavailable" |
+| Disk full | DB writes fail, scraper fails | Monitor disk usage | Alert + clean old scraping logs/raw HTML |
+| SSL cert expired | HTTPS fails, app can't connect | Caddy auto-renewal (should not happen) | Manual cert renewal |
+
+### NFR-3.4: Data Durability
+- PostgreSQL with WAL (Write-Ahead Logging) — survives crashes without data loss
+- Daily database backups (pg_dump) stored off-server
+- Prayer schedules pre-computed 30 days ahead — if scraper fails, data stays valid for weeks
+- Mosque data from OSM is stable — only changes on weekly seed runs
+
+### NFR-3.5: Graceful Degradation Tiers
+
+| Tier | What's Down | What Still Works |
+|------|-------------|-----------------|
+| Tier 1 (full service) | Nothing | Everything |
+| Tier 2 (no Mapbox) | Mapbox API | Mosque search (haversine fallback), prayer times, spots, suggestions. No travel times or route planning. |
+| Tier 3 (no external APIs) | Mapbox + OSRM + Nominatim | Mosque search, prayer times (from DB), spots, suggestions. No routing, no geocoding. |
+| Tier 4 (DB read-only) | DB writes fail | Mosque search + prayer times (reads work). No submissions, votes, or suggestions. |
+| Tier 5 (API down) | FastAPI server | Client shows cached mosque list. Prayed tracking works (localStorage). Map tiles load (CDN). |
+| Tier 6 (fully offline) | Network | Prayed tracking. Cached map tiles. Previously loaded mosque list (stale). |
+
+---
+
+## NFR-4: Reliability
+
+### NFR-4.1: Crash Prevention
 - All API responses must be null-checked before property access
 - `next_catchable` can be null — mosque still renders without status badge
 - `catchable_prayers` can be empty array — no crash
 - `adhan_time` / `iqama_time` can be null — show "—" dash
 - `travel_combinations` can be empty — section hidden
 - Array index access (itinerary selection) must bounds-check
+- Travel plan response can be null — show error message, not spinner forever
 
-### NFR-2.2: Error Recovery
+### NFR-4.2: Error Recovery
 - Network failure: show user-facing error message (never silent for primary actions)
 - Stale data: show cached data with "Last updated X minutes ago" indicator
 - Invalid state: reset to safe defaults (e.g., selectedItineraryIndex reset when plan changes)
+- API 5xx: show "Something went wrong. Please try again." with retry button
 
-### NFR-2.3: Data Integrity
+### NFR-4.3: Data Integrity
 - Prayed state: never lose data — persist immediately on toggle
 - Session ID: never regenerate — same ID for lifetime of app install
 - Spot confirmations: persist even on API failure (optimistic update)
+- Database transactions: all multi-step writes use transactions (vote + count update atomic)
+
+### NFR-4.4: Idempotency
+- Spot verification: unique constraint on (spot_id, session_id) — double-submit returns 409, not duplicate entry
+- Suggestion vote: unique constraint on (suggestion_id, session_id) — same protection
+- Spot submission: dedup by 50m radius — submitting same location twice returns 409
 
 ---
 
-## NFR-3: Security
+## NFR-5: Security
 
-### NFR-3.1: No PII
+### NFR-5.1: No PII
 - No user accounts, emails, or names collected
 - Session ID is random, not derived from device info
 - IP addresses hashed (SHA-256) on server, never stored raw
 
-### NFR-3.2: Input Sanitization
+### NFR-5.2: Input Sanitization
 - All text inputs checked for URLs, excessive caps (server-side)
-- Geographic bounds enforced (US/Canada only)
-- Rate limiting on all submission/voting endpoints
+- Geographic bounds enforced (US/Canada only: lat 24-72, lng -168 to -52)
+- SQL injection: all queries use parameterized statements (SQLAlchemy `text()` with `:param` bindings)
+- XSS: React auto-escapes all rendered text; no `dangerouslySetInnerHTML`
+- Rate limiting on all submission/voting endpoints (see NFR-2.5)
 
-### NFR-3.3: Transport
-- All API calls over HTTPS
+### NFR-5.3: Transport
+- All API calls over HTTPS (Caddy auto-TLS with Let's Encrypt)
 - No sensitive data in URL parameters
+- CORS: allow all origins (public API, no auth)
+- Security headers: X-Frame-Options, X-Content-Type-Options, X-XSS-Protection (via Nginx/Caddy)
+
+### NFR-5.4: Abuse Prevention
+- Rate limiting per IP and per session (see NFR-2.5)
+- Content filtering: reject URLs in name/notes fields, reject excessive ALL_CAPS
+- Self-vote prevention on spots and suggestions
+- IP hash dedup prevents multi-device ballot stuffing from same network
+- Geographic bounds reject submissions outside US/Canada
 
 ---
 
-## NFR-4: Usability
+## NFR-6: Usability
 
-### NFR-4.1: Glanceability
+### NFR-6.1: Glanceability
 - Most important info (can I catch this prayer?) readable in 2 seconds
-- Color + text + icon for status (not color alone)
+- Color + text + icon for status (not color alone — accessible to colorblind users)
 - Distance and time always visible on mosque card
 
-### NFR-4.2: One-Handed Use
+### NFR-6.2: One-Handed Use
 - All primary actions reachable from bottom half of screen
 - Bottom sheet covers primary interactions
 - Top bar only for trip destination input
 
-### NFR-4.3: Accessibility
+### NFR-6.3: Accessibility
 - All icon buttons have aria-label
 - Prayer times table uses semantic HTML (thead, th, td)
 - Touch targets minimum 44x44px
 - Text minimum 12px (0.75rem)
+- Status communicated by color AND text (not color alone)
 
-### NFR-4.4: Offline Graceful Degradation
+### NFR-6.4: Offline Graceful Degradation
 - Show cached mosque list when offline
 - Show "You're offline" indicator (not silent failure)
 - Prayed tracking works fully offline
-- Spot/suggestion submissions queued for retry (or show clear error)
+- Spot/suggestion submissions: show clear error with "Try again when connected"
 
 ---
 
-## NFR-5: Compatibility
+## NFR-7: Performance
 
-### NFR-5.1: Platforms
+### NFR-7.1: Client Memory
+- Plan cache: clear on clearAll() and limit to 10 entries (LRU eviction)
+- Mosque list: max 20 items (server-limited)
+- Map markers: max ~70 (20 mosques + 20 spots + route stops + user)
+- No memory leaks from event listeners or intervals (cleanup in useEffect returns)
+
+### NFR-7.2: Battery
+- Auto-refresh capped at 5-minute intervals with exponential backoff on failure
+- No continuous GPS polling (one-shot with 5 min cache)
+- No background processing (Capacitor app suspends in background)
+- Map tile requests only on pan/zoom (Leaflet handles this)
+
+### NFR-7.3: Bundle Size
+- Target: < 500 KB gzipped for initial JS bundle
+- Leaflet lazy-loaded (not in critical path)
+- No unnecessary dependencies
+
+### NFR-7.4: Database Query Performance
+- All spatial queries: < 50ms (PostGIS GIST index)
+- Prayer schedule lookup: < 10ms (unique index on mosque_id + date)
+- Travel corridor query: < 200ms for 13+ waypoint OR clauses (to be optimized with single bbox)
+
+---
+
+## NFR-8: Compatibility
+
+### NFR-8.1: Platforms
 - iOS 15+ (via Capacitor)
 - Android 10+ (via Capacitor)
-- Mobile Safari, Chrome (PWA fallback)
+- Mobile Safari 15+, Chrome 90+ (PWA fallback)
 
-### NFR-5.2: Regions
+### NFR-8.2: Regions
 - United States and Canada only
 - Metric (Canada) / Imperial (US) auto-detected from timezone
 - English language only (v1)
 
-### NFR-5.3: Calculation Method
+### NFR-8.3: Calculation Method
 - ISNA (Islamic Society of North America) — default for US/Canada
 - Fajr 15°, Isha 15°, Maghrib at sunset (0 min)
+
+---
+
+## NFR-9: Observability
+
+### NFR-9.1: Logging
+- Structured logging: timestamp, level, module, message
+- Log all API errors with request path, status code, and error detail
+- Log scraper results: mosques scraped, tier reached, success/failure counts
+- No PII in logs (no IPs, no session IDs in production logs)
+
+### NFR-9.2: Metrics (when Prometheus is enabled)
+- Request count by endpoint and status code
+- Response time histogram by endpoint
+- Active database connections
+- Scraper success rate (by tier)
+- Mosque coverage: % with scraped data vs calculated
+
+### NFR-9.3: Alerting (Phase 2)
+- Health check failure for > 5 min → alert
+- Error rate > 10% for > 5 min → alert
+- Disk usage > 80% → alert
+- Scraper success rate < 50% → alert
+- SSL certificate expiry < 14 days → alert
