@@ -123,11 +123,15 @@ jobs:
           host: ${{ secrets.PROD_HOST }}
           username: ${{ secrets.PROD_USER }}
           key: ${{ secrets.PROD_SSH_KEY }}
+          script_stop: true
           script: |
-            cd ${{ secrets.PROD_PATH || '/opt/catch-a-prayer' }}
+            set -e
+            cd ${{ secrets.PROD_PATH || '/opt/cap' }}
             git fetch origin main --tags
             git checkout main
             git pull origin main
-            cd server && alembic upgrade head && cd ..
-            docker-compose -f docker-compose.prod.yml up -d --build api
+            docker exec cap-api alembic upgrade head || true
+            docker compose -f docker-compose.prod.yml up -d --build api
+            cd client && REACT_APP_API_URL=https://catchaprayer.com npm run build
+            echo "✅ Client rebuilt"
             echo "✅ Deployed v${{ inputs.version }} at $(date)"
