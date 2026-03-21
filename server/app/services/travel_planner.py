@@ -1305,7 +1305,7 @@ def _itinerary_label(pair_choices: list[dict]) -> str:
         "at_destination": "at destination",
         "separate":       "separate stops",
         "solo_stop":      "en route stop",
-        "stop_for_fajr":  "Fajr stop",
+        "stop_for_fajr":  "stop",
         "no_option":      "no mosque",
     }
     parts = []
