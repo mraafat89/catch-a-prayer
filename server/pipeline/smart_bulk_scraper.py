@@ -517,21 +517,27 @@ async def scrape_with_playwright(websites: list[dict], engine, save: bool = True
 # ---------------------------------------------------------------------------
 
 JINA_BASE = "https://r.jina.ai/"
+JINA_API_KEY = os.environ.get("JINA_API_KEY", "")  # Free tier: 1M tokens/month
 
-# Common prayer page paths to try with Jina
+# Prioritized paths — most common prayer page URLs first
 JINA_PATHS = [
     "",  # homepage first
-    "/prayer-times", "/prayer-time", "/prayers", "/salah-times",
-    "/iqama", "/iqama-times", "/prayer-schedule", "/prayertimes",
-    "/salat", "/schedule", "/prayer", "/services/prayer-times",
+    "/prayer-times", "/prayer-time", "/prayers",
+    "/iqama", "/salah-times", "/prayer-schedule",
+    "/services/prayer-times", "/schedule",
 ]
 
 
 async def scrape_with_jina(websites: list[dict], engine, save: bool = True) -> dict:
-    """Scrape using Jina Reader — no Chromium, much lighter."""
-    stats = {"attempted": 0, "success": 0, "no_data": 0, "error": 0}
+    """Scrape using Jina Reader — no Chromium, much lighter.
+    Rate-limited to avoid 429s: 2 concurrent, 1s delay between requests."""
+    stats = {"attempted": 0, "success": 0, "no_data": 0, "error": 0, "rate_limited": 0}
     today = date.today()
-    sem = asyncio.Semaphore(5)  # 5 concurrent Jina requests
+    sem = asyncio.Semaphore(2)  # Only 2 concurrent to avoid rate limits
+
+    headers = {"Accept": "text/plain", "X-Return-Format": "text"}
+    if JINA_API_KEY:
+        headers["Authorization"] = f"Bearer {JINA_API_KEY}"
 
     async def scrape_one(w: dict) -> tuple[str, dict | None]:
         mosque_id, name, url = w["id"], w["name"], w["website"]
@@ -543,12 +549,17 @@ async def scrape_with_jina(websites: list[dict], engine, save: bool = True) -> d
                     target = base + path
                     jina_url = JINA_BASE + target
                     try:
-                        resp = await client.get(jina_url, headers={
-                            "Accept": "text/plain",
-                            "X-Return-Format": "text",
-                        })
+                        resp = await client.get(jina_url, headers=headers)
+
+                        if resp.status_code == 429:
+                            # Rate limited — wait and skip this site
+                            stats["rate_limited"] += 1
+                            await asyncio.sleep(5)
+                            return mosque_id, None
+
                         if resp.status_code != 200:
                             continue
+
                         text = resp.text
                         if len(text) < 100:
                             continue
@@ -562,28 +573,32 @@ async def scrape_with_jina(websites: list[dict], engine, save: bool = True) -> d
                     except Exception:
                         continue
 
+                    # Delay between path attempts to avoid rate limits
+                    await asyncio.sleep(0.5)
+
         return mosque_id, None
 
-    log.info(f"Scraping {len(websites)} websites with Jina Reader (5 concurrent)")
+    log.info(f"Scraping {len(websites)} websites with Jina Reader (2 concurrent, rate-limited)")
 
-    for i in range(0, len(websites), 10):
-        batch = websites[i:i + 10]
-        tasks = [scrape_one(w) for w in batch]
-        results = await asyncio.gather(*tasks)
+    # Process one at a time with delay to respect rate limits
+    for i, w in enumerate(websites):
+        stats["attempted"] += 1
+        mosque_id, data = await scrape_one(w)
 
-        for mosque_id, data in results:
-            stats["attempted"] += 1
-            if data:
-                stats["success"] += 1
-                if save:
-                    _save_to_db(engine, mosque_id, data, today, source="jina_reader")
-            else:
-                stats["no_data"] += 1
+        if data:
+            stats["success"] += 1
+            if save:
+                _save_to_db(engine, mosque_id, data, today, source="jina_reader")
+        else:
+            stats["no_data"] += 1
 
-        done = min(i + 10, len(websites))
-        if done % 20 == 0 or done == len(websites):
+        # Progress every 20
+        if (i + 1) % 20 == 0 or i + 1 == len(websites):
             rate = stats['success'] * 100 // max(stats['attempted'], 1)
-            log.info(f"  --- Jina progress: {done}/{len(websites)} — {stats['success']} success ({rate}%)")
+            log.info(f"  --- Jina progress: {i+1}/{len(websites)} — {stats['success']} success ({rate}%) [429s: {stats['rate_limited']}]")
+
+        # Small delay between sites
+        await asyncio.sleep(1)
 
     return stats
 
