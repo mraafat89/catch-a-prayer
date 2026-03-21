@@ -167,6 +167,56 @@ async def get_stats(db: AsyncSession = Depends(get_db)):
     row = r.mappings().first()
     stats["scraper_history"] = dict(row) if row else {}
 
+    # === Scraper method breakdown ===
+    r = await db.execute(text("""
+        SELECT scrape_method, count(*) as cnt
+        FROM scraping_jobs WHERE status = 'success' AND scrape_method IS NOT NULL
+        GROUP BY 1 ORDER BY 2 DESC
+    """))
+    stats["scraper_methods"] = {row["scrape_method"]: row["cnt"] for row in r.mappings()}
+
+    # === Alive/dead websites ===
+    r = await db.execute(text("""
+        SELECT
+            count(*) filter (where website_alive = true) as alive,
+            count(*) filter (where website_alive = false) as dead
+        FROM scraping_jobs
+    """))
+    row = r.mappings().first()
+    stats["website_health"] = dict(row) if row else {}
+
+    # === Validation issues (today) ===
+    r = await db.execute(text("""
+        SELECT count(*) as total_issues,
+            count(distinct mosque_id) as mosques_with_issues
+        FROM scraping_validation_log WHERE scrape_date = CURRENT_DATE
+    """))
+    row = r.mappings().first()
+    stats["validation_today"] = dict(row) if row else {}
+
+    # === Prayer spots ===
+    r = await db.execute(text("""
+        SELECT
+            count(*) as total,
+            count(*) filter (where created_at > now() - interval '7 days') as added_this_week,
+            count(*) filter (where created_at > now() - interval '24 hours') as added_today
+        FROM prayer_spots
+    """))
+    row = r.mappings().first()
+    stats["prayer_spots"] = dict(row) if row else {}
+
+    # === User activity (from request_logs) ===
+    r = await db.execute(text("""
+        SELECT
+            count(distinct session_id) filter (where created_at > now() - interval '24 hours') as users_today,
+            count(distinct session_id) filter (where created_at > now() - interval '7 days') as users_this_week,
+            count(*) filter (where endpoint like '%nearby%' and created_at > now() - interval '24 hours') as searches_today,
+            count(*) filter (where endpoint like '%travel%' and created_at > now() - interval '24 hours') as routes_today
+        FROM request_logs WHERE session_id IS NOT NULL
+    """))
+    row = r.mappings().first()
+    stats["user_activity"] = dict(row) if row else {}
+
     # === User search locations (from request_logs) ===
     r = await db.execute(text("""
         SELECT lat, lng, count(*) as searches
@@ -260,6 +310,40 @@ async def get_stats(db: AsyncSession = Depends(get_db)):
     except Exception:
         stats["api_usage"] = {"error": "metrics not available"}
 
+    # === Trend: real data % by day (last 14 days) ===
+    r = await db.execute(text("""
+        SELECT date::text as day,
+            count(*) as total,
+            count(*) filter (where fajr_adhan_source != 'calculated') as real_data
+        FROM prayer_schedules
+        WHERE date >= CURRENT_DATE - 14
+        GROUP BY date ORDER BY date
+    """))
+    stats["trend_real_data"] = [
+        {"day": row["day"], "pct": round(row["real_data"] * 100 / max(row["total"], 1), 1)}
+        for row in r.mappings()
+    ]
+
+    # === Trend: scraper activity by day (last 14 days) ===
+    r = await db.execute(text("""
+        SELECT date_trunc('day', scraped_at)::date::text as day,
+            count(*) filter (where status = 'success') as success,
+            count(*) filter (where status = 'failed') as failed
+        FROM scraping_jobs
+        WHERE scraped_at > now() - interval '14 days'
+        GROUP BY 1 ORDER BY 1
+    """))
+    stats["trend_scraper"] = [dict(row) for row in r.mappings()]
+
+    # === Trend: validation issues by day (last 14 days) ===
+    r = await db.execute(text("""
+        SELECT scrape_date::text as day, count(*) as issues
+        FROM scraping_validation_log
+        WHERE scrape_date >= CURRENT_DATE - 14
+        GROUP BY 1 ORDER BY 1
+    """))
+    stats["trend_validation"] = [dict(row) for row in r.mappings()]
+
     # === Server info ===
     stats["server"] = {
         "timestamp": datetime.utcnow().isoformat(),
@@ -267,6 +351,72 @@ async def get_stats(db: AsyncSession = Depends(get_db)):
     }
 
     return stats
+
+
+# ---------------------------------------------------------------------------
+# Admin Review Queue — accept/reject community suggestions
+# ---------------------------------------------------------------------------
+
+@router.get("/admin/suggestions", dependencies=[Depends(verify_admin)])
+async def list_pending_suggestions(db: AsyncSession = Depends(get_db)):
+    """List all pending community suggestions for admin review."""
+    r = await db.execute(text("""
+        SELECT s.id::text, s.mosque_id::text, m.name as mosque_name,
+               s.field_name, s.suggested_value, s.current_value,
+               s.upvote_count, s.downvote_count, s.submitted_by_session,
+               s.created_at::text, s.expires_at::text
+        FROM mosque_suggestions s
+        JOIN mosques m ON m.id = s.mosque_id
+        WHERE s.status = 'pending'
+        ORDER BY s.created_at DESC
+        LIMIT 100
+    """))
+    return [dict(row) for row in r.mappings()]
+
+
+@router.post("/admin/suggestions/{suggestion_id}/accept", dependencies=[Depends(verify_admin)])
+async def accept_suggestion(suggestion_id: str, db: AsyncSession = Depends(get_db)):
+    """Admin force-accept a suggestion and apply the change."""
+    r = await db.execute(text("""
+        SELECT id, mosque_id::text, field_name, suggested_value, status
+        FROM mosque_suggestions WHERE id = CAST(:id AS uuid)
+    """), {"id": suggestion_id})
+    row = r.mappings().first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Suggestion not found")
+    if row["status"] != "pending":
+        raise HTTPException(status_code=410, detail=f"Suggestion already {row['status']}")
+
+    # Apply the change
+    from app.api.suggestions import _apply_suggestion
+    await _apply_suggestion(db, row["mosque_id"], row["field_name"], row["suggested_value"])
+
+    await db.execute(text("""
+        UPDATE mosque_suggestions SET status = 'accepted', updated_at = NOW()
+        WHERE id = CAST(:id AS uuid)
+    """), {"id": suggestion_id})
+    await db.commit()
+    return {"status": "accepted", "id": suggestion_id}
+
+
+@router.post("/admin/suggestions/{suggestion_id}/reject", dependencies=[Depends(verify_admin)])
+async def reject_suggestion(suggestion_id: str, db: AsyncSession = Depends(get_db)):
+    """Admin force-reject a suggestion."""
+    r = await db.execute(text("""
+        SELECT id, status FROM mosque_suggestions WHERE id = CAST(:id AS uuid)
+    """), {"id": suggestion_id})
+    row = r.mappings().first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Suggestion not found")
+    if row["status"] != "pending":
+        raise HTTPException(status_code=410, detail=f"Suggestion already {row['status']}")
+
+    await db.execute(text("""
+        UPDATE mosque_suggestions SET status = 'rejected', updated_at = NOW()
+        WHERE id = CAST(:id AS uuid)
+    """), {"id": suggestion_id})
+    await db.commit()
+    return {"status": "rejected", "id": suggestion_id}
 
 
 @router.get("/admin/dashboard", response_class=None, dependencies=[Depends(verify_admin)])
@@ -288,6 +438,18 @@ async def dashboard(db: AsyncSession = Depends(get_db)):
         pct = round(s["real_data"] * 100 / max(s["mosques"], 1))
         bar = "█" * (pct // 5) + "░" * (20 - pct // 5)
         coverage_rows += f"<tr><td>{s['state']}</td><td>{s['mosques']}</td><td>{s['real_data']}</td><td>{pct}%</td><td style='font-family:monospace'>{bar}</td></tr>"
+
+    # Pending suggestions for review queue
+    pending_sug = await db.execute(text("""
+        SELECT s.id::text, m.name as mosque_name,
+               s.field_name, s.suggested_value, s.current_value,
+               s.upvote_count, s.downvote_count, s.created_at::text
+        FROM mosque_suggestions s
+        JOIN mosques m ON m.id = s.mosque_id
+        WHERE s.status = 'pending'
+        ORDER BY s.created_at DESC LIMIT 20
+    """))
+    pending_suggestions = [dict(row) for row in pending_sug.mappings()]
 
     import json as _json
     locations_json = _json.dumps(stats.get("mosque_locations", []))
@@ -313,6 +475,20 @@ async def dashboard(db: AsyncSession = Depends(get_db)):
     daily_labels_json = _json.dumps(list(daily_req.keys()))
     daily_values_json = _json.dumps(list(daily_req.values()))
 
+    # Trend data for charts
+    trend_real = stats.get("trend_real_data", [])
+    trend_real_labels = _json.dumps([t["day"][-5:] for t in trend_real])  # MM-DD
+    trend_real_values = _json.dumps([t["pct"] for t in trend_real])
+
+    trend_scraper = stats.get("trend_scraper", [])
+    trend_scraper_labels = _json.dumps([t["day"][-5:] for t in trend_scraper])
+    trend_scraper_success = _json.dumps([t["success"] for t in trend_scraper])
+    trend_scraper_failed = _json.dumps([t["failed"] for t in trend_scraper])
+
+    trend_val = stats.get("trend_validation", [])
+    trend_val_labels = _json.dumps([t["day"][-5:] for t in trend_val])
+    trend_val_values = _json.dumps([t["issues"] for t in trend_val])
+
     # Endpoint latency table
     ep_latency_rows = ""
     for ep in stats.get("endpoint_latency", []):
@@ -324,6 +500,22 @@ async def dashboard(db: AsyncSession = Depends(get_db)):
     for ep, count in list(usage.get("top_endpoints", {}).items())[:8]:
         top_ep_rows += f"<tr><td><code>{ep}</code></td><td>{count}</td></tr>"
 
+    # Review queue rows
+    review_rows = ""
+    for s in pending_suggestions:
+        votes = f"+{s['upvote_count']}/-{s['downvote_count']}"
+        created = s['created_at'][:16] if s['created_at'] else ''
+        review_rows += f"""<tr>
+<td>{s['mosque_name'][:30]}</td><td><code>{s['field_name']}</code></td>
+<td>{s['current_value'] or '—'}</td><td><b>{s['suggested_value']}</b></td><td>{votes}</td><td>{created}</td>
+<td><button onclick="reviewAction('{s['id']}','accept')" style="background:#16a34a;color:white;border:none;border-radius:4px;padding:3px 8px;cursor:pointer;font-size:11px;">✓</button>
+<button onclick="reviewAction('{s['id']}','reject')" style="background:#dc2626;color:white;border:none;border-radius:4px;padding:3px 8px;cursor:pointer;font-size:11px;">✗</button></td></tr>"""
+
+    ua = stats.get("user_activity", {})
+    ps = stats.get("prayer_spots", {})
+    wh = stats.get("website_health", {})
+    vt = stats.get("validation_today", {})
+
     html = f"""<!DOCTYPE html>
 <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Catch a Prayer — Dashboard</title>
@@ -332,132 +524,138 @@ async def dashboard(db: AsyncSession = Depends(get_db)):
 <script src="https://unpkg.com/leaflet.heat/dist/leaflet-heat.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
 <style>
-body {{ font-family: -apple-system, sans-serif; max-width: 1000px; margin: 20px auto; padding: 0 15px; background: #f8fafb; color: #1a1a1a; }}
-h1 {{ color: #0d9488; margin-bottom: 5px; }}
-.subtitle {{ color: #666; margin-bottom: 20px; }}
-.grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin-bottom: 16px; }}
-.card {{ background: white; border-radius: 12px; padding: 14px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }}
-.card .number {{ font-size: 24px; font-weight: 700; color: #0d9488; }}
-.card .label {{ font-size: 11px; color: #666; margin-top: 3px; }}
-.card.warn .number {{ color: #d97706; }}
-.card.bad .number {{ color: #dc2626; }}
-table {{ width: 100%; border-collapse: collapse; background: white; border-radius: 12px; overflow: hidden; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }}
-th, td {{ padding: 6px 10px; text-align: left; border-bottom: 1px solid #f0f0f0; font-size: 12px; }}
-th {{ background: #f8fafb; font-weight: 600; color: #555; }}
-.section {{ margin-top: 20px; }}
-h2 {{ color: #2e3d44; font-size: 15px; margin-bottom: 8px; }}
-#heatmap {{ height: 350px; border-radius: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }}
-.two-col {{ display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }}
-@media (max-width: 700px) {{ .two-col {{ grid-template-columns: 1fr; }} }}
+*{{box-sizing:border-box}}
+body{{font-family:-apple-system,BlinkMacSystemFont,sans-serif;max-width:600px;margin:0 auto;padding:12px;background:#f5f6f8;color:#1a1a1a;font-size:13px}}
+h1{{color:#0d9488;font-size:20px;margin:0 0 2px}}
+.sub{{color:#888;font-size:11px;margin-bottom:14px}}
+.row{{display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:8px;margin-bottom:14px}}
+.c{{background:white;border-radius:10px;padding:10px;box-shadow:0 1px 2px rgba(0,0,0,.08);text-align:center}}
+.c .n{{font-size:20px;font-weight:700;color:#0d9488}}
+.c .l{{font-size:9px;color:#888;margin-top:2px}}
+.c.w .n{{color:#d97706}}
+.c.b .n{{color:#dc2626}}
+.sect{{margin-top:16px}}
+h2{{color:#2e3d44;font-size:14px;margin:0 0 8px;font-weight:600}}
+.chart-box{{background:white;border-radius:10px;padding:10px;box-shadow:0 1px 2px rgba(0,0,0,.08);margin-bottom:8px}}
+.tabs{{display:flex;gap:4px;margin-bottom:8px;flex-wrap:wrap}}
+.tab{{padding:5px 10px;border-radius:6px;border:1px solid #ddd;background:white;cursor:pointer;font-size:11px;color:#555}}
+.tab.on{{background:#0d9488;color:white;border-color:#0d9488}}
+table{{width:100%;border-collapse:collapse;background:white;border-radius:10px;overflow:hidden;box-shadow:0 1px 2px rgba(0,0,0,.08)}}
+th,td{{padding:5px 8px;text-align:left;border-bottom:1px solid #f0f0f0;font-size:11px}}
+th{{background:#f8f9fa;font-weight:600;color:#666}}
+#heatmap{{height:280px;border-radius:10px;box-shadow:0 1px 2px rgba(0,0,0,.08)}}
 </style></head><body>
-<h1>🕌 Catch a Prayer</h1>
-<p class="subtitle">Admin Dashboard — {stats['server']['date']}</p>
 
-<div class="grid">
-  <div class="card"><div class="number">{m.get('total',0):,}</div><div class="label">Total Mosques</div></div>
-  <div class="card"><div class="number">{m.get('has_website',0):,}</div><div class="label">With Website</div></div>
-  <div class="card"><div class="number">{m.get('has_phone',0):,}</div><div class="label">With Phone</div></div>
-  <div class="card {'warn' if real_pct < 50 else ''}"><div class="number">{real_pct}%</div><div class="label">Real Data Rate</div></div>
-  <div class="card"><div class="number">{p.get('real_data',0):,}</div><div class="label">Real (Today)</div></div>
-  <div class="card"><div class="number">{p.get('calculated',0):,}</div><div class="label">Calculated</div></div>
-  <div class="card"><div class="number">{j.get('mosques_with_jumuah',0)}</div><div class="label">Jumuah</div></div>
-  <div class="card"><div class="number">{suggestions.get('total',0)}</div><div class="label">Suggestions</div></div>
+<h1>Catch a Prayer</h1>
+<p class="sub">{stats['server']['date']} &mdash; <span id="refresh-timer">refreshes in 60s</span></p>
+
+<!-- Key metrics -->
+<div class="row">
+  <div class="c"><div class="n">{m.get('total',0):,}</div><div class="l">Mosques</div></div>
+  <div class="c {'w' if real_pct < 50 else ''}"><div class="n">{real_pct}%</div><div class="l">Real Data</div></div>
+  <div class="c"><div class="n">{ua.get('users_today',0)}</div><div class="l">Users Today</div></div>
+  <div class="c {'b' if usage.get('errors_5xx',0) > 0 else ''}"><div class="n">{usage.get('errors_5xx',0)}</div><div class="l">Errors</div></div>
+</div>
+<div class="row">
+  <div class="c"><div class="n">{p.get('real_data',0):,}</div><div class="l">Real</div></div>
+  <div class="c"><div class="n">{p.get('calculated',0):,}</div><div class="l">Calculated</div></div>
+  <div class="c"><div class="n">{wh.get('alive',0):,}</div><div class="l">Sites Alive</div></div>
+  <div class="c"><div class="n">{vt.get('total_issues',0)}</div><div class="l">Validation</div></div>
 </div>
 
-<div class="section">
-<h2>🗺️ Heatmaps</h2>
-<div style="margin-bottom:8px;">
-<button onclick="showLayer('mosques')" id="btn-mosques" style="padding:6px 12px;border-radius:8px;border:1px solid #0d9488;background:#0d9488;color:white;cursor:pointer;margin-right:4px;font-size:12px;">Mosques</button>
-<button onclick="showLayer('searches')" id="btn-searches" style="padding:6px 12px;border-radius:8px;border:1px solid #2563eb;background:white;color:#2563eb;cursor:pointer;margin-right:4px;font-size:12px;">User Searches</button>
-<button onclick="showLayer('routes')" id="btn-routes" style="padding:6px 12px;border-radius:8px;border:1px solid #7c3aed;background:white;color:#7c3aed;cursor:pointer;margin-right:4px;font-size:12px;">Route Planning</button>
-<button onclick="showLayer('gaps')" id="btn-gaps" style="padding:6px 12px;border-radius:8px;border:1px solid #dc2626;background:white;color:#dc2626;cursor:pointer;font-size:12px;">Coverage Gaps</button>
+<!-- Trend chart with tabs -->
+<div class="sect">
+<h2>Trends</h2>
+<div class="tabs">
+  <div class="tab on" onclick="showTrend('real')">Data Quality</div>
+  <div class="tab" onclick="showTrend('traffic')">Traffic</div>
+  <div class="tab" onclick="showTrend('scraper')">Scraper</div>
+</div>
+<div class="chart-box">
+  <canvas id="trend-chart" height="160"></canvas>
+</div>
+</div>
+
+<!-- Heatmap -->
+<div class="sect">
+<h2>Map</h2>
+<div class="tabs">
+  <div class="tab on" id="btn-mosques" onclick="showLayer('mosques')">Mosques</div>
+  <div class="tab" id="btn-searches" onclick="showLayer('searches')">Searches</div>
+  <div class="tab" id="btn-routes" onclick="showLayer('routes')">Routes</div>
+  <div class="tab" id="btn-gaps" onclick="showLayer('gaps')" title="Areas where users searched but fewer than 3 mosques nearby">Gaps</div>
 </div>
 <div id="heatmap"></div>
-<p id="heatmap-label" style="font-size:11px;color:#666;margin-top:4px;"></p>
+<p id="heatmap-label" style="font-size:10px;color:#888;margin:4px 0 0;"></p>
 </div>
 
-<div class="section two-col">
-<div>
-<h2>📊 Data Sources (Today)</h2>
+<!-- Data sources + scraper health -->
+<div class="sect">
+<h2>Data Sources</h2>
 <table>
-<tr><th>Source</th><th>Count</th></tr>
-<tr><td>Calculated (estimated)</td><td>{p.get('calculated',0):,}</td></tr>
-<tr><td>IslamicFinder</td><td>{p.get('islamicfinder',0)}</td></tr>
-<tr><td>Old Scraper (HTML/JS)</td><td>{p.get('old_scraper',0)}</td></tr>
-<tr><td>Free HTML Parser</td><td>{p.get('html_parse',0)}</td></tr>
-<tr><td>Mawaqit API</td><td>{p.get('mawaqit',0)}</td></tr>
-<tr><td>Claude AI</td><td>{p.get('claude_ai',0)}</td></tr>
-<tr><td>Iframe Widget</td><td>{p.get('iframe_widget',0)}</td></tr>
+<tr><th>Source</th><th>Count</th><th>Source</th><th>Count</th></tr>
+<tr><td>Calculated</td><td>{p.get('calculated',0):,}</td><td>IslamicFinder</td><td>{p.get('islamicfinder',0)}</td></tr>
+<tr><td>HTML Scraper</td><td>{p.get('old_scraper',0) + p.get('html_parse',0)}</td><td>Mawaqit API</td><td>{p.get('mawaqit',0)}</td></tr>
+<tr><td>Playwright</td><td>{stats.get('scraper_methods',{}).get('playwright_scrape',0)}</td><td>Jina Reader</td><td>{stats.get('scraper_methods',{}).get('jina_reader',0)}</td></tr>
 </table>
-</div>
-<div>
-<h2>🔧 Scraper Health</h2>
-<table>
-<tr><th>Metric</th><th>Value</th></tr>
-<tr><td>Last scrape</td><td>{scraper_h.get('last_scrape','Never')}</td></tr>
-<tr><td>Scraped this week</td><td>{scraper_h.get('scraped_this_week',0)}</td></tr>
-<tr><td>Scraped today</td><td>{scraper_h.get('scraped_today',0)}</td></tr>
-<tr><td>Avg data age</td><td>{data_fresh.get('avg_age_days','?')} days</td></tr>
-<tr><td>Dead websites</td><td>{stats.get('scraper',{}).get('dead_websites',0)}</td></tr>
-</table>
-</div>
 </div>
 
-<div class="section">
-<h2>📍 Coverage by State</h2>
+<!-- Scraper + User Activity side by side -->
+<div class="sect">
+<h2>Activity</h2>
 <table>
-<tr><th>State</th><th>Mosques</th><th>Real Data</th><th>%</th><th>Coverage</th></tr>
+<tr><th>Metric</th><th>Today</th><th>This Week</th></tr>
+<tr><td>Unique Users</td><td>{ua.get('users_today',0)}</td><td>{ua.get('users_this_week',0)}</td></tr>
+<tr><td>Searches</td><td>{ua.get('searches_today',0)}</td><td>-</td></tr>
+<tr><td>Routes Planned</td><td>{ua.get('routes_today',0)}</td><td>-</td></tr>
+<tr><td>Scrapes</td><td>{scraper_h.get('scraped_today',0)}</td><td>{scraper_h.get('scraped_this_week',0)}</td></tr>
+<tr><td>Prayer Spots</td><td>{ps.get('added_today',0)}</td><td>{ps.get('added_this_week',0)} / {ps.get('total',0)} total</td></tr>
+<tr><td>Suggestions</td><td>-</td><td>{suggestions.get('pending',0)} pending / {suggestions.get('approved',0)} approved</td></tr>
+</table>
+</div>
+
+<!-- Coverage by state (collapsible) -->
+<div class="sect">
+<details>
+<summary style="cursor:pointer;font-weight:600;color:#2e3d44;font-size:14px;">Coverage by State</summary>
+<table style="margin-top:8px">
+<tr><th>State</th><th>Mosques</th><th>Real</th><th>%</th><th>Bar</th></tr>
 {coverage_rows}
 </table>
+</details>
 </div>
 
-<div class="section two-col">
-<div>
-<h2>🌐 API Usage</h2>
-<div class="grid" style="grid-template-columns: repeat(3, 1fr);">
-  <div class="card"><div class="number">{usage.get('total_requests',0):,}</div><div class="label">Requests</div></div>
-  <div class="card"><div class="number">{usage.get('unique_locations',0)}</div><div class="label">Unique Locations</div></div>
-  <div class="card"><div class="number">{usage.get('avg_latency_ms',0)}ms</div><div class="label">Avg Latency</div></div>
-  <div class="card"><div class="number">{usage.get('routes_planned',0)}</div><div class="label">Routes</div></div>
-  <div class="card {'bad' if usage.get('errors_5xx',0) > 0 else ''}"><div class="number">{usage.get('errors_5xx',0)}</div><div class="label">5xx Errors</div></div>
-  <div class="card"><div class="number">{usage.get('spots_submitted',0)}</div><div class="label">Spots</div></div>
+<!-- Review queue -->
+<div class="sect">
+<details {'open' if review_rows else ''}>
+<summary style="cursor:pointer;font-weight:600;color:#2e3d44;font-size:14px;">Review Queue ({len(pending_suggestions)})</summary>
+{f'<table style="margin-top:8px"><tr><th>Mosque</th><th>Field</th><th>Current</th><th>Suggested</th><th>Votes</th><th></th></tr>{review_rows}</table>' if review_rows else '<p style="color:#999;font-size:11px;margin-top:8px;">No pending suggestions</p>'}
+</details>
 </div>
-</div>
-<div>
-<h2>🔥 Top Endpoints</h2>
+
+<!-- System details (collapsible) -->
+<div class="sect">
+<details>
+<summary style="cursor:pointer;font-weight:600;color:#2e3d44;font-size:14px;">System Details</summary>
+<div style="margin-top:8px">
 <table>
-<tr><th>Endpoint</th><th>Hits</th></tr>
-{top_ep_rows if top_ep_rows else '<tr><td colspan="2" style="color:#999">No requests yet</td></tr>'}
+<tr><th>Metric</th><th>Value</th></tr>
+<tr><td>Total Requests</td><td>{usage.get('total_requests',0):,}</td></tr>
+<tr><td>Avg Latency</td><td>{usage.get('avg_latency_ms',0)}ms</td></tr>
+<tr><td>Dead Websites</td><td>{wh.get('dead',0)}</td></tr>
+<tr><td>Avg Data Age</td><td>{data_fresh.get('avg_age_days','?')} days</td></tr>
+<tr><td>Last Scrape</td><td>{scraper_h.get('last_scrape','Never')}</td></tr>
+<tr><td>Jumuah Mosques</td><td>{j.get('mosques_with_jumuah',0)}</td></tr>
+<tr><td>With Website</td><td>{m.get('has_website',0):,}</td></tr>
+<tr><td>With Phone</td><td>{m.get('has_phone',0):,}</td></tr>
 </table>
 </div>
+</details>
 </div>
 
-<div class="section">
-<h2>📈 Live Traffic (Hourly — Last 48h)</h2>
-<div style="background:white;border-radius:12px;padding:14px;box-shadow:0 1px 3px rgba(0,0,0,0.1);">
-<canvas id="traffic-chart" height="180"></canvas>
-</div>
-</div>
-
-<div class="section two-col">
-<div>
-<h2>📊 Daily Volume (Last 30 Days)</h2>
-<div style="background:white;border-radius:12px;padding:14px;box-shadow:0 1px 3px rgba(0,0,0,0.1);">
-<canvas id="daily-chart" height="200"></canvas>
-</div>
-</div>
-<div>
-<h2>⚡ Latency by Endpoint (24h)</h2>
-<table>
-<tr><th>Endpoint</th><th>Hits</th><th>Avg</th><th>P95</th><th>Max</th></tr>
-{ep_latency_rows if ep_latency_rows else '<tr><td colspan="5" style="color:#999">No data yet</td></tr>'}
-</table>
-</div>
-</div>
-
-<div class="section" style="color:#999;font-size:11px;text-align:center;margin-top:20px;">
-Updated: {stats['server']['timestamp'][:19]} UTC — <span id="refresh-timer">auto-refresh in 60s</span>
-</div>
+<p style="color:#aaa;font-size:10px;text-align:center;margin-top:20px;">
+{stats['server']['timestamp'][:19]} UTC
+</p>
 
 <script id="loc-data" type="application/json">""" + locations_json + """</script>
 <script id="search-data" type="application/json">""" + _json.dumps(stats.get("user_searches", [])) + """</script>
@@ -468,50 +666,71 @@ Updated: {stats['server']['timestamp'][:19]} UTC — <span id="refresh-timer">au
 <script id="hourly-latency" type="application/json">""" + hourly_latency_json + """</script>
 <script id="hourly-errors" type="application/json">""" + hourly_errors_json + """</script>
 <script id="daily-labels" type="application/json">""" + daily_labels_json + """</script>
-<script id="daily-values" type="application/json">""" + daily_values_json + """</script>"""
+<script id="daily-values" type="application/json">""" + daily_values_json + """</script>
+<script id="trend-real-labels" type="application/json">""" + trend_real_labels + """</script>
+<script id="trend-real-values" type="application/json">""" + trend_real_values + """</script>
+<script id="trend-scraper-labels" type="application/json">""" + trend_scraper_labels + """</script>
+<script id="trend-scraper-success" type="application/json">""" + trend_scraper_success + """</script>
+<script id="trend-scraper-failed" type="application/json">""" + trend_scraper_failed + """</script>
+<script id="trend-val-labels" type="application/json">""" + trend_val_labels + """</script>
+<script id="trend-val-values" type="application/json">""" + trend_val_values + """</script>"""
+
+    admin_key = ADMIN_API_KEY
+    review_script = f"""<script>
+function reviewAction(id, action) {{
+    if (!confirm('Are you sure you want to ' + action + ' this suggestion?')) return;
+    fetch('/api/admin/suggestions/' + id + '/' + action + '?key={admin_key}', {{method:'POST'}})
+    .then(r => r.json())
+    .then(d => {{ alert(action + 'ed!'); location.reload(); }})
+    .catch(e => alert('Error: ' + e));
+}}
+</script>"""
 
     chart_script = """<script>
-// --- Traffic chart (requests + latency dual axis) ---
-var hLabels = JSON.parse(document.getElementById('hourly-labels').textContent);
-var hReqs = JSON.parse(document.getElementById('hourly-reqs').textContent);
-var hLatency = JSON.parse(document.getElementById('hourly-latency').textContent);
-var hErrors = JSON.parse(document.getElementById('hourly-errors').textContent);
-
-new Chart(document.getElementById('traffic-chart'), {
-    type: 'line',
-    data: {
-        labels: hLabels,
-        datasets: [
-            {label:'Requests', data:hReqs, borderColor:'#0d9488', backgroundColor:'rgba(13,148,136,0.1)', fill:true, tension:0.3, yAxisID:'y'},
-            {label:'Avg Latency (ms)', data:hLatency, borderColor:'#f59e0b', borderDash:[5,3], tension:0.3, yAxisID:'y1'},
-            {label:'Errors', data:hErrors, borderColor:'#dc2626', backgroundColor:'rgba(220,38,38,0.2)', type:'bar', yAxisID:'y'}
-        ]
+// --- Tabbed trend chart ---
+var trendData = {
+    real: {
+        type:'line',
+        data:{labels:JSON.parse(document.getElementById('trend-real-labels').textContent),
+            datasets:[{label:'Real Data %',data:JSON.parse(document.getElementById('trend-real-values').textContent),
+                borderColor:'#0d9488',backgroundColor:'rgba(13,148,136,0.1)',fill:true,tension:0.3,pointRadius:3}]},
+        options:{responsive:true,plugins:{legend:{display:false}},
+            scales:{y:{beginAtZero:true,max:100,ticks:{callback:function(v){return v+'%'}}},x:{ticks:{font:{size:9}}}}}
     },
-    options: {
-        responsive:true, interaction:{intersect:false, mode:'index'},
-        scales: {
-            y: {position:'left', title:{display:true, text:'Requests / Errors'}, beginAtZero:true},
-            y1: {position:'right', title:{display:true, text:'Latency (ms)'}, beginAtZero:true, grid:{drawOnChartArea:false}}
-        },
-        plugins: {legend:{position:'bottom', labels:{boxWidth:12, font:{size:11}}}}
-    }
-});
-
-// --- Daily volume bar chart ---
-var dLabels = JSON.parse(document.getElementById('daily-labels').textContent);
-var dValues = JSON.parse(document.getElementById('daily-values').textContent);
-
-new Chart(document.getElementById('daily-chart'), {
-    type: 'bar',
-    data: {
-        labels: dLabels,
-        datasets: [{label:'Daily Requests', data:dValues, backgroundColor:'rgba(13,148,136,0.6)', borderRadius:4}]
+    traffic: {
+        type:'line',
+        data:{labels:JSON.parse(document.getElementById('hourly-labels').textContent),
+            datasets:[
+                {label:'Requests',data:JSON.parse(document.getElementById('hourly-reqs').textContent),borderColor:'#0d9488',backgroundColor:'rgba(13,148,136,0.1)',fill:true,tension:0.3},
+                {label:'Errors',data:JSON.parse(document.getElementById('hourly-errors').textContent),borderColor:'#dc2626',type:'bar'}]},
+        options:{responsive:true,interaction:{intersect:false,mode:'index'},
+            scales:{y:{beginAtZero:true},x:{ticks:{font:{size:8},maxRotation:45}}},
+            plugins:{legend:{position:'bottom',labels:{boxWidth:8,font:{size:10}}}}}
     },
-    options: {
-        responsive:true, plugins:{legend:{display:false}},
-        scales: {x:{ticks:{maxRotation:45, font:{size:9}}}, y:{beginAtZero:true}}
+    scraper: {
+        type:'bar',
+        data:{labels:JSON.parse(document.getElementById('trend-scraper-labels').textContent),
+            datasets:[
+                {label:'Success',data:JSON.parse(document.getElementById('trend-scraper-success').textContent),backgroundColor:'rgba(13,148,136,0.7)',borderRadius:3},
+                {label:'Failed',data:JSON.parse(document.getElementById('trend-scraper-failed').textContent),backgroundColor:'rgba(220,38,38,0.5)',borderRadius:3}]},
+        options:{responsive:true,scales:{x:{stacked:true,ticks:{font:{size:9}}},y:{stacked:true,beginAtZero:true}},
+            plugins:{legend:{position:'bottom',labels:{boxWidth:8,font:{size:10}}}}}
     }
-});
+};
+
+var trendChart = null;
+function showTrend(name) {
+    if(trendChart) trendChart.destroy();
+    var cfg = trendData[name];
+    trendChart = new Chart(document.getElementById('trend-chart'), cfg);
+    document.querySelectorAll('.tabs .tab').forEach(function(t){
+        if(t.closest('.sect').querySelector('#trend-chart')){
+            t.classList.toggle('on', t.textContent.toLowerCase().indexOf(name.substring(0,4))>=0 ||
+                (name==='real' && t.textContent.indexOf('Quality')>=0));
+        }
+    });
+}
+showTrend('real');
 
 // --- Auto-refresh every 60 seconds ---
 var countdown = 60;
@@ -524,7 +743,7 @@ setInterval(function() {
 </script>"""
 
     map_script = """<script>
-var map = L.map('heatmap').setView([39.8, -98.5], 4);
+var map = L.map('heatmap').fitBounds([[24.5, -130], [55, -55]]);  // US + Canada
 L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
     maxZoom: 18, attribution: '&copy; OpenStreetMap'
 }).addTo(map);
@@ -549,7 +768,7 @@ var labels = {
     mosques: mosqueData.length + ' mosques in database',
     searches: searchData.length + ' unique search locations (last 30 days)',
     routes: routeData.length + ' route planning origins (last 30 days)',
-    gaps: gapData.length + ' areas with few nearby mosques (coverage gaps)'
+    gaps: gapData.length + ' areas where users searched but fewer than 3 mosques exist nearby'
 };
 
 var activeLayer = 'mosques';
@@ -561,16 +780,14 @@ function showLayer(name) {
     activeLayer = name;
     layers[name].addTo(map);
     document.getElementById('heatmap-label').textContent = labels[name];
-    // Update button styles
-    var colors = {mosques:'#0d9488', searches:'#2563eb', routes:'#7c3aed', gaps:'#dc2626'};
+    // Update tab styles
     ['mosques','searches','routes','gaps'].forEach(function(n) {
         var btn = document.getElementById('btn-'+n);
-        if (n === name) { btn.style.background = colors[n]; btn.style.color = 'white'; }
-        else { btn.style.background = 'white'; btn.style.color = colors[n]; }
+        btn.classList.toggle('on', n === name);
     });
 }
 </script>"""
 
-    html += chart_script + map_script + "</body></html>"
+    html += review_script + chart_script + map_script + "</body></html>"
 
     return HTMLResponse(content=html)
