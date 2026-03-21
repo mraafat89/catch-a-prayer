@@ -511,11 +511,14 @@ def _save_to_db(engine, mosque_id: str, data: dict, today: date):
 
         # Save jumuah if found
         for i, jtime in enumerate(data.get("jumuah", [])[:3]):
-            conn.execute(text("""
-                INSERT INTO jumuah_sessions (id, mosque_id, prayer_start, session_number, source)
-                VALUES (gen_random_uuid(), CAST(:mid AS uuid), :time, :num, 'playwright_scrape')
-                ON CONFLICT DO NOTHING
-            """), {"mid": mosque_id, "time": jtime, "num": i + 1})
+            try:
+                conn.execute(text("""
+                    INSERT INTO jumuah_sessions (id, mosque_id, prayer_start, session_number, source, valid_date)
+                    VALUES (gen_random_uuid(), CAST(:mid AS uuid), :time, :num, 'playwright_scrape', CURRENT_DATE)
+                    ON CONFLICT DO NOTHING
+                """), {"mid": mosque_id, "time": jtime, "num": i + 1})
+            except Exception:
+                pass
 
 
 # ---------------------------------------------------------------------------
