@@ -1497,6 +1497,52 @@ def rank_itineraries(itineraries: list[dict]) -> list[dict]:
     return [it for _, _, it in scored]
 
 
+def build_pairs_from_prayers(trip_prayers: list[dict], travel_mode: bool) -> list[dict]:
+    """
+    Build prayer pairs from enumerated multi-day trip prayers.
+    In Musafir: group Dhuhr+Asr and Maghrib+Isha per day.
+    In Muqeem: each prayer is standalone.
+    Returns list of {day_number, date, pair_type, label, prayers}.
+    """
+    MUSAFIR_PAIRS = {
+        "dhuhr": ("dhuhr_asr", "Dhuhr + Asr"),
+        "asr": ("dhuhr_asr", "Dhuhr + Asr"),
+        "maghrib": ("maghrib_isha", "Maghrib + Isha"),
+        "isha": ("maghrib_isha", "Maghrib + Isha"),
+    }
+
+    pairs = []
+    seen = set()
+
+    for p in trip_prayers:
+        day = p["day_number"]
+        prayer = p["prayer"]
+
+        if travel_mode and prayer in MUSAFIR_PAIRS:
+            pair_type, pair_label = MUSAFIR_PAIRS[prayer]
+            key = (day, pair_type)
+            if key in seen:
+                continue
+            seen.add(key)
+            prefix = f"Day {day}: " if any(tp["day_number"] != 1 for tp in trip_prayers) else ""
+            pairs.append({
+                "day_number": day,
+                "date": p["date"],
+                "pair_type": pair_type,
+                "label": f"{prefix}{pair_label}",
+            })
+        else:
+            prefix = f"Day {day}: " if any(tp["day_number"] != 1 for tp in trip_prayers) else ""
+            pairs.append({
+                "day_number": day,
+                "date": p["date"],
+                "pair_type": prayer,
+                "label": f"{prefix}{prayer.title()}",
+            })
+
+    return pairs
+
+
 # ---------------------------------------------------------------------------
 # Main entry point
 # ---------------------------------------------------------------------------
