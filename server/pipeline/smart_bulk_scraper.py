@@ -34,17 +34,20 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 log = logging.getLogger(__name__)
 settings = get_settings()
 
-# Build DB URL — handle case where DATABASE_URL has wrong password
-# (docker-compose environment: override uses shell default, not env_file)
-_raw_url = os.environ.get("DATABASE_URL", settings.database_url)
-_pg_pass = os.environ.get("POSTGRES_PASSWORD")
-if _pg_pass and f":{_pg_pass}@" not in _raw_url:
-    # Replace the password in the URL with the correct one
-    import re as _re
-    _raw_url = _re.sub(r'://([^:]+):([^@]*)@', f'://\\1:{_pg_pass}@', _raw_url)
-DB_URL = _raw_url.replace("+asyncpg", "+psycopg2")
-if "psycopg2" not in DB_URL:
-    DB_URL = DB_URL.replace("postgresql://", "postgresql+psycopg2://")
+# Build sync DB URL from env vars directly
+_db_url = os.environ.get("DATABASE_URL", "")
+if not _db_url:
+    _db_url = settings.database_url
+# Always patch in POSTGRES_PASSWORD if available (docker-compose env bug workaround)
+_pg_pass = os.environ.get("POSTGRES_PASSWORD", "")
+_pg_user = os.environ.get("POSTGRES_USER", "cap")
+_pg_db = os.environ.get("POSTGRES_DB", "catchaprayer")
+if _pg_pass:
+    DB_URL = f"postgresql+psycopg2://{_pg_user}:{_pg_pass}@db:5432/{_pg_db}"
+else:
+    DB_URL = _db_url.replace("+asyncpg", "+psycopg2")
+    if "psycopg2" not in DB_URL:
+        DB_URL = DB_URL.replace("postgresql://", "postgresql+psycopg2://")
 
 # ---------------------------------------------------------------------------
 # Prayer time extraction patterns (improved)
