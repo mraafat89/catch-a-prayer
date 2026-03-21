@@ -1653,21 +1653,17 @@ async def build_travel_plan(
             ):
                 continue
 
-            # Skip if BOTH prayers' adhan times already passed before departure.
-            # This handles midnight trips: Maghrib+Isha adhan at 6:30/8:30 PM,
-            # departure at 12 AM — Isha period extends past midnight but both
-            # adhans are in the past. The pair is stale.
+            # Skip stale pairs: if departure is after midnight (before 6 AM)
+            # and both prayers have evening adhans (after noon), the pair is
+            # from yesterday — skip it. Example: Maghrib 6:30 PM + Isha 8:30 PM,
+            # departure 12:12 AM → both adhans happened yesterday evening.
             p1_adhan = origin_schedule.get(f"{p1}_adhan")
             p2_adhan = origin_schedule.get(f"{p2}_adhan")
-            if p1_adhan and p2_adhan:
+            if p1_adhan and p2_adhan and dep_min < 360:  # departure before 6 AM
                 p1_min = hhmm_to_minutes(p1_adhan)
                 p2_min = hhmm_to_minutes(p2_adhan)
-                # Both adhans before departure AND not a next-day scenario
-                # (both in the evening, departure after midnight)
-                if p1_min < dep_min and p2_min < dep_min and dep_min < 360:
-                    # Departure is before 6 AM and both adhans are PM — skip stale pair
-                    if p1_min > 720 and p2_min > 720:
-                        continue
+                if p1_min > 720 and p2_min > 720:  # both adhans are PM (after noon)
+                    continue
             plan = build_combination_plan(
                 p1, p2, origin_schedule, route_mosques,
                 departure_dt, arrival_dt, dest_schedule, timezone_str,
