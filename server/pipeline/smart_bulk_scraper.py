@@ -373,6 +373,8 @@ FALLBACK_PATHS = [
     "/prayer-times-and-iqama", "/iqamah-times",
     "/prayer-timings", "/salah-schedule", "/namaz-times",
     "/iqamah", "/adhan-times", "/daily-schedule",
+    "/prayer-timing", "/namaz", "/salaat-times",
+    "/prayer-times-iqamah-times", "/daily-prayer-times",
 ]
 
 
@@ -512,6 +514,21 @@ async def scrape_with_playwright(websites: list[dict], engine, save: bool = True
                 # Get all visible text from homepage
                 text_content = await page.inner_text("body")
 
+                # Spam/hijack detection — skip compromised domains
+                spam_keywords = ["slot deposit", "casino", "gambling", "poker online",
+                                 "togel", "judi online", "situs slot", "gacor"]
+                text_lower_check = text_content[:2000].lower()
+                if any(kw in text_lower_check for kw in spam_keywords):
+                    log.info(f"  ! Domain hijacked (gambling spam)")
+                    stats["error"] += 1
+                    await page.close()
+                    # Mark as dead in DB
+                    with engine.begin() as conn:
+                        conn.execute(text(
+                            "UPDATE scraping_jobs SET website_alive = false, status = 'failed' WHERE mosque_id = :mid"
+                        ), {"mid": mosque_id})
+                    continue
+
                 # Also check for iframes (prayer widgets often in iframes)
                 iframes = await page.query_selector_all("iframe")
                 for iframe in iframes[:3]:
@@ -613,6 +630,7 @@ JINA_PATHS = [
     "/services/prayer-times", "/schedule",
     "/prayers-mosques", "/iqamah-times", "/salah",
     "/prayer-timings", "/iqamah", "/daily-schedule",
+    "/prayer-timing", "/daily-prayer-times",
 ]
 
 
