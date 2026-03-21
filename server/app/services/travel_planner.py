@@ -48,233 +48,6 @@ HIGHWAY_SPEED_KMH = 60            # speed used for detour estimate (highway avg)
 MAX_TRIP_HOURS = 72               # max trip duration (3 days)
 PRAYERS = ["fajr", "dhuhr", "asr", "maghrib", "isha"]
 
-# Map each prayer to the schedule key that marks the end of its valid period
-PERIOD_END_MAP = {
-    "fajr": "sunrise",
-    "dhuhr": "asr_adhan",
-    "asr": "maghrib_adhan",
-    "maghrib": "isha_adhan",
-    "isha": "fajr_adhan",
-}
-
-# ---------------------------------------------------------------------------
-# Absolute-datetime prayer helpers (replaces minutes-from-midnight for cross-day logic)
-# ---------------------------------------------------------------------------
-
-def safe_hhmm(t: str | None) -> int | None:
-    """Parse HH:MM to minutes. Returns None if malformed."""
-    if not t or not isinstance(t, str) or ':' not in t:
-        return None
-    try:
-        parts = t.split(':')
-        h, m = int(parts[0]), int(parts[1])
-        if not (0 <= h <= 23 and 0 <= m <= 59):
-            return None
-        return h * 60 + m
-    except (ValueError, IndexError):
-        return None
-
-
-def get_prayer_datetime(
-    prayer_name: str,
-    schedule: dict,
-    reference_date: datetime | None = None,
-    tz: ZoneInfo | None = None,
-) -> dict:
-    """
-    Convert HH:MM adhan/iqama strings for a prayer into absolute datetime objects.
-
-    Returns a dict with:
-      - adhan_dt: datetime of adhan (or None)
-      - iqama_dt: datetime of iqama (or None)
-      - period_end_dt: datetime when prayer period ends (or None)
-      - congregation_end_dt: datetime when congregation window ends (or None)
-
-    reference_date: a datetime whose .date() is used; if it has tzinfo, that's used
-    tz: explicit timezone override (takes precedence over reference_date.tzinfo)
-    """
-    if reference_date is None:
-        reference_date = datetime.now(tz or ZoneInfo("UTC"))
-    if tz is None:
-        tz = reference_date.tzinfo or ZoneInfo("UTC")
-
-    base_date = reference_date.date() if isinstance(reference_date, datetime) else reference_date
-
-    adhan_str = schedule.get(f"{prayer_name}_adhan")
-    iqama_str = schedule.get(f"{prayer_name}_iqama")
-
-    adhan_min = safe_hhmm(adhan_str)
-    iqama_min = safe_hhmm(iqama_str)
-
-    result = {"adhan_dt": None, "iqama_dt": None, "period_end_dt": None, "congregation_end_dt": None}
-
-    if adhan_min is None:
-        return result
-
-    adhan_dt = datetime(base_date.year, base_date.month, base_date.day,
-                        adhan_min // 60, adhan_min % 60, tzinfo=tz)
-    result["adhan_dt"] = adhan_dt
-
-    if iqama_min is not None:
-        iqama_dt = datetime(base_date.year, base_date.month, base_date.day,
-                            iqama_min // 60, iqama_min % 60, tzinfo=tz)
-        result["iqama_dt"] = iqama_dt
-    else:
-        iqama_dt = adhan_dt + timedelta(minutes=15)  # default
-        result["iqama_dt"] = iqama_dt
-
-    result["congregation_end_dt"] = iqama_dt + timedelta(minutes=CONGREGATION_WINDOW_MINUTES)
-
-    # Period end
-    period_end_key = PERIOD_END_MAP.get(prayer_name)
-    period_end_raw = schedule.get(period_end_key) if period_end_key else None
-    period_end_min = safe_hhmm(period_end_raw)
-    if period_end_min is not None:
-        period_end_dt = datetime(base_date.year, base_date.month, base_date.day,
-                                 period_end_min // 60, period_end_min % 60, tzinfo=tz)
-        # If period end is before adhan, it's the next day (e.g. Isha ends at next Fajr)
-        if period_end_dt <= adhan_dt:
-            period_end_dt += timedelta(days=1)
-        result["period_end_dt"] = period_end_dt
-    else:
-        # Fallback: 6 hours after iqama
-        result["period_end_dt"] = iqama_dt + timedelta(hours=6)
-
-    return result
-
-
-def prayer_status_at_arrival_dt(
-    prayer_name: str,
-    schedule: dict,
-    arrival_dt: datetime,
-    reference_date: datetime | None = None,
-    tz: ZoneInfo | None = None,
-) -> Optional[dict]:
-    """
-    Absolute-datetime version of prayer_status_at_arrival.
-    Determines if a prayer is catchable given an absolute arrival datetime.
-
-    Returns status dict if catchable, else None.
-    """
-    info = get_prayer_datetime(prayer_name, schedule, reference_date=reference_date, tz=tz)
-    adhan_dt = info["adhan_dt"]
-    if adhan_dt is None:
-        return None
-
-    period_end_dt = info["period_end_dt"]
-    congregation_end_dt = info["congregation_end_dt"]
-
-    if arrival_dt < adhan_dt:
-        return None  # prayer hasn't started
-    if period_end_dt and arrival_dt >= period_end_dt:
-        return None  # prayer period has ended
-
-    adhan_str = schedule.get(f"{prayer_name}_adhan")
-    iqama_str = schedule.get(f"{prayer_name}_iqama")
-
-    if congregation_end_dt and arrival_dt <= congregation_end_dt:
-        return {
-            "status": "can_catch_with_imam",
-            "adhan_time": adhan_str,
-            "iqama_time": iqama_str,
-        }
-    return {
-        "status": "can_pray_solo_at_mosque",
-        "adhan_time": adhan_str,
-        "iqama_time": iqama_str,
-    }
-
-
-def _is_stale_dt(prayer_name: str, schedule: dict, departure_dt: datetime,
-                 tz: ZoneInfo | None = None) -> bool:
-    """
-    Absolute-datetime stale check.
-    A prayer is stale if its adhan was > 3 hours before departure AND < 12 hours.
-    The 12h upper bound prevents previous-day occurrences from being counted
-    (e.g. dep 8 AM, previous day's Dhuhr at 12:30 PM = 19.5h ago is NOT stale,
-    it's simply yesterday's prayer -- today's Dhuhr is upcoming).
-
-    Checks both the departure date AND previous day (for post-midnight departures
-    where the prayer's adhan was the evening before, e.g. Isha at 20:30 → dep 01:00).
-    """
-    if tz is None:
-        tz = departure_dt.tzinfo or ZoneInfo("UTC")
-
-    # Check today's adhan
-    info = get_prayer_datetime(prayer_name, schedule,
-                               reference_date=departure_dt, tz=tz)
-    adhan_dt = info["adhan_dt"]
-
-    # Also check previous day's adhan (handles midnight crossing)
-    prev_day_ref = departure_dt - timedelta(days=1)
-    info_prev = get_prayer_datetime(prayer_name, schedule,
-                                     reference_date=prev_day_ref, tz=tz)
-    adhan_dt_prev = info_prev["adhan_dt"]
-
-    # Find the most recent adhan that's in the past and within 12 hours
-    candidates = []
-    for adt in [adhan_dt, adhan_dt_prev]:
-        if adt is not None and adt <= departure_dt:
-            elapsed = departure_dt - adt
-            if elapsed <= timedelta(hours=12):
-                candidates.append(adt)
-
-    if not candidates:
-        return False  # no recent past adhan found → not stale
-
-    most_recent = max(candidates)
-    return (departure_dt - most_recent) > timedelta(hours=3)
-
-
-def _prayer_overlaps_trip_dt(
-    prayer_name: str,
-    schedule: dict,
-    departure_dt: datetime,
-    arrival_dt: datetime,
-    tz: ZoneInfo | None = None,
-) -> bool:
-    """
-    Absolute-datetime version of _prayer_overlaps_trip.
-    Checks if a prayer's active window overlaps the trip window.
-    For multi-day trips, checks each day the trip spans.
-    Also checks the day BEFORE departure (for prayers like Isha whose
-    period extends past midnight into the departure day).
-    """
-    if tz is None:
-        tz = departure_dt.tzinfo or ZoneInfo("UTC")
-
-    # Start from the day before departure to catch midnight-spanning prayers
-    current_date = (departure_dt - timedelta(days=1)).date()
-    end_date = arrival_dt.date()
-
-    while current_date <= end_date:
-        ref = datetime(current_date.year, current_date.month, current_date.day,
-                       tzinfo=tz)
-        info = get_prayer_datetime(prayer_name, schedule, reference_date=ref, tz=tz)
-        adhan_dt = info["adhan_dt"]
-        period_end_dt = info["period_end_dt"]
-
-        if adhan_dt and period_end_dt:
-            # Overlap check: prayer window [adhan, period_end) intersects trip [dep, arr]
-            if adhan_dt < arrival_dt and period_end_dt > departure_dt:
-                return True
-
-        current_date += timedelta(days=1)
-
-    return False
-
-
-def _pair_relevant_dt(
-    p1: str, p2: str, schedule: dict,
-    departure_dt: datetime, arrival_dt: datetime,
-    tz: ZoneInfo | None = None,
-) -> bool:
-    """Absolute-datetime version: True if either prayer in the pair overlaps the trip."""
-    return (
-        _prayer_overlaps_trip_dt(p1, schedule, departure_dt, arrival_dt, tz=tz) or
-        _prayer_overlaps_trip_dt(p2, schedule, departure_dt, arrival_dt, tz=tz)
-    )
-
 
 def validate_trip_duration(departure_dt: datetime, arrival_dt: datetime) -> tuple[bool, str]:
     """Validate trip duration. Returns (is_valid, error_message)."""
@@ -749,6 +522,7 @@ async def fetch_anchor_mosques(
     tz_str: str,
     anchor_dt: datetime,
     radius_km: float = 10.0,
+    minutes_into_trip: int = 0,
 ) -> list[dict]:
     """
     Find mosques within radius_km of an anchor point (origin or destination).
@@ -819,7 +593,7 @@ async def fetch_anchor_mosques(
             "state": row["state"],
             "google_place_id": row.get("google_place_id"),
             "detour_minutes": detour_est,
-            "minutes_into_trip": 0,
+            "minutes_into_trip": minutes_into_trip,
             "local_arrival_minutes": local_pass.hour * 60 + local_pass.minute,
             "local_arrival_time_fmt": f"{local_pass.hour:02d}:{local_pass.minute:02d}",
             "schedule": schedule,
@@ -843,12 +617,7 @@ def prayer_status_at_arrival(prayer: str, schedule: dict, arrival_minutes: int) 
         return None
 
     adhan_min = hhmm_to_minutes(adhan)
-    if adhan_min == 0 and prayer != "fajr":
-        # Malformed adhan data (hhmm_to_minutes returned 0 for non-midnight prayer)
-        return None
     iqama_min = hhmm_to_minutes(iqama) if iqama else adhan_min + 15
-    if iqama_min == 0:
-        iqama_min = adhan_min + 15  # fallback if iqama is malformed
     cong_end = iqama_min + CONGREGATION_WINDOW_MINUTES
 
     # Period end
@@ -1165,20 +934,6 @@ def build_combination_plan(
     _p1_dep = prayer_status_at_arrival(prayer1, schedule, dep_min)
     _p2_dep = prayer_status_at_arrival(prayer2, schedule, dep_min)
 
-    # ── Stale prayer check (absolute datetime version) ─────────────────────
-    # Uses absolute datetime comparison instead of minutes-from-midnight.
-    # If a prayer's adhan was > 3 hours before departure → stale.
-    # This eliminates all midnight-wrap edge cases.
-    def _is_stale(prayer_name: str, status: dict | None) -> bool:
-        if not status or status.get("status") != "can_pray_solo_at_mosque":
-            return False
-        return _is_stale_dt(prayer_name, schedule, departure_dt, tz=tz)
-
-    if _is_stale(prayer1, _p1_dep):
-        _p1_dep = None
-    if _is_stale(prayer2, _p2_dep):
-        _p2_dep = None
-
     # ── Period-closed check (Muqeem mode only) ─────────────────────────────
     # In Muqeem mode (no combining), if prayer1's window has already closed at departure
     # AND prayer2 is now active, redirect to a solo plan for prayer2 only.
@@ -1258,7 +1013,7 @@ def build_combination_plan(
 
     # ── Combine Early / Late — only in Travel mode (not Driving) ──────────
     # In Musafir mode (more option types) limit to 2 per type; in Muqeem mode allow up to 3.
-    MAX_OPTIONS = 4 if allow_combining else 4  # more options → more itinerary variety
+    MAX_OPTIONS = 2 if allow_combining else 3
     if allow_combining:
         early_candidates = []
         for m in sorted(route_mosques, key=lambda x: x["minutes_into_trip"]):
@@ -1551,7 +1306,7 @@ def _itinerary_label(pair_choices: list[dict]) -> str:
         "at_destination": "at destination",
         "separate":       "separate stops",
         "solo_stop":      "en route stop",
-        "stop_for_fajr":  "stop",
+        "stop_for_fajr":  "Fajr stop",
         "no_option":      "no mosque",
     }
     parts = []
@@ -1634,20 +1389,6 @@ def build_itineraries(prayer_pairs: list[dict], allow_combining: bool = True) ->
                 return (pm, pm["omap"][t])
         return None
 
-    def pick_nth(pm: dict, option_type: str, n: int):
-        """Pick the nth option of a given type (for mosque variety)."""
-        count = 0
-        for opt in prayer_pairs_list_for_nth:
-            if opt.get("pair") == pm["pair"]:
-                for o in opt.get("options", []):
-                    if o["option_type"] == option_type:
-                        if count == n:
-                            return (pm, o)
-                        count += 1
-        return pick(pm, option_type)
-
-    prayer_pairs_list_for_nth = prayer_pairs
-
     n = len(pair_maps)
 
     if not allow_combining:
@@ -1694,11 +1435,7 @@ def build_itineraries(prayer_pairs: list[dict], allow_combining: bool = True) ->
         if any(c is None for c in choices):
             continue
 
-        # Include mosque ID in key so different mosques for the same option type produce different itineraries
-        combo_key = tuple(
-            f"{opt['option_type']}:{opt['stops'][0]['mosque_id'] if opt.get('stops') else 'none'}"
-            for _, opt in choices
-        )  # type: ignore[index]
+        combo_key = tuple(opt["option_type"] for _, opt in choices)  # type: ignore[index]
         if combo_key in seen:
             continue
         seen.add(combo_key)
@@ -1725,55 +1462,6 @@ def build_itineraries(prayer_pairs: list[dict], allow_combining: bool = True) ->
             "stop_count": sum(len(opt.get("stops", [])) for _, opt in choices),  # type: ignore[misc]
             "feasible": all_feasible,
         })
-
-    # ── Additional pass: generate mosque-variety itineraries ────────────
-    # For each pair, iterate over ALL options (not just first-per-type) to
-    # create additional itineraries with different mosque stops.
-    from itertools import product as itertools_product
-
-    per_pair_all_opts = []
-    for pair in prayer_pairs:
-        opts = pair.get("options", [])
-        if not opts:
-            opts = [{"option_type": "no_option", "label": "No option", "description": "",
-                     "prayers": [], "combination_label": None, "stops": [],
-                     "feasible": False, "note": None}]
-        per_pair_all_opts.append([(pair, opt) for opt in opts[:4]])  # cap at 4 per pair
-
-    if per_pair_all_opts:
-        for combo in itertools_product(*per_pair_all_opts):
-            if len(itineraries) >= 8:  # cap total itineraries
-                break
-            combo_key = tuple(
-                f"{opt['option_type']}:{opt['stops'][0]['mosque_id'] if opt.get('stops') else 'none'}"
-                for _, opt in combo
-            )
-            if combo_key in seen:
-                continue
-            seen.add(combo_key)
-
-            pair_choices_out = []
-            total_detour = 0
-            all_feasible = True
-            for pair_data, opt in combo:
-                pair_choices_out.append({
-                    "pair": pair_data["pair"],
-                    "label": pair_data["label"],
-                    "emoji": pair_data["emoji"],
-                    "option": opt,
-                })
-                total_detour += sum(s["detour_minutes"] for s in opt.get("stops", []))
-                if not opt.get("feasible", True):
-                    all_feasible = False
-
-            itineraries.append({
-                "label": _itinerary_label(pair_choices_out),
-                "summary": _itinerary_summary(pair_choices_out),
-                "pair_choices": pair_choices_out,
-                "total_detour_minutes": total_detour,
-                "stop_count": sum(len(opt.get("stops", [])) for _, opt in combo),
-                "feasible": all_feasible,
-            })
 
     return itineraries
 
@@ -1808,52 +1496,6 @@ def rank_itineraries(itineraries: list[dict]) -> list[dict]:
     scored = [(score_itinerary(it), i, it) for i, it in enumerate(itineraries)]
     scored.sort(key=lambda x: (x[0], x[1]))
     return [it for _, _, it in scored]
-
-
-def build_pairs_from_prayers(trip_prayers: list[dict], travel_mode: bool) -> list[dict]:
-    """
-    Build prayer pairs from enumerated multi-day trip prayers.
-    In Musafir: group Dhuhr+Asr and Maghrib+Isha per day.
-    In Muqeem: each prayer is standalone.
-    Returns list of {day_number, date, pair_type, label, prayers}.
-    """
-    MUSAFIR_PAIRS = {
-        "dhuhr": ("dhuhr_asr", "Dhuhr + Asr"),
-        "asr": ("dhuhr_asr", "Dhuhr + Asr"),
-        "maghrib": ("maghrib_isha", "Maghrib + Isha"),
-        "isha": ("maghrib_isha", "Maghrib + Isha"),
-    }
-
-    pairs = []
-    seen = set()
-
-    for p in trip_prayers:
-        day = p["day_number"]
-        prayer = p["prayer"]
-
-        if travel_mode and prayer in MUSAFIR_PAIRS:
-            pair_type, pair_label = MUSAFIR_PAIRS[prayer]
-            key = (day, pair_type)
-            if key in seen:
-                continue
-            seen.add(key)
-            prefix = f"Day {day}: " if any(tp["day_number"] != 1 for tp in trip_prayers) else ""
-            pairs.append({
-                "day_number": day,
-                "date": p["date"],
-                "pair_type": pair_type,
-                "label": f"{prefix}{pair_label}",
-            })
-        else:
-            prefix = f"Day {day}: " if any(tp["day_number"] != 1 for tp in trip_prayers) else ""
-            pairs.append({
-                "day_number": day,
-                "date": p["date"],
-                "pair_type": prayer,
-                "label": f"{prefix}{prayer.title()}",
-            })
-
-    return pairs
 
 
 # ---------------------------------------------------------------------------
@@ -1894,11 +1536,6 @@ async def build_travel_plan(
         # so that mosques along the route (not just near origin/destination) can be found.
         dist_km = haversine_km(origin_lat, origin_lng, dest_lat, dest_lng)
         duration_min = estimate_travel_minutes(origin_lat, origin_lng, dest_lat, dest_lng)
-        # Include waypoints in the fallback route so the map shows the correct path
-        all_points = [(origin_lat, origin_lng)]
-        for wp in (waypoints or []):
-            all_points.append((wp.get("lat", wp.get("latitude", 0)), wp.get("lng", wp.get("longitude", 0))))
-        all_points.append((dest_lat, dest_lng))
         n_segments = max(4, int(dist_km / 50))
         fallback_coords = [
             [origin_lng + (dest_lng - origin_lng) * i / n_segments,
@@ -1967,8 +1604,10 @@ async def build_travel_plan(
             break
         logger.info(f"Progressive search: {len(route_mosques)} mosques at {radius}km, expanding...")
 
+    trip_duration_min = round(route["duration"] / 60)
     origin_mosques = await fetch_anchor_mosques(db, origin_lat, origin_lng, timezone_str, departure_dt)
-    dest_mosques = await fetch_anchor_mosques(db, dest_lat, dest_lng, dest_tz_str, arrival_dt)
+    dest_mosques = await fetch_anchor_mosques(db, dest_lat, dest_lng, dest_tz_str, arrival_dt,
+                                               minutes_into_trip=trip_duration_min)
 
     # 5. Build prayer plans for the trip window
     prayer_pairs = []
@@ -1976,14 +1615,12 @@ async def build_travel_plan(
     arr_local = arrival_dt.astimezone(tz_zone)
     dep_min = dep_local.hour * 60 + dep_local.minute
     arr_min = arr_local.hour * 60 + arr_local.minute
+    trip_hours = route["duration"] / 3600
 
-    # Trip duration in hours — used to decide multi-day handling
-    trip_duration_hours = (arrival_dt - departure_dt).total_seconds() / 3600
-
-    # ── Helper: is a prayer stale at departure? (absolute datetime version) ──
-    # Uses _is_stale_dt which compares absolute datetimes — no midnight-wrap issues.
-    def _is_stale_at_departure(prayer_name: str, schedule: dict) -> bool:
-        return _is_stale_dt(prayer_name, schedule, departure_dt, tz=tz_zone)
+    # For multi-day trips (>24h), dep_min/arr_min wrap around midnight and can't
+    # represent the full trip window.  Every prayer is relevant since the trip
+    # spans at least one complete day cycle.
+    multi_day = trip_hours >= 24
 
     if trip_mode != "travel":
         # ── Muqeem mode: plan each prayer INDEPENDENTLY — no pairs, no combining ──
@@ -1997,11 +1634,9 @@ async def build_travel_plan(
         for prayer in ["dhuhr", "asr", "maghrib", "isha"]:
             if prayer in muqeem_prayed:
                 continue
-            # For multi-day trips (> 24h), all prayers are relevant
-            # Use absolute datetime overlap check (eliminates midnight-wrap bugs)
-            if trip_duration_hours <= 24.0 and not (
-                _prayer_overlaps_trip_dt(prayer, origin_schedule, departure_dt, arrival_dt, tz=tz_zone) or
-                _prayer_overlaps_trip_dt(prayer, dest_schedule, departure_dt, arrival_dt, tz=tz_zone)
+            if not multi_day and not (
+                _prayer_overlaps_trip(prayer, origin_schedule, dep_min, arr_min) or
+                _prayer_overlaps_trip(prayer, dest_schedule, dep_min, arr_min)
             ):
                 continue
             plan = _build_solo_plan(
@@ -2014,89 +1649,50 @@ async def build_travel_plan(
             prayer_pairs.append(plan)
     else:
         # ── Musafir mode: pair-based planning with combining options ──
-        # Use enumerate_trip_prayers() for multi-day trips to get exact prayer list
-        if trip_duration_hours > 24.0:
-            # Multi-day: enumerate prayers across all days
-            schedules_by_date = {}
-            current_date = departure_dt.date()
-            end_date = arrival_dt.date()
-            while current_date <= end_date:
-                # Use origin schedule as base (already calculated)
-                schedules_by_date[current_date] = origin_schedule
-                current_date += timedelta(days=1)
-            trip_prayers = enumerate_trip_prayers(departure_dt, arrival_dt, schedules_by_date)
-            # Build pairs from enumerated prayers
-            multi_day_pairs = build_pairs_from_prayers(trip_prayers, travel_mode=True)
-            # For each unique pair type, build combination plan
-            seen_pair_types = set()
-            for pair_info in multi_day_pairs:
-                pt = pair_info["pair_type"]
-                if pt in seen_pair_types:
-                    continue
-                seen_pair_types.add(pt)
-                if "_" in pt:
-                    p1, p2 = pt.split("_")[0], pt.split("_")[-1]
-                    if p2 in prayed or (p1 in prayed and p2 in prayed):
-                        continue
-                    plan = build_combination_plan(
-                        p1, p2, origin_schedule, route_mosques,
-                        departure_dt, arrival_dt, dest_schedule, timezone_str,
-                        trip_mode=trip_mode, prayed_prayers=prayed,
-                        origin_lat=origin_lat, origin_lng=origin_lng,
-                        dest_lat=dest_lat, dest_lng=dest_lng,
-                        origin_mosques=origin_mosques, dest_mosques=dest_mosques,
-                        dest_tz_str=dest_tz_str,
-                    )
-                    if plan is not None:
-                        prayer_pairs.append(plan)
-        else:
-            # Same-day / short trips: use absolute datetime relevance checks
-            for p1, p2 in [("dhuhr", "asr"), ("maghrib", "isha")]:
-                # Skip if pair is prayed (sequential inference: p2 prayed → both done)
-                if p2 in prayed or (p1 in prayed and p2 in prayed):
-                    continue
-
-                # ── Stale pair suppression (absolute datetime version) ──────────
-                # If BOTH prayers in the pair are stale at departure (adhan > 3h ago),
-                # suppress the entire pair. Uses absolute datetime — no midnight-wrap.
-                # EXCEPTION: on long trips (> 12h), the same prayer will recur.
-                if trip_duration_hours <= 12.0:
-                    if _is_stale_at_departure(p1, origin_schedule) and _is_stale_at_departure(p2, origin_schedule):
-                        logger.info(f"Stale pair suppressed: {p1}+{p2} at departure_dt={departure_dt.isoformat()}")
-                        continue
-
-                # Use absolute datetime overlap check (replaces minutes-from-midnight)
-                if not (
-                    _pair_relevant_dt(p1, p2, origin_schedule, departure_dt, arrival_dt, tz=tz_zone) or
-                    _pair_relevant_dt(p1, p2, dest_schedule, departure_dt, arrival_dt, tz=tz_zone)
-                ):
-                    continue
-
-                plan = build_combination_plan(
-                    p1, p2, origin_schedule, route_mosques,
-                    departure_dt, arrival_dt, dest_schedule, timezone_str,
-                    trip_mode=trip_mode,
-                    prayed_prayers=prayed,
-                    origin_lat=origin_lat,
-                    origin_lng=origin_lng,
-                    dest_lat=dest_lat,
-                    dest_lng=dest_lng,
-                    origin_mosques=origin_mosques,
-                    dest_mosques=dest_mosques,
-                    dest_tz_str=dest_tz_str,
-                )
-                if plan is not None:
-                    prayer_pairs.append(plan)
+        for p1, p2 in [("dhuhr", "asr"), ("maghrib", "isha")]:
+            # A pair is relevant if it overlaps the trip window using EITHER origin OR destination
+            # prayer times. This matters for north-south routes where sunset/prayer times differ
+            # (e.g. San Diego's Maghrib is earlier than Menlo Park's — the pair must not be skipped
+            # just because origin's Maghrib starts after arrival).
+            # For multi-day trips (>24h), always include all pairs.
+            if not multi_day and not (
+                _pair_relevant(p1, p2, origin_schedule, dep_min, arr_min) or
+                _pair_relevant(p1, p2, dest_schedule, dep_min, arr_min)
+            ):
+                continue
+            plan = build_combination_plan(
+                p1, p2, origin_schedule, route_mosques,
+                departure_dt, arrival_dt, dest_schedule, timezone_str,
+                trip_mode=trip_mode,
+                prayed_prayers=prayed,
+                origin_lat=origin_lat,
+                origin_lng=origin_lng,
+                dest_lat=dest_lat,
+                dest_lng=dest_lng,
+                origin_mosques=origin_mosques,
+                dest_mosques=dest_mosques,
+                dest_tz_str=dest_tz_str,
+            )
+            if plan is not None:
+                prayer_pairs.append(plan)
 
     # Fajr (standalone — only if trip overlaps the Fajr prayer window and not already prayed)
-    # For multi-day trips (> 24h), Fajr is always relevant.
-    # Uses absolute datetime overlap check.
-    fajr_relevant = (
-        trip_duration_hours > 24.0 or
-        _prayer_overlaps_trip_dt("fajr", origin_schedule, departure_dt, arrival_dt, tz=tz_zone) or
-        _prayer_overlaps_trip_dt("fajr", dest_schedule, departure_dt, arrival_dt, tz=tz_zone)
-    )
-    if "fajr" not in prayed and fajr_relevant:
+    # For multi-day trips (>24h), Fajr is always relevant since the trip spans a full day cycle.
+    # For overnight/post-midnight trips, extend the arrival window by 60 min to catch Fajr
+    # that starts shortly after arrival (the user will need to pray it at destination).
+    if multi_day:
+        fajr_relevant = True
+    else:
+        # Add a 60-minute buffer to catch Fajr that starts shortly after arrival
+        arr_min_fajr = (arr_min + 60) % 1440
+        fajr_relevant = (
+            _prayer_overlaps_trip("fajr", origin_schedule, dep_min, arr_min_fajr) or
+            _prayer_overlaps_trip("fajr", dest_schedule, dep_min, arr_min_fajr)
+        )
+    # For overnight trips (crossing midnight) or multi-day trips, tomorrow's Fajr
+    # is a separate obligation from today's — don't skip it just because today's was prayed.
+    fajr_prayed_blocks = "fajr" in prayed and departure_dt.date() == arrival_dt.date()
+    if not fajr_prayed_blocks and fajr_relevant:
         fajr_adhan = origin_schedule.get("fajr_adhan")
         fajr_sunrise = origin_schedule.get("sunrise", "sunrise unknown")
         fajr_options = []
@@ -2107,55 +1703,6 @@ async def build_travel_plan(
             if s:
                 best_fajr_m = m
                 break
-        # For overnight trips: if no route mosque matches (because the driver passes them
-        # outside the Fajr window), look for a mosque near where the driver will be AT Fajr time.
-        # Calculate the Fajr time as a datetime, find which checkpoint is nearest in time,
-        # and search for mosques near that point.
-        if not best_fajr_m and trip_duration_hours >= 6:
-            # Find the approximate Fajr datetime during this trip
-            fajr_adhan_m = hhmm_to_minutes(fajr_adhan) if fajr_adhan else 330
-            # Check each day the trip spans for a Fajr occurrence
-            current_day = departure_dt.date()
-            end_day = arrival_dt.date()
-            while current_day <= end_day:
-                fajr_dt = datetime(
-                    current_day.year, current_day.month, current_day.day,
-                    fajr_adhan_m // 60, fajr_adhan_m % 60,
-                    tzinfo=departure_dt.tzinfo,
-                )
-                if departure_dt <= fajr_dt <= arrival_dt:
-                    # Find the route checkpoint nearest to Fajr time
-                    best_cp = None
-                    best_dt_diff = float("inf")
-                    for cp in checkpoints:
-                        diff = abs((cp["time"] - fajr_dt).total_seconds())
-                        if diff < best_dt_diff:
-                            best_dt_diff = diff
-                            best_cp = cp
-                    if best_cp:
-                        # Search route + anchor mosques near this Fajr-time checkpoint
-                        all_fajr_pool = list(route_mosques) + list(origin_mosques or []) + list(dest_mosques or [])
-                        seen_ids: set[str] = set()
-                        for m in sorted(all_fajr_pool, key=lambda x: haversine_km(best_cp["lat"], best_cp["lng"], x["lat"], x["lng"])):
-                            if m["id"] in seen_ids:
-                                continue
-                            seen_ids.add(m["id"])
-                            # Check Fajr at the Fajr time (not arrival time)
-                            s = prayer_status_at_arrival("fajr", m["schedule"], fajr_adhan_m)
-                            if s:
-                                best_fajr_m = m
-                                break
-                    if best_fajr_m:
-                        break
-                current_day += timedelta(days=1)
-
-        # Fall back to anchor mosques near the origin (for pre-dawn departures)
-        if not best_fajr_m and origin_mosques:
-            for m in sorted(origin_mosques, key=lambda m: haversine_km(origin_lat, origin_lng, m["lat"], m["lng"])):
-                s = prayer_status_at_arrival("fajr", m["schedule"], m["local_arrival_minutes"])
-                if s:
-                    best_fajr_m = m
-                    break
         # Fall back to anchor mosques near the destination
         if not best_fajr_m and dest_mosques:
             for m in sorted(dest_mosques, key=lambda m: haversine_km(dest_lat, dest_lng, m["lat"], m["lng"])):
@@ -2165,31 +1712,7 @@ async def build_travel_plan(
                     break
         if best_fajr_m:
             m = best_fajr_m
-            # Try the mosque's actual arrival time first; fall back to Fajr adhan time
-            # (for mosques found via proximity-to-Fajr-time search)
-            fajr_status = prayer_status_at_arrival("fajr", m["schedule"], m["local_arrival_minutes"])
-            if not fajr_status:
-                _fajr_adhan_m = hhmm_to_minutes(fajr_adhan) if fajr_adhan else 330
-                fajr_status = prayer_status_at_arrival("fajr", m["schedule"], _fajr_adhan_m)
-            if not fajr_status:
-                # Construct a minimal status dict as last resort
-                fajr_status = {
-                    "status": "can_pray_solo_at_mosque",
-                    "adhan_time": fajr_adhan,
-                    "iqama_time": m["schedule"].get("fajr_iqama"),
-                }
-            stop = _make_stop(m, "fajr", fajr_status)
-            # Override arrival time for Fajr stops: the driver arrives at Fajr time, not route-pass time
-            _fajr_m = hhmm_to_minutes(fajr_adhan) if fajr_adhan else 330
-            stop["estimated_arrival_time"] = fajr_adhan or f"{_fajr_m // 60:02d}:{_fajr_m % 60:02d}"
-            # Compute minutes_into_trip for the Fajr stop
-            fajr_dt_approx = datetime(
-                departure_dt.date().year, departure_dt.date().month, departure_dt.date().day,
-                _fajr_m // 60, _fajr_m % 60, tzinfo=departure_dt.tzinfo,
-            )
-            if fajr_dt_approx < departure_dt:
-                fajr_dt_approx += timedelta(days=1)
-            stop["minutes_into_trip"] = max(0, int((fajr_dt_approx - departure_dt).total_seconds() / 60))
+            stop = _make_stop(m, "fajr", prayer_status_at_arrival("fajr", m["schedule"], m["local_arrival_minutes"]))
             fajr_options.append({
                 "option_type": "stop_for_fajr",
                 "label": "Stop for Fajr",
