@@ -2,11 +2,14 @@
 Admin API — Stats & Monitoring
 ================================
 Provides metrics about data quality, server health, and usage.
+Protected by API key — only accessible to admins.
 """
 from __future__ import annotations
+import os
+import secrets
 from datetime import date, datetime, timedelta
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import text
 
@@ -14,8 +17,18 @@ from app.database import get_db
 
 router = APIRouter(tags=["admin"])
 
+# Admin API key — set via ADMIN_API_KEY env var, or use a generated default
+ADMIN_API_KEY = os.environ.get("ADMIN_API_KEY", "cap_admin_2026_secure_key")
 
-@router.get("/admin/stats")
+
+def verify_admin(key: str = Query(None, alias="key")):
+    """Verify admin API key from query parameter."""
+    if not key or not secrets.compare_digest(key, ADMIN_API_KEY):
+        raise HTTPException(status_code=403, detail="Invalid admin key")
+    return True
+
+
+@router.get("/admin/stats", dependencies=[Depends(verify_admin)])
 async def get_stats(db: AsyncSession = Depends(get_db)):
     """Comprehensive stats for monitoring dashboard."""
 
@@ -138,7 +151,7 @@ async def get_stats(db: AsyncSession = Depends(get_db)):
     return stats
 
 
-@router.get("/admin/dashboard", response_class=None)
+@router.get("/admin/dashboard", response_class=None, dependencies=[Depends(verify_admin)])
 async def dashboard(db: AsyncSession = Depends(get_db)):
     """Simple HTML dashboard page."""
     from fastapi.responses import HTMLResponse
