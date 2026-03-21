@@ -1641,15 +1641,33 @@ async def build_travel_plan(
     else:
         # ── Musafir mode: pair-based planning with combining options ──
         for p1, p2 in [("dhuhr", "asr"), ("maghrib", "isha")]:
+            # Skip if pair is prayed (sequential inference: p2 prayed → both done)
+            if p2 in prayed or (p1 in prayed and p2 in prayed):
+                continue
+
             # A pair is relevant if it overlaps the trip window using EITHER origin OR destination
-            # prayer times. This matters for north-south routes where sunset/prayer times differ
-            # (e.g. San Diego's Maghrib is earlier than Menlo Park's — the pair must not be skipped
-            # just because origin's Maghrib starts after arrival).
+            # prayer times. This matters for north-south routes where sunset/prayer times differ.
             if not (
                 _pair_relevant(p1, p2, origin_schedule, dep_min, arr_min) or
                 _pair_relevant(p1, p2, dest_schedule, dep_min, arr_min)
             ):
                 continue
+
+            # Skip if BOTH prayers' adhan times already passed before departure.
+            # This handles midnight trips: Maghrib+Isha adhan at 6:30/8:30 PM,
+            # departure at 12 AM — Isha period extends past midnight but both
+            # adhans are in the past. The pair is stale.
+            p1_adhan = origin_schedule.get(f"{p1}_adhan")
+            p2_adhan = origin_schedule.get(f"{p2}_adhan")
+            if p1_adhan and p2_adhan:
+                p1_min = hhmm_to_minutes(p1_adhan)
+                p2_min = hhmm_to_minutes(p2_adhan)
+                # Both adhans before departure AND not a next-day scenario
+                # (both in the evening, departure after midnight)
+                if p1_min < dep_min and p2_min < dep_min and dep_min < 360:
+                    # Departure is before 6 AM and both adhans are PM — skip stale pair
+                    if p1_min > 720 and p2_min > 720:
+                        continue
             plan = build_combination_plan(
                 p1, p2, origin_schedule, route_mosques,
                 departure_dt, arrival_dt, dest_schedule, timezone_str,
