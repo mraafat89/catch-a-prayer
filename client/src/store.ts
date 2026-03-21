@@ -89,6 +89,8 @@ interface AppState {
   setTravelPlan: (p: TravelPlan | null) => void;
   travelPlanLoading: boolean;
   setTravelPlanLoading: (v: boolean) => void;
+  travelPlanError: string | null;
+  setTravelPlanError: (e: string | null) => void;
 
   // Prayed tracker — set<"YYYY-MM-DD:prayer"> persisted in localStorage
   prayedToday: Set<string>;
@@ -162,6 +164,8 @@ export const useStore = create<AppState>((set) => ({
   setTravelPlan: (travelPlan) => set((s) => ({ travelPlan, travelPlanVersion: travelPlan ? s.travelPlanVersion + 1 : s.travelPlanVersion })),
   travelPlanLoading: false,
   setTravelPlanLoading: (travelPlanLoading) => set({ travelPlanLoading }),
+  travelPlanError: null,
+  setTravelPlanError: (travelPlanError) => set({ travelPlanError }),
 
   prayedToday: loadPrayed(),
   togglePrayed: (prayer) => set((state) => {

@@ -1799,6 +1799,7 @@ function DestinationInput() {
   const [searchMode, setSearchMode] = useState(false);
   const [editMode, setEditMode] = useState(false);
   const [longTripModal, setLongTripModal] = useState<number | null>(null); // km distance if long trip
+  const setTravelPlanError = useStore((s) => s.setTravelPlanError);
 
   // Default departure time = right now in local time (datetime-local needs YYYY-MM-DDTHH:mm)
   const defaultDeparture = (() => {
@@ -1955,6 +1956,7 @@ function DestinationInput() {
     if (!originLat || !originLng) return;
 
     setLongTripKm(null);
+    setTravelPlanError(null);
     const depIso = departureInput ? new Date(departureInput).toISOString() : undefined;
     setTravelDepartureTime(depIso || null);
     setTravelPlanLoading(true);
@@ -1998,6 +2000,7 @@ function DestinationInput() {
     } catch {
       setTravelPlan(null);
       useStore.getState().setSelectedItineraryIndex(null);
+      setTravelPlanError('Failed to plan route. Please check your connection and try again.');
     } finally {
       setTravelPlanLoading(false);
     }
@@ -2506,6 +2509,7 @@ function TravelPlanView() {
   const th                = useTheme();
   const travelPlan        = useStore((s) => s.travelPlan);
   const travelPlanLoading = useStore((s) => s.travelPlanLoading);
+  const travelPlanError   = useStore((s) => s.travelPlanError);
   const travelDestination = useStore((s) => s.travelDestination);
 
   if (!travelDestination) return null;
@@ -2522,7 +2526,18 @@ function TravelPlanView() {
     );
   }
 
-  if (!travelPlan) return null;
+  if (!travelPlan) {
+    if (travelPlanError) {
+      return (
+        <div className="mx-3 py-6">
+          <div className="rounded-lg border border-red-200 bg-red-50 p-4 text-center">
+            <p className="text-sm text-red-700">{travelPlanError}</p>
+          </div>
+        </div>
+      );
+    }
+    return null;
+  }
 
   const { route, itineraries } = travelPlan;
   const durationHrs  = Math.floor(route.duration_minutes / 60);
@@ -2967,7 +2982,7 @@ function App() {
     const destLng  = params.get('dest_lng');
     const destName = params.get('dest_name');
     if (destLat && destLng) {
-      useStore.getState().setTravelMode(true);
+      // Set destination only — do NOT change travel mode (PRAYER_LOGIC_RULES §5)
       useStore.getState().setTravelDestination({
         lat: parseFloat(destLat),
         lng: parseFloat(destLng),
@@ -2980,11 +2995,9 @@ function App() {
       const sharedTitle = params.get('title') ?? params.get('text') ?? '';
       const parsed = parseMapShareUrl(sharedUrl);
       if (parsed) {
-        useStore.getState().setTravelMode(true);
         useStore.getState().setTravelDestination(parsed);
       } else if (sharedTitle) {
         // Shortened URL (goo.gl/maps.app.goo.gl) — pre-fill search with title
-        useStore.getState().setTravelMode(true);
         sessionStorage.setItem('cap_pending_dest', sharedTitle);
       }
       handled = true;
@@ -2995,15 +3008,30 @@ function App() {
     }
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Fetch when location, radius, or travel mode changes, and auto-refresh every 5 minutes
+  // Fetch when location, radius, or travel mode changes, and auto-refresh with backoff
+  const refreshFailCount = useRef(0);
   useEffect(() => {
     if (!userLocation) return;
-    fetchData(userLocation.latitude, userLocation.longitude);
-    const interval = setInterval(
-      () => fetchData(userLocation.latitude, userLocation.longitude),
-      5 * 60 * 1000
-    );
-    return () => clearInterval(interval);
+    fetchData(userLocation.latitude, userLocation.longitude)
+      .then(() => { refreshFailCount.current = 0; })
+      .catch(() => { refreshFailCount.current = Math.min(refreshFailCount.current + 1, 3); });
+
+    const BASE_INTERVAL = 5 * 60 * 1000; // 5 minutes
+    let timer: ReturnType<typeof setTimeout>;
+    const scheduleNext = () => {
+      const backoff = BASE_INTERVAL * Math.pow(2, refreshFailCount.current); // 5→10→20→40 min
+      timer = setTimeout(async () => {
+        try {
+          await fetchData(userLocation.latitude, userLocation.longitude);
+          refreshFailCount.current = 0;
+        } catch {
+          refreshFailCount.current = Math.min(refreshFailCount.current + 1, 3);
+        }
+        scheduleNext();
+      }, backoff);
+    };
+    scheduleNext();
+    return () => clearTimeout(timer);
   }, [userLocation, radiusKm, travelModeStore]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Clear travel plan when destination is removed
