@@ -23,8 +23,8 @@ mkdir -p /var/log/cap
 # Daily 4 AM UTC: Database backup
 0 4 * * * /opt/cap/scripts/backup.sh >> /var/log/cap/backup.log 2>&1
 
-# Monthly 1st at 3 AM UTC: Discover new mosques via Google Places
-0 3 1 * * cd /opt/cap && docker compose -f docker-compose.prod.yml exec -T api python -m pipeline.discover_mosques --all --save >> /var/log/cap/discovery.log 2>&1
+# Every 6 months (Jan 1 + Jul 1) at 3 AM UTC: Full mosque discovery (Google + OSM + Mawaqit)
+0 3 1 1,7 * cd /opt/cap && docker compose -f docker-compose.prod.yml exec -T api python -m pipeline.full_discovery --all --save >> /var/log/cap/discovery.log 2>&1
 CRON
 ) | crontab -
 
