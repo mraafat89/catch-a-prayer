@@ -181,6 +181,35 @@ class JumuahSession(Base):
     )
 
 
+class SpecialPrayer(Base):
+    __tablename__ = "special_prayers"
+
+    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=new_uuid)
+    mosque_id: Mapped[str] = mapped_column(UUID(as_uuid=False), ForeignKey("mosques.id", ondelete="CASCADE"), nullable=False)
+
+    prayer_type: Mapped[str] = mapped_column(String(50), nullable=False)  # eid_al_fitr / eid_al_adha / taraweeh / tahajjud
+    valid_date: Mapped[Optional[date]] = mapped_column(Date)
+    valid_from: Mapped[Optional[date]] = mapped_column(Date)
+    valid_until: Mapped[Optional[date]] = mapped_column(Date)
+    session_number: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+
+    prayer_time: Mapped[Optional[str]] = mapped_column(String(5))
+    takbeer_time: Mapped[Optional[str]] = mapped_column(String(5))
+    doors_open_time: Mapped[Optional[str]] = mapped_column(String(5))
+
+    imam_name: Mapped[Optional[str]] = mapped_column(String(200))
+    language: Mapped[Optional[str]] = mapped_column(String(100))
+    location_notes: Mapped[Optional[str]] = mapped_column(Text)
+    special_notes: Mapped[Optional[str]] = mapped_column(Text)
+
+    source: Mapped[Optional[str]] = mapped_column(String(50))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    __table_args__ = (
+        Index("special_prayers_mosque_date_idx", "mosque_id", "valid_date"),
+    )
+
+
 class ScrapingJob(Base):
     __tablename__ = "scraping_jobs"
 
@@ -248,9 +277,11 @@ class PrayerSpot(Base):
     is_indoor: Mapped[Optional[bool]] = mapped_column(Boolean)
     operating_hours: Mapped[Optional[str]] = mapped_column(String(200))
     notes: Mapped[Optional[str]] = mapped_column(Text)
+    website: Mapped[Optional[str]] = mapped_column(String(1000))
 
     # Submission tracking (anonymous)
     submitted_by_session: Mapped[Optional[str]] = mapped_column(String(200))
+    submitted_ip_hash: Mapped[Optional[str]] = mapped_column(String(64))
     submitted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     # Community verification state
@@ -281,6 +312,7 @@ class PrayerSpotVerification(Base):
     spot_id: Mapped[str] = mapped_column(UUID(as_uuid=False), ForeignKey("prayer_spots.id", ondelete="CASCADE"), nullable=False)
 
     session_id: Mapped[str] = mapped_column(String(200), nullable=False)
+    ip_hash: Mapped[Optional[str]] = mapped_column(String(64))
     is_positive: Mapped[bool] = mapped_column(Boolean, nullable=False)
 
     # Checklist of confirmed attributes (flexible JSONB)
