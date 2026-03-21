@@ -36,6 +36,12 @@
       "react-app/jest"
     ]
   },
+  "jest": {
+    "moduleNameMapper": {
+      "^leaflet$": "<rootDir>/src/__mocks__/leaflet.ts",
+      "^react-leaflet$": "<rootDir>/src/__mocks__/react-leaflet.tsx"
+    }
+  },
   "proxy": "http://127.0.0.1:8001",
   "browserslist": {
     "production": [
