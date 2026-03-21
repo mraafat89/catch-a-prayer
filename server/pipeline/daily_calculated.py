@@ -49,9 +49,55 @@ def run(args):
 
     logger.info(f"Generating calculated prayer times for {target_date}")
 
+    # Step 1: Carry forward recent scraped data (separate transaction so it commits)
+    with engine.begin() as conn:
+        carried = conn.execute(text("""
+            INSERT INTO prayer_schedules (
+                id, mosque_id, date,
+                fajr_adhan, fajr_iqama, fajr_adhan_source, fajr_iqama_source,
+                fajr_adhan_confidence, fajr_iqama_confidence,
+                sunrise, sunrise_source,
+                dhuhr_adhan, dhuhr_iqama, dhuhr_adhan_source, dhuhr_iqama_source,
+                dhuhr_adhan_confidence, dhuhr_iqama_confidence,
+                asr_adhan, asr_iqama, asr_adhan_source, asr_iqama_source,
+                asr_adhan_confidence, asr_iqama_confidence,
+                maghrib_adhan, maghrib_iqama, maghrib_adhan_source, maghrib_iqama_source,
+                maghrib_adhan_confidence, maghrib_iqama_confidence,
+                isha_adhan, isha_iqama, isha_adhan_source, isha_iqama_source,
+                isha_adhan_confidence, isha_iqama_confidence,
+                scraped_at, created_at, updated_at
+            )
+            SELECT
+                gen_random_uuid(), ps.mosque_id, :target_date,
+                ps.fajr_adhan, ps.fajr_iqama, ps.fajr_adhan_source, ps.fajr_iqama_source,
+                ps.fajr_adhan_confidence, ps.fajr_iqama_confidence,
+                ps.sunrise, ps.sunrise_source,
+                ps.dhuhr_adhan, ps.dhuhr_iqama, ps.dhuhr_adhan_source, ps.dhuhr_iqama_source,
+                ps.dhuhr_adhan_confidence, ps.dhuhr_iqama_confidence,
+                ps.asr_adhan, ps.asr_iqama, ps.asr_adhan_source, ps.asr_iqama_source,
+                ps.asr_adhan_confidence, ps.asr_iqama_confidence,
+                ps.maghrib_adhan, ps.maghrib_iqama, ps.maghrib_adhan_source, ps.maghrib_iqama_source,
+                ps.maghrib_adhan_confidence, ps.maghrib_iqama_confidence,
+                ps.isha_adhan, ps.isha_iqama, ps.isha_adhan_source, ps.isha_iqama_source,
+                ps.isha_adhan_confidence, ps.isha_iqama_confidence,
+                ps.scraped_at, now(), now()
+            FROM prayer_schedules ps
+            WHERE ps.fajr_adhan_source NOT IN ('calculated')
+              AND ps.date = (
+                  SELECT MAX(ps2.date) FROM prayer_schedules ps2
+                  WHERE ps2.mosque_id = ps.mosque_id
+                    AND ps2.fajr_adhan_source NOT IN ('calculated')
+                    AND ps2.date >= :target_date - 7
+              )
+              AND NOT EXISTS (
+                  SELECT 1 FROM prayer_schedules existing
+                  WHERE existing.mosque_id = ps.mosque_id AND existing.date = :target_date
+              )
+        """), {"target_date": target_date})
+    logger.info(f"Carried forward {carried.rowcount} scraped schedules from past 7 days")
+
+    # Step 2: Generate calculated times for remaining mosques (separate transaction)
     with engine.connect() as conn:
-        # Find mosques that DON'T have a schedule for today
-        # (or have only calculated data that's stale)
         rows = conn.execute(text("""
             SELECT m.id::text, m.name, m.lat, m.lng, m.timezone
             FROM mosques m
@@ -59,9 +105,7 @@ def run(args):
               AND m.lat IS NOT NULL AND m.lng IS NOT NULL
               AND NOT EXISTS (
                   SELECT 1 FROM prayer_schedules ps
-                  WHERE ps.mosque_id = m.id
-                    AND ps.date = :target_date
-                    AND ps.fajr_adhan_source != 'calculated'
+                  WHERE ps.mosque_id = m.id AND ps.date = :target_date
               )
             ORDER BY m.id
         """), {"target_date": target_date}).fetchall()
