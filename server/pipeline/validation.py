@@ -73,6 +73,15 @@ ADHAN_RANGES = {
     "isha_adhan":    (1050, 1380), # 17:30 - 23:00
 }
 
+# Iqama absolute ranges (slightly wider than adhan since iqama is after adhan)
+IQAMA_RANGES = {
+    "fajr_iqama":    (185, 495),   # 03:05 - 08:15
+    "dhuhr_iqama":   (665, 885),   # 11:05 - 14:45
+    "asr_iqama":     (813, 1140),  # 13:33 - 19:00
+    "maghrib_iqama": (962, 1305),  # 16:02 - 21:45
+    "isha_iqama":    (1055, 1410), # 17:35 - 23:30
+}
+
 # Iqama: min gap, max gap (minutes after adhan), and "must be before" field
 IQAMA_LIMITS = {
     "fajr":    (5, 45, "sunrise"),
@@ -168,7 +177,7 @@ def validate_prayer_schedule(
             result.log_issue(key, val, "HH:MM format", f"Malformed time", "nulled")
             cleaned[key] = None
 
-    # --- Step 2: Range validation ---
+    # --- Step 2: Range validation (adhan + iqama) ---
     for field, (min_m, max_m) in ADHAN_RANGES.items():
         val = cleaned.get(field)
         mins = hhmm_to_minutes(val)
@@ -176,7 +185,20 @@ def validate_prayer_schedule(
             result.log_issue(
                 field, val,
                 f"{min_m // 60}:{min_m % 60:02d}-{max_m // 60}:{max_m % 60:02d}",
-                f"Outside valid range", "nulled"
+                f"Outside valid adhan range", "nulled"
+            )
+            cleaned[field] = None
+
+    for field, (min_m, max_m) in IQAMA_RANGES.items():
+        val = cleaned.get(field)
+        if val and val.startswith("+"):
+            continue  # Offsets validated separately
+        mins = hhmm_to_minutes(val)
+        if mins is not None and not (min_m <= mins <= max_m):
+            result.log_issue(
+                field, val,
+                f"{min_m // 60}:{min_m % 60:02d}-{max_m // 60}:{max_m % 60:02d}",
+                f"Outside valid iqama range", "nulled"
             )
             cleaned[field] = None
 
