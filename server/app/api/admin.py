@@ -336,18 +336,22 @@ h2 {{ color: #2e3d44; font-size: 15px; margin-bottom: 8px; }}
 Updated: {stats['server']['timestamp'][:19]} UTC
 </div>
 
-<script>
+<script id="loc-data" type="application/json">""" + locations_json + """</script>"""
+
+    # JavaScript outside the f-string to avoid curly brace conflicts
+    map_script = """<script>
 var map = L.map('heatmap').setView([39.8, -98.5], 4);
-L.tileLayer('https://{{s}}.tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png', {{
-    maxZoom: 18, attribution: '© OpenStreetMap'
-}}).addTo(map);
-var locations = {locations_json};
-if (locations.length > 0) {{
-    L.heatLayer(locations, {{radius: 15, blur: 20, maxZoom: 10, max: 1.0,
-        gradient: {{0.2: '#0d9488', 0.4: '#14b8a6', 0.6: '#f59e0b', 0.8: '#ef4444', 1.0: '#dc2626'}}
-    }}).addTo(map);
-}}
-</script>
-</body></html>"""
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    maxZoom: 18, attribution: '&copy; OpenStreetMap'
+}).addTo(map);
+var locs = JSON.parse(document.getElementById('loc-data').textContent);
+if (locs.length > 0) {
+    L.heatLayer(locs, {radius: 15, blur: 20, maxZoom: 10, max: 1.0,
+        gradient: {0.2: '#0d9488', 0.4: '#14b8a6', 0.6: '#f59e0b', 0.8: '#ef4444', 1.0: '#dc2626'}
+    }).addTo(map);
+}
+</script>"""
+
+    html += map_script + "</body></html>"
 
     return HTMLResponse(content=html)
