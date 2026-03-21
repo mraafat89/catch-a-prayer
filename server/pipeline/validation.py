@@ -73,22 +73,23 @@ ADHAN_RANGES = {
     "isha_adhan":    (1050, 1380), # 17:30 - 23:00
 }
 
-# Iqama absolute ranges (slightly wider than adhan since iqama is after adhan)
+# Iqama absolute ranges (same start as adhan — iqama can equal adhan time)
 IQAMA_RANGES = {
-    "fajr_iqama":    (185, 495),   # 03:05 - 08:15
-    "dhuhr_iqama":   (665, 885),   # 11:05 - 14:45
-    "asr_iqama":     (813, 1140),  # 13:33 - 19:00
-    "maghrib_iqama": (962, 1305),  # 16:02 - 21:45
-    "isha_iqama":    (1055, 1410), # 17:35 - 23:30
+    "fajr_iqama":    (180, 510),   # 03:00 - 08:30
+    "dhuhr_iqama":   (660, 900),   # 11:00 - 15:00
+    "asr_iqama":     (810, 1155),  # 13:30 - 19:15
+    "maghrib_iqama": (960, 1310),  # 16:00 - 21:50
+    "isha_iqama":    (1050, 1420), # 17:30 - 23:40
 }
 
 # Iqama: min gap, max gap (minutes after adhan), and "must be before" field
+# Min gap is 0 for all — some mosques pray immediately at adhan (common for Maghrib)
 IQAMA_LIMITS = {
-    "fajr":    (5, 45, "sunrise"),
-    "dhuhr":   (5, 45, "asr_adhan"),
-    "asr":     (3, 30, "maghrib_adhan"),
-    "maghrib": (2, 15, "isha_adhan"),
-    "isha":    (5, 45, None),
+    "fajr":    (0, 60, "sunrise"),
+    "dhuhr":   (0, 60, "asr_adhan"),
+    "asr":     (0, 45, "maghrib_adhan"),
+    "maghrib": (0, 20, "isha_adhan"),    # Often 0-5 min, especially in Ramadan
+    "isha":    (0, 60, None),
 }
 
 # Minimum gaps between consecutive prayers (minutes)
