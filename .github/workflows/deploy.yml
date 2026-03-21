@@ -73,9 +73,13 @@ jobs:
           script: |
             set -e
             cd ${{ secrets.PROD_PATH || '/opt/cap' }}
+            # NEVER use git reset --hard — it deletes .env files
+            git config pull.rebase false
             git fetch origin main
             git checkout main
-            git pull origin main
+            git pull --no-edit origin main || (git stash && git pull --no-edit origin main)
+            # Verify .env exists (critical for DB connection)
+            test -f server/.env || (echo "ERROR: server/.env missing!" && exit 1)
             docker exec cap-api alembic upgrade head || true
             docker compose -f docker-compose.prod.yml up -d --build api
             cd client && REACT_APP_API_URL=https://catchaprayer.com npm run build
