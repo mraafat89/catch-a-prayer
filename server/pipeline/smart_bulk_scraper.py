@@ -288,8 +288,30 @@ async def scrape_with_playwright(websites: list[dict], engine, save: bool = True
                 await page.goto(url, wait_until="networkidle", timeout=20000)
                 await page.wait_for_timeout(2000)  # let JS finish
 
-                # Get all visible text
+                # Get all visible text from homepage
                 text_content = await page.inner_text("body")
+
+                # If no prayer data on homepage, try common prayer time URLs
+                quick_check = extract_times_from_text(text_content)
+                if len(quick_check.get("adhan", {})) < 3:
+                    prayer_paths = [
+                        "/prayer-times", "/prayers", "/salah-times", "/iqama",
+                        "/prayer-schedule", "/salat", "/prayertimes",
+                        "/iqama-times", "/daily-prayers", "/schedule",
+                    ]
+                    base = url.rstrip("/")
+                    for path in prayer_paths:
+                        try:
+                            await page.goto(base + path, wait_until="networkidle", timeout=8000)
+                            await page.wait_for_timeout(1500)
+                            sub_text = await page.inner_text("body")
+                            sub_check = extract_times_from_text(sub_text)
+                            if len(sub_check.get("adhan", {})) >= 3:
+                                text_content = sub_text
+                                log.info(f"  → Found data at {path}")
+                                break
+                        except Exception:
+                            continue
 
                 # Also check for iframes (prayer widgets often in iframes)
                 iframes = await page.query_selector_all("iframe")
@@ -407,12 +429,12 @@ def _save_to_db(engine, mosque_id: str, data: dict, today: date):
         """), {"mid": mosque_id})
 
         # Save jumuah if found
-        for jtime in data.get("jumuah", [])[:3]:
+        for i, jtime in enumerate(data.get("jumuah", [])[:3]):
             conn.execute(text("""
-                INSERT INTO jumuah_sessions (id, mosque_id, prayer_time, source)
-                VALUES (gen_random_uuid(), :mid, :time, 'playwright_scrape')
+                INSERT INTO jumuah_sessions (id, mosque_id, prayer_start, session_number, source)
+                VALUES (gen_random_uuid(), CAST(:mid AS uuid), :time, :num, 'playwright_scrape')
                 ON CONFLICT DO NOTHING
-            """), {"mid": mosque_id, "time": jtime})
+            """), {"mid": mosque_id, "time": jtime, "num": i + 1})
 
 
 # ---------------------------------------------------------------------------
