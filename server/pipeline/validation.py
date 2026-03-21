@@ -64,22 +64,23 @@ def normalize_time_format(val: str) -> Optional[str]:
 # ---------------------------------------------------------------------------
 
 # Adhan ranges (minutes since midnight)
+# Wide enough for all US/Canada latitudes including Arctic (Inuvik 68°N)
 ADHAN_RANGES = {
-    "fajr_adhan":    (180, 450),   # 03:00 - 07:30
-    "sunrise":       (300, 480),   # 05:00 - 08:00
-    "dhuhr_adhan":   (660, 840),   # 11:00 - 14:00
-    "asr_adhan":     (810, 1110),  # 13:30 - 18:30
-    "maghrib_adhan": (960, 1290),  # 16:00 - 21:30
-    "isha_adhan":    (1050, 1380), # 17:30 - 23:00
+    "fajr_adhan":    (120, 450),   # 02:00 - 07:30 (Arctic: fajr can be very early in summer)
+    "sunrise":       (270, 540),   # 04:30 - 09:00 (Arctic: late sunrise in winter)
+    "dhuhr_adhan":   (660, 920),   # 11:00 - 15:20 (Arctic: solar noon shifts)
+    "asr_adhan":     (780, 1140),  # 13:00 - 19:00
+    "maghrib_adhan": (900, 1350),  # 15:00 - 22:30 (Arctic: very late sunset in summer)
+    "isha_adhan":    (1020, 1439), # 17:00 - 23:59 (Arctic: isha near midnight)
 }
 
 # Iqama absolute ranges (same start as adhan — iqama can equal adhan time)
 IQAMA_RANGES = {
-    "fajr_iqama":    (180, 510),   # 03:00 - 08:30
-    "dhuhr_iqama":   (660, 900),   # 11:00 - 15:00
-    "asr_iqama":     (810, 1155),  # 13:30 - 19:15
-    "maghrib_iqama": (960, 1310),  # 16:00 - 21:50
-    "isha_iqama":    (1050, 1420), # 17:30 - 23:40
+    "fajr_iqama":    (120, 540),   # 02:00 - 09:00
+    "dhuhr_iqama":   (660, 960),   # 11:00 - 16:00
+    "asr_iqama":     (780, 1170),  # 13:00 - 19:30
+    "maghrib_iqama": (900, 1365),  # 15:00 - 22:45
+    "isha_iqama":    (1020, 1439), # 17:00 - 23:59
 }
 
 # Iqama: min gap, max gap (minutes after adhan), and "must be before" field
