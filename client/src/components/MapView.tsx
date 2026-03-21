@@ -398,14 +398,19 @@ const MapView: React.FC = () => {
       <FitBoundsController />
       <LocationButton />
 
-      {/* Trip route polyline */}
-      {routeGeometry && routeGeometry.length > 1 && (
-        <Polyline
-          key={`route-${travelPlanVersion}-${selectedItineraryIndex}`}
-          positions={routeGeometry}
-          pathOptions={{ color: th.hex, weight: 4, opacity: 0.7, dashArray: undefined }}
-        />
-      )}
+      {/* Trip route polyline — key includes geometry hash so reordered waypoints remount */}
+      {routeGeometry && routeGeometry.length > 1 && (() => {
+        // Sample a few points to create a lightweight hash (avoid stringifying thousands of coords)
+        const pts = routeGeometry;
+        const geoHash = `${pts.length}-${pts[0]?.[0]?.toFixed(4)}-${pts[Math.floor(pts.length / 2)]?.[0]?.toFixed(4)}-${pts[pts.length - 1]?.[0]?.toFixed(4)}`;
+        return (
+          <Polyline
+            key={`route-${travelPlanVersion}-${selectedItineraryIndex}-${geoHash}`}
+            positions={routeGeometry}
+            pathOptions={{ color: th.hex, weight: 4, opacity: 0.7, dashArray: undefined }}
+          />
+        );
+      })()}
 
       {/* Single-mosque route — real road geometry from OSRM */}
       {singleMosqueRoute && !travelDestination && (

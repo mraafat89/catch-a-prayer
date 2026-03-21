@@ -51,7 +51,9 @@ function planCacheKey(
 
 function polylineKey(selectedItineraryIndex: number | null, plan: TravelPlan | null, routeGeometry: [number, number][] | null): string {
   if (!routeGeometry || routeGeometry.length < 2) return 'none';
-  return `route-${selectedItineraryIndex}-${plan?.departure_time ?? ''}-${routeGeometry.length}-${routeGeometry[0]?.[0]?.toFixed(4)}-${routeGeometry[routeGeometry.length - 1]?.[0]?.toFixed(4)}`;
+  // Include a hash of all coordinates so reordered waypoints produce different keys
+  const geoHash = routeGeometry.map(p => `${p[0].toFixed(4)},${p[1].toFixed(4)}`).join('|');
+  return `route-${selectedItineraryIndex}-${plan?.departure_time ?? ''}-${geoHash}`;
 }
 
 // Simulate what routeGeometry would be for a given waypoint order
@@ -132,7 +134,7 @@ describe('polyline key uniqueness', () => {
   const A = makeRow('San Jose', 37.3382, -121.8863);
   const B = makeRow('Fresno', 36.7378, -119.7871);
 
-  test.skip('different waypoint orders produce different polyline keys — KNOWN BUG: polyline key does not include waypoint order', () => {
+  test('different waypoint orders produce different polyline keys', () => {
     const wpsAB = buildWps([A, B]);
     const wpsBA = buildWps([B, A]);
 
@@ -156,10 +158,9 @@ describe('polyline key uniqueness', () => {
     expect(key1).toBe(key2);
   });
 
-  test('PROBLEM: same departure_time, same start/end, same length but different middle points = SAME KEY', () => {
-    // This is the bug! The polyline key only uses length + first/last points.
-    // Two routes through the same origin/dest but different waypoint orders could have
-    // the same number of geometry points and same first/last coords → same key → stale polyline!
+  test('different middle points produce different keys (fixed bug)', () => {
+    // Previously this was a bug — same length + endpoints = same key.
+    // Now the key includes all coordinate hashes, so different midpoints = different keys.
     const wpsAB = buildWps([A, B]);
     const wpsBA = buildWps([B, A]);
 
@@ -186,9 +187,8 @@ describe('polyline key uniqueness', () => {
     const keyAB = polylineKey(0, planAB, geomAB);
     const keyBA = polylineKey(0, planBA, geomBA);
 
-    // THIS WILL FAIL — proving the key is not unique enough
-    // Both have same length (4), same first point, same last point, same departure_time
-    expect(keyAB).toBe(keyBA); // They ARE equal — this is the bug!
+    // Fixed: keys now differ because all coordinates are hashed
+    expect(keyAB).not.toBe(keyBA);
   });
 });
 
@@ -344,10 +344,10 @@ describe('id-based matching vs index-based matching', () => {
 });
 
 describe('polyline key edge cases', () => {
-  test('routes with same endpoints but different middle create SAME key (current bug)', () => {
+  test('routes with same endpoints but different middle create DIFFERENT keys (fixed)', () => {
     // Route A→B: origin, A, B, dest (4 points)
     // Route B→A: origin, B, A, dest (4 points)
-    // Both start at origin, end at dest, have length 4
+    // Both start at origin, end at dest, have length 4 — but different midpoints
     const geomAB: [number, number][] = [
       [ORIGIN.lat, ORIGIN.lng], [37.3, -121.8], [36.7, -119.7], [DEST.lat, DEST.lng]
     ];
@@ -361,8 +361,7 @@ describe('polyline key edge cases', () => {
     const key1 = polylineKey(0, plan1, geomAB);
     const key2 = polylineKey(0, plan2, geomBA);
 
-    // CURRENT BUG: keys are equal because only length + first/last are checked
-    expect(key1).toBe(key2);
-    // This means react-leaflet Polyline won't remount → old route stays on map
+    // Fixed: keys now differ — polyline remounts with correct route
+    expect(key1).not.toBe(key2);
   });
 });
