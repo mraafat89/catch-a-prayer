@@ -123,6 +123,50 @@ async def get_stats(db: AsyncSession = Depends(get_db)):
     row = r.mappings().first()
     stats["freshness"] = dict(row) if row else {}
 
+    # === Data freshness ===
+    r = await db.execute(text("""
+        SELECT
+            round(avg(CURRENT_DATE - ps.date), 1) as avg_age_days,
+            max(ps.date)::text as newest,
+            min(ps.date)::text as oldest
+        FROM prayer_schedules ps
+        WHERE ps.fajr_adhan_source != 'calculated'
+    """))
+    row = r.mappings().first()
+    stats["data_freshness"] = dict(row) if row else {}
+
+    # === Mosque locations for heatmap ===
+    r = await db.execute(text("""
+        SELECT lat, lng FROM mosques
+        WHERE is_active AND lat IS NOT NULL AND lng IS NOT NULL
+    """))
+    stats["mosque_locations"] = [[float(row["lat"]), float(row["lng"])] for row in r.mappings()]
+
+    # === Top searched areas (from request metrics) ===
+    # Populated from in-memory request_metrics
+
+    # === Community suggestions ===
+    r = await db.execute(text("""
+        SELECT
+            count(*) as total,
+            count(*) filter (where status = 'pending') as pending,
+            count(*) filter (where status = 'approved') as approved
+        FROM mosque_suggestions
+    """))
+    row = r.mappings().first()
+    stats["suggestions"] = dict(row) if row else {}
+
+    # === Scraper run history ===
+    r = await db.execute(text("""
+        SELECT
+            max(scraped_at)::text as last_scrape,
+            count(*) filter (where scraped_at > now() - interval '7 days') as scraped_this_week,
+            count(*) filter (where scraped_at > now() - interval '24 hours') as scraped_today
+        FROM scraping_jobs WHERE status = 'success'
+    """))
+    row = r.mappings().first()
+    stats["scraper_history"] = dict(row) if row else {}
+
     # === Request metrics (in-memory, since last restart) ===
     try:
         from app.main import request_metrics as rm
@@ -171,71 +215,139 @@ async def dashboard(db: AsyncSession = Depends(get_db)):
         bar = "█" * (pct // 5) + "░" * (20 - pct // 5)
         coverage_rows += f"<tr><td>{s['state']}</td><td>{s['mosques']}</td><td>{s['real_data']}</td><td>{pct}%</td><td style='font-family:monospace'>{bar}</td></tr>"
 
+    import json as _json
+    locations_json = _json.dumps(stats.get("mosque_locations", []))
+    scraper_h = stats.get("scraper_history", {})
+    data_fresh = stats.get("data_freshness", {})
+    suggestions = stats.get("suggestions", {})
+    usage = stats.get("api_usage", {})
+
+    # Requests by hour for chart
+    hours_data = usage.get("requests_by_hour", {})
+    hours_labels = _json.dumps(list(hours_data.keys())[-24:])
+    hours_values = _json.dumps(list(hours_data.values())[-24:])
+
+    # Top endpoints
+    top_ep_rows = ""
+    for ep, count in list(usage.get("top_endpoints", {}).items())[:8]:
+        top_ep_rows += f"<tr><td><code>{ep}</code></td><td>{count}</td></tr>"
+
     html = f"""<!DOCTYPE html>
 <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Catch a Prayer — Dashboard</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://unpkg.com/leaflet.heat/dist/leaflet-heat.js"></script>
 <style>
-body {{ font-family: -apple-system, sans-serif; max-width: 900px; margin: 20px auto; padding: 0 15px; background: #f8fafb; color: #1a1a1a; }}
+body {{ font-family: -apple-system, sans-serif; max-width: 1000px; margin: 20px auto; padding: 0 15px; background: #f8fafb; color: #1a1a1a; }}
 h1 {{ color: #0d9488; margin-bottom: 5px; }}
 .subtitle {{ color: #666; margin-bottom: 20px; }}
-.grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin-bottom: 20px; }}
-.card {{ background: white; border-radius: 12px; padding: 16px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }}
-.card .number {{ font-size: 28px; font-weight: 700; color: #0d9488; }}
-.card .label {{ font-size: 12px; color: #666; margin-top: 4px; }}
+.grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin-bottom: 16px; }}
+.card {{ background: white; border-radius: 12px; padding: 14px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }}
+.card .number {{ font-size: 24px; font-weight: 700; color: #0d9488; }}
+.card .label {{ font-size: 11px; color: #666; margin-top: 3px; }}
 .card.warn .number {{ color: #d97706; }}
+.card.bad .number {{ color: #dc2626; }}
 table {{ width: 100%; border-collapse: collapse; background: white; border-radius: 12px; overflow: hidden; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }}
-th, td {{ padding: 8px 12px; text-align: left; border-bottom: 1px solid #f0f0f0; font-size: 13px; }}
+th, td {{ padding: 6px 10px; text-align: left; border-bottom: 1px solid #f0f0f0; font-size: 12px; }}
 th {{ background: #f8fafb; font-weight: 600; color: #555; }}
-.section {{ margin-top: 24px; }}
-h2 {{ color: #2e3d44; font-size: 16px; margin-bottom: 10px; }}
+.section {{ margin-top: 20px; }}
+h2 {{ color: #2e3d44; font-size: 15px; margin-bottom: 8px; }}
+#heatmap {{ height: 350px; border-radius: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }}
+.two-col {{ display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }}
+@media (max-width: 700px) {{ .two-col {{ grid-template-columns: 1fr; }} }}
 </style></head><body>
 <h1>🕌 Catch a Prayer</h1>
-<p class="subtitle">Data Quality Dashboard — {stats['server']['date']}</p>
+<p class="subtitle">Admin Dashboard — {stats['server']['date']}</p>
 
 <div class="grid">
   <div class="card"><div class="number">{m.get('total',0):,}</div><div class="label">Total Mosques</div></div>
   <div class="card"><div class="number">{m.get('has_website',0):,}</div><div class="label">With Website</div></div>
   <div class="card"><div class="number">{m.get('has_phone',0):,}</div><div class="label">With Phone</div></div>
-  <div class="card"><div class="number">{p.get('real_data',0):,}</div><div class="label">Real Prayer Data (Today)</div></div>
-  <div class="card {'warn' if real_pct < 50 else ''}"><div class="number">{real_pct}%</div><div class="label">Real vs Calculated</div></div>
-  <div class="card"><div class="number">{j.get('mosques_with_jumuah',0)}</div><div class="label">Jumuah Coverage</div></div>
-</div>
-
-<div class="section">
-<h2>Prayer Data Sources (Today)</h2>
-<div class="grid">
+  <div class="card {'warn' if real_pct < 50 else ''}"><div class="number">{real_pct}%</div><div class="label">Real Data Rate</div></div>
+  <div class="card"><div class="number">{p.get('real_data',0):,}</div><div class="label">Real (Today)</div></div>
   <div class="card"><div class="number">{p.get('calculated',0):,}</div><div class="label">Calculated</div></div>
-  <div class="card"><div class="number">{p.get('html_parse',0)}</div><div class="label">HTML Parse (free)</div></div>
-  <div class="card"><div class="number">{p.get('mawaqit',0)}</div><div class="label">Mawaqit API</div></div>
-  <div class="card"><div class="number">{p.get('islamicfinder',0)}</div><div class="label">IslamicFinder</div></div>
-  <div class="card"><div class="number">{p.get('old_scraper',0)}</div><div class="label">Old Scraper</div></div>
-  <div class="card"><div class="number">{p.get('claude_ai',0)}</div><div class="label">Claude AI</div></div>
+  <div class="card"><div class="number">{j.get('mosques_with_jumuah',0)}</div><div class="label">Jumuah</div></div>
+  <div class="card"><div class="number">{suggestions.get('total',0)}</div><div class="label">Suggestions</div></div>
+</div>
+
+<div class="section">
+<h2>🗺️ Mosque Coverage Heatmap</h2>
+<div id="heatmap"></div>
+</div>
+
+<div class="section two-col">
+<div>
+<h2>📊 Data Sources (Today)</h2>
+<table>
+<tr><th>Source</th><th>Count</th></tr>
+<tr><td>Calculated (estimated)</td><td>{p.get('calculated',0):,}</td></tr>
+<tr><td>IslamicFinder</td><td>{p.get('islamicfinder',0)}</td></tr>
+<tr><td>Old Scraper (HTML/JS)</td><td>{p.get('old_scraper',0)}</td></tr>
+<tr><td>Free HTML Parser</td><td>{p.get('html_parse',0)}</td></tr>
+<tr><td>Mawaqit API</td><td>{p.get('mawaqit',0)}</td></tr>
+<tr><td>Claude AI</td><td>{p.get('claude_ai',0)}</td></tr>
+<tr><td>Iframe Widget</td><td>{p.get('iframe_widget',0)}</td></tr>
+</table>
+</div>
+<div>
+<h2>🔧 Scraper Health</h2>
+<table>
+<tr><th>Metric</th><th>Value</th></tr>
+<tr><td>Last scrape</td><td>{scraper_h.get('last_scrape','Never')}</td></tr>
+<tr><td>Scraped this week</td><td>{scraper_h.get('scraped_this_week',0)}</td></tr>
+<tr><td>Scraped today</td><td>{scraper_h.get('scraped_today',0)}</td></tr>
+<tr><td>Avg data age</td><td>{data_fresh.get('avg_age_days','?')} days</td></tr>
+<tr><td>Dead websites</td><td>{stats.get('scraper',{}).get('dead_websites',0)}</td></tr>
+</table>
 </div>
 </div>
 
 <div class="section">
-<h2>Coverage by State</h2>
+<h2>📍 Coverage by State</h2>
 <table>
 <tr><th>State</th><th>Mosques</th><th>Real Data</th><th>%</th><th>Coverage</th></tr>
 {coverage_rows}
 </table>
 </div>
 
-<div class="section">
-<h2>API Usage (since last restart)</h2>
-<div class="grid">
-  <div class="card"><div class="number">{stats.get('api_usage',{}).get('total_requests',0):,}</div><div class="label">Total Requests</div></div>
-  <div class="card"><div class="number">{stats.get('api_usage',{}).get('unique_locations',0)}</div><div class="label">Unique Locations</div></div>
-  <div class="card"><div class="number">{stats.get('api_usage',{}).get('routes_planned',0)}</div><div class="label">Routes Planned</div></div>
-  <div class="card"><div class="number">{stats.get('api_usage',{}).get('avg_latency_ms',0)}ms</div><div class="label">Avg Latency</div></div>
-  <div class="card"><div class="number">{stats.get('api_usage',{}).get('errors_5xx',0)}</div><div class="label">5xx Errors</div></div>
-  <div class="card"><div class="number">{stats.get('api_usage',{}).get('spots_submitted',0)}</div><div class="label">Spots Submitted</div></div>
+<div class="section two-col">
+<div>
+<h2>🌐 API Usage</h2>
+<div class="grid" style="grid-template-columns: repeat(3, 1fr);">
+  <div class="card"><div class="number">{usage.get('total_requests',0):,}</div><div class="label">Requests</div></div>
+  <div class="card"><div class="number">{usage.get('unique_locations',0)}</div><div class="label">Unique Locations</div></div>
+  <div class="card"><div class="number">{usage.get('avg_latency_ms',0)}ms</div><div class="label">Avg Latency</div></div>
+  <div class="card"><div class="number">{usage.get('routes_planned',0)}</div><div class="label">Routes</div></div>
+  <div class="card {'bad' if usage.get('errors_5xx',0) > 0 else ''}"><div class="number">{usage.get('errors_5xx',0)}</div><div class="label">5xx Errors</div></div>
+  <div class="card"><div class="number">{usage.get('spots_submitted',0)}</div><div class="label">Spots</div></div>
+</div>
+</div>
+<div>
+<h2>🔥 Top Endpoints</h2>
+<table>
+<tr><th>Endpoint</th><th>Hits</th></tr>
+{top_ep_rows if top_ep_rows else '<tr><td colspan="2" style="color:#999">No requests yet</td></tr>'}
+</table>
 </div>
 </div>
 
-<div class="section" style="margin-top:20px;color:#999;font-size:12px;text-align:center;">
-Updated: {stats['server']['timestamp'][:19]} UTC | Tracking since: {stats.get('api_usage',{}).get('tracking_since','N/A')[:19]}
+<div class="section" style="color:#999;font-size:11px;text-align:center;margin-top:20px;">
+Updated: {stats['server']['timestamp'][:19]} UTC
 </div>
+
+<script>
+var map = L.map('heatmap').setView([39.8, -98.5], 4);
+L.tileLayer('https://{{s}}.tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png', {{
+    maxZoom: 18, attribution: '© OpenStreetMap'
+}}).addTo(map);
+var locations = {locations_json};
+if (locations.length > 0) {{
+    L.heatLayer(locations, {{radius: 15, blur: 20, maxZoom: 10, max: 1.0,
+        gradient: {{0.2: '#0d9488', 0.4: '#14b8a6', 0.6: '#f59e0b', 0.8: '#ef4444', 1.0: '#dc2626'}}
+    }}).addTo(map);
+}}
+</script>
 </body></html>"""
 
     return HTMLResponse(content=html)
