@@ -124,10 +124,19 @@ def extract_times_from_text(text_content: str) -> dict:
             # If no times on this line, check next line only
             times = TIME_RE.findall(lines[i + 1])
 
-        if len(times) >= 2:
+        # Determine if line mentions "iqama" — if so, the time is iqama not adhan
+        is_iqama_line = any(w in line_lower for w in ["iqama", "iqamah", "iqamaat", "congregation"])
+
+        if len(times) >= 2 and not is_iqama_line:
             # First time = adhan, second = iqama (common pattern)
             results["adhan"][found_prayer] = _normalize_time(*times[0])
             results["iqama"][found_prayer] = _normalize_time(*times[1])
+        elif len(times) >= 1 and is_iqama_line:
+            # "Fajr: Iqamah 06:15 AM" — this is an iqama time
+            results["iqama"][found_prayer] = _normalize_time(*times[0])
+        elif len(times) >= 2 and is_iqama_line:
+            # Two times on an iqama line — unlikely but take first
+            results["iqama"][found_prayer] = _normalize_time(*times[0])
         elif len(times) == 1:
             results["adhan"][found_prayer] = _normalize_time(*times[0])
             # Check for iqama offset: "+15", "20 min after athan"
