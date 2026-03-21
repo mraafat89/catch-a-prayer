@@ -2179,6 +2179,17 @@ async def build_travel_plan(
                     "iqama_time": m["schedule"].get("fajr_iqama"),
                 }
             stop = _make_stop(m, "fajr", fajr_status)
+            # Override arrival time for Fajr stops: the driver arrives at Fajr time, not route-pass time
+            _fajr_m = hhmm_to_minutes(fajr_adhan) if fajr_adhan else 330
+            stop["estimated_arrival_time"] = fajr_adhan or f"{_fajr_m // 60:02d}:{_fajr_m % 60:02d}"
+            # Compute minutes_into_trip for the Fajr stop
+            fajr_dt_approx = datetime(
+                departure_dt.date().year, departure_dt.date().month, departure_dt.date().day,
+                _fajr_m // 60, _fajr_m % 60, tzinfo=departure_dt.tzinfo,
+            )
+            if fajr_dt_approx < departure_dt:
+                fajr_dt_approx += timedelta(days=1)
+            stop["minutes_into_trip"] = max(0, int((fajr_dt_approx - departure_dt).total_seconds() / 60))
             fajr_options.append({
                 "option_type": "stop_for_fajr",
                 "label": "Stop for Fajr",
