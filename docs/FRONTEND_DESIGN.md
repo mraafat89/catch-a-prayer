@@ -129,7 +129,7 @@ All elements (pill, search bar, chip, form) are standardized to `h-12` (48px) to
    - "Add stop" button between From and destination (up to 4 stops)
    - Waypoint rows have a stable `id`; React key uses `wp.id` (not index); all reorder callbacks match by `r.id === wp.id`
    - Plan My Prayers button (disabled while loading)
-   - Long-trip Musafir suggestion: trips > 160 km in Muqeem mode → modal dialog (not inline banner)
+   - Long-trip Musafir suggestion: trips > 80 km in Muqeem mode → modal dialog (not inline banner)
 
 **Form field labels (no emoji icons):**
 - Destination: `placeholder="Where to?"` — no prefix label
@@ -146,7 +146,7 @@ Clears all trip state, sets `tripPlannerOpen(false)` synchronously, resets `sele
 `planCacheRef` (Map) keyed by `mode|origin|dest|waypoints|departure`. Auto-replans on Muqeem ↔ Musafir toggle using cache. Cache is cleared on `clearAll()`.
 
 **Long-trip modal:**
-When a trip > 160 km is planned in Muqeem mode, a centered modal dialog appears asking the user to switch to Musafir or continue as Muqeem — does NOT open the edit form.
+When a trip > 80 km (~48 miles) is planned in Muqeem mode, a centered modal dialog appears asking the user to switch to Musafir or continue as Muqeem — does NOT open the edit form. Distance is shown in km for Canadian users and miles for US users (auto-detected from device timezone).
 
 ### ModeToggle
 
