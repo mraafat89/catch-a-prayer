@@ -511,6 +511,11 @@ async def dashboard(db: AsyncSession = Depends(get_db)):
 <td><button onclick="reviewAction('{s['id']}','accept')" style="background:#16a34a;color:white;border:none;border-radius:4px;padding:3px 8px;cursor:pointer;font-size:11px;">✓</button>
 <button onclick="reviewAction('{s['id']}','reject')" style="background:#dc2626;color:white;border:none;border-radius:4px;padding:3px 8px;cursor:pointer;font-size:11px;">✗</button></td></tr>"""
 
+    ua = stats.get("user_activity", {})
+    ps = stats.get("prayer_spots", {})
+    wh = stats.get("website_health", {})
+    vt = stats.get("validation_today", {})
+
     html = f"""<!DOCTYPE html>
 <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Catch a Prayer — Dashboard</title>
@@ -519,184 +524,138 @@ async def dashboard(db: AsyncSession = Depends(get_db)):
 <script src="https://unpkg.com/leaflet.heat/dist/leaflet-heat.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
 <style>
-body {{ font-family: -apple-system, sans-serif; max-width: 1000px; margin: 20px auto; padding: 0 15px; background: #f8fafb; color: #1a1a1a; }}
-h1 {{ color: #0d9488; margin-bottom: 5px; }}
-.subtitle {{ color: #666; margin-bottom: 20px; }}
-.grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin-bottom: 16px; }}
-.card {{ background: white; border-radius: 12px; padding: 14px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }}
-.card .number {{ font-size: 24px; font-weight: 700; color: #0d9488; }}
-.card .label {{ font-size: 11px; color: #666; margin-top: 3px; }}
-.card.warn .number {{ color: #d97706; }}
-.card.bad .number {{ color: #dc2626; }}
-table {{ width: 100%; border-collapse: collapse; background: white; border-radius: 12px; overflow: hidden; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }}
-th, td {{ padding: 6px 10px; text-align: left; border-bottom: 1px solid #f0f0f0; font-size: 12px; }}
-th {{ background: #f8fafb; font-weight: 600; color: #555; }}
-.section {{ margin-top: 20px; }}
-h2 {{ color: #2e3d44; font-size: 15px; margin-bottom: 8px; }}
-#heatmap {{ height: 350px; border-radius: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }}
-.two-col {{ display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }}
-@media (max-width: 700px) {{ .two-col {{ grid-template-columns: 1fr; }} .section > div[style*="grid-template-columns: 1fr 1fr 1fr"] {{ grid-template-columns: 1fr !important; }} }}
+*{{box-sizing:border-box}}
+body{{font-family:-apple-system,BlinkMacSystemFont,sans-serif;max-width:600px;margin:0 auto;padding:12px;background:#f5f6f8;color:#1a1a1a;font-size:13px}}
+h1{{color:#0d9488;font-size:20px;margin:0 0 2px}}
+.sub{{color:#888;font-size:11px;margin-bottom:14px}}
+.row{{display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:8px;margin-bottom:14px}}
+.c{{background:white;border-radius:10px;padding:10px;box-shadow:0 1px 2px rgba(0,0,0,.08);text-align:center}}
+.c .n{{font-size:20px;font-weight:700;color:#0d9488}}
+.c .l{{font-size:9px;color:#888;margin-top:2px}}
+.c.w .n{{color:#d97706}}
+.c.b .n{{color:#dc2626}}
+.sect{{margin-top:16px}}
+h2{{color:#2e3d44;font-size:14px;margin:0 0 8px;font-weight:600}}
+.chart-box{{background:white;border-radius:10px;padding:10px;box-shadow:0 1px 2px rgba(0,0,0,.08);margin-bottom:8px}}
+.tabs{{display:flex;gap:4px;margin-bottom:8px;flex-wrap:wrap}}
+.tab{{padding:5px 10px;border-radius:6px;border:1px solid #ddd;background:white;cursor:pointer;font-size:11px;color:#555}}
+.tab.on{{background:#0d9488;color:white;border-color:#0d9488}}
+table{{width:100%;border-collapse:collapse;background:white;border-radius:10px;overflow:hidden;box-shadow:0 1px 2px rgba(0,0,0,.08)}}
+th,td{{padding:5px 8px;text-align:left;border-bottom:1px solid #f0f0f0;font-size:11px}}
+th{{background:#f8f9fa;font-weight:600;color:#666}}
+#heatmap{{height:280px;border-radius:10px;box-shadow:0 1px 2px rgba(0,0,0,.08)}}
 </style></head><body>
+
 <h1>Catch a Prayer</h1>
-<p class="subtitle">Admin Dashboard &mdash; {stats['server']['date']}</p>
+<p class="sub">{stats['server']['date']} &mdash; <span id="refresh-timer">refreshes in 60s</span></p>
 
-<div class="grid">
-  <div class="card"><div class="number">{m.get('total',0):,}</div><div class="label">Total Mosques</div></div>
-  <div class="card"><div class="number">{m.get('has_website',0):,}</div><div class="label">With Website</div></div>
-  <div class="card"><div class="number">{m.get('has_phone',0):,}</div><div class="label">With Phone</div></div>
-  <div class="card {'warn' if real_pct < 50 else ''}"><div class="number">{real_pct}%</div><div class="label">Real Data Rate</div></div>
-  <div class="card"><div class="number">{p.get('real_data',0):,}</div><div class="label">Real (Today)</div></div>
-  <div class="card"><div class="number">{p.get('calculated',0):,}</div><div class="label">Calculated</div></div>
-  <div class="card"><div class="number">{j.get('mosques_with_jumuah',0)}</div><div class="label">Jumuah</div></div>
-  <div class="card"><div class="number">{suggestions.get('total',0)}</div><div class="label">Suggestions</div></div>
+<!-- Key metrics -->
+<div class="row">
+  <div class="c"><div class="n">{m.get('total',0):,}</div><div class="l">Mosques</div></div>
+  <div class="c {'w' if real_pct < 50 else ''}"><div class="n">{real_pct}%</div><div class="l">Real Data</div></div>
+  <div class="c"><div class="n">{ua.get('users_today',0)}</div><div class="l">Users Today</div></div>
+  <div class="c {'b' if usage.get('errors_5xx',0) > 0 else ''}"><div class="n">{usage.get('errors_5xx',0)}</div><div class="l">Errors</div></div>
+</div>
+<div class="row">
+  <div class="c"><div class="n">{p.get('real_data',0):,}</div><div class="l">Real</div></div>
+  <div class="c"><div class="n">{p.get('calculated',0):,}</div><div class="l">Calculated</div></div>
+  <div class="c"><div class="n">{wh.get('alive',0):,}</div><div class="l">Sites Alive</div></div>
+  <div class="c"><div class="n">{vt.get('total_issues',0)}</div><div class="l">Validation</div></div>
 </div>
 
-<div class="section">
-<h2>Trends (14 Days)</h2>
-<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;">
-<div style="background:white;border-radius:12px;padding:12px;box-shadow:0 1px 3px rgba(0,0,0,0.1);">
-<div style="font-size:11px;color:#666;margin-bottom:6px;">Real Data %</div>
-<canvas id="trend-real" height="120"></canvas>
+<!-- Trend chart with tabs -->
+<div class="sect">
+<h2>Trends</h2>
+<div class="tabs">
+  <div class="tab on" onclick="showTrend('real')">Data Quality</div>
+  <div class="tab" onclick="showTrend('traffic')">Traffic</div>
+  <div class="tab" onclick="showTrend('scraper')">Scraper</div>
 </div>
-<div style="background:white;border-radius:12px;padding:12px;box-shadow:0 1px 3px rgba(0,0,0,0.1);">
-<div style="font-size:11px;color:#666;margin-bottom:6px;">Scraper Activity</div>
-<canvas id="trend-scraper" height="120"></canvas>
-</div>
-<div style="background:white;border-radius:12px;padding:12px;box-shadow:0 1px 3px rgba(0,0,0,0.1);">
-<div style="font-size:11px;color:#666;margin-bottom:6px;">Validation Issues</div>
-<canvas id="trend-validation" height="120"></canvas>
-</div>
+<div class="chart-box">
+  <canvas id="trend-chart" height="160"></canvas>
 </div>
 </div>
 
-<div class="section">
-<h2>Heatmaps</h2>
-<div style="margin-bottom:8px;">
-<button onclick="showLayer('mosques')" id="btn-mosques" style="padding:6px 12px;border-radius:8px;border:1px solid #0d9488;background:#0d9488;color:white;cursor:pointer;margin-right:4px;font-size:12px;">Mosques</button>
-<button onclick="showLayer('searches')" id="btn-searches" style="padding:6px 12px;border-radius:8px;border:1px solid #2563eb;background:white;color:#2563eb;cursor:pointer;margin-right:4px;font-size:12px;">User Searches</button>
-<button onclick="showLayer('routes')" id="btn-routes" style="padding:6px 12px;border-radius:8px;border:1px solid #7c3aed;background:white;color:#7c3aed;cursor:pointer;margin-right:4px;font-size:12px;">Route Planning</button>
-<button onclick="showLayer('gaps')" id="btn-gaps" style="padding:6px 12px;border-radius:8px;border:1px solid #dc2626;background:white;color:#dc2626;cursor:pointer;font-size:12px;" title="Areas where users searched but fewer than 3 mosques exist within ~10km">Coverage Gaps</button>
+<!-- Heatmap -->
+<div class="sect">
+<h2>Map</h2>
+<div class="tabs">
+  <div class="tab on" id="btn-mosques" onclick="showLayer('mosques')">Mosques</div>
+  <div class="tab" id="btn-searches" onclick="showLayer('searches')">Searches</div>
+  <div class="tab" id="btn-routes" onclick="showLayer('routes')">Routes</div>
+  <div class="tab" id="btn-gaps" onclick="showLayer('gaps')" title="Areas where users searched but fewer than 3 mosques nearby">Gaps</div>
 </div>
 <div id="heatmap"></div>
-<p id="heatmap-label" style="font-size:11px;color:#666;margin-top:4px;"></p>
+<p id="heatmap-label" style="font-size:10px;color:#888;margin:4px 0 0;"></p>
 </div>
 
-<div class="section two-col">
-<div>
-<h2>Data Sources (Today)</h2>
+<!-- Data sources + scraper health -->
+<div class="sect">
+<h2>Data Sources</h2>
 <table>
-<tr><th>Source</th><th>Count</th></tr>
-<tr><td>Calculated (estimated)</td><td>{p.get('calculated',0):,}</td></tr>
-<tr><td>IslamicFinder</td><td>{p.get('islamicfinder',0)}</td></tr>
-<tr><td>Old Scraper (HTML/JS)</td><td>{p.get('old_scraper',0)}</td></tr>
-<tr><td>Free HTML Parser</td><td>{p.get('html_parse',0)}</td></tr>
-<tr><td>Mawaqit API</td><td>{p.get('mawaqit',0)}</td></tr>
-<tr><td>Claude AI</td><td>{p.get('claude_ai',0)}</td></tr>
-<tr><td>Iframe Widget</td><td>{p.get('iframe_widget',0)}</td></tr>
+<tr><th>Source</th><th>Count</th><th>Source</th><th>Count</th></tr>
+<tr><td>Calculated</td><td>{p.get('calculated',0):,}</td><td>IslamicFinder</td><td>{p.get('islamicfinder',0)}</td></tr>
+<tr><td>HTML Scraper</td><td>{p.get('old_scraper',0) + p.get('html_parse',0)}</td><td>Mawaqit API</td><td>{p.get('mawaqit',0)}</td></tr>
+<tr><td>Playwright</td><td>{stats.get('scraper_methods',{}).get('playwright_scrape',0)}</td><td>Jina Reader</td><td>{stats.get('scraper_methods',{}).get('jina_reader',0)}</td></tr>
 </table>
-</div>
-<div>
-<h2>Scraper Health</h2>
-<table>
-<tr><th>Metric</th><th>Value</th></tr>
-<tr><td>Last scrape</td><td>{scraper_h.get('last_scrape','Never')}</td></tr>
-<tr><td>Scraped this week</td><td>{scraper_h.get('scraped_this_week',0)}</td></tr>
-<tr><td>Scraped today</td><td>{scraper_h.get('scraped_today',0)}</td></tr>
-<tr><td>Avg data age</td><td>{data_fresh.get('avg_age_days','?')} days</td></tr>
-<tr><td>Alive websites</td><td>{stats.get('website_health',{}).get('alive',0)}</td></tr>
-<tr><td>Dead websites</td><td>{stats.get('website_health',{}).get('dead',0)}</td></tr>
-<tr><td>Validation issues (today)</td><td>{stats.get('validation_today',{}).get('total_issues',0)}</td></tr>
-</table>
-</div>
 </div>
 
-<div class="section">
-<h2>Coverage by State</h2>
+<!-- Scraper + User Activity side by side -->
+<div class="sect">
+<h2>Activity</h2>
 <table>
-<tr><th>State</th><th>Mosques</th><th>Real Data</th><th>%</th><th>Coverage</th></tr>
+<tr><th>Metric</th><th>Today</th><th>This Week</th></tr>
+<tr><td>Unique Users</td><td>{ua.get('users_today',0)}</td><td>{ua.get('users_this_week',0)}</td></tr>
+<tr><td>Searches</td><td>{ua.get('searches_today',0)}</td><td>-</td></tr>
+<tr><td>Routes Planned</td><td>{ua.get('routes_today',0)}</td><td>-</td></tr>
+<tr><td>Scrapes</td><td>{scraper_h.get('scraped_today',0)}</td><td>{scraper_h.get('scraped_this_week',0)}</td></tr>
+<tr><td>Prayer Spots</td><td>{ps.get('added_today',0)}</td><td>{ps.get('added_this_week',0)} / {ps.get('total',0)} total</td></tr>
+<tr><td>Suggestions</td><td>-</td><td>{suggestions.get('pending',0)} pending / {suggestions.get('approved',0)} approved</td></tr>
+</table>
+</div>
+
+<!-- Coverage by state (collapsible) -->
+<div class="sect">
+<details>
+<summary style="cursor:pointer;font-weight:600;color:#2e3d44;font-size:14px;">Coverage by State</summary>
+<table style="margin-top:8px">
+<tr><th>State</th><th>Mosques</th><th>Real</th><th>%</th><th>Bar</th></tr>
 {coverage_rows}
 </table>
+</details>
 </div>
 
-<div class="section two-col">
-<div>
-<h2>User Activity</h2>
+<!-- Review queue -->
+<div class="sect">
+<details {'open' if review_rows else ''}>
+<summary style="cursor:pointer;font-weight:600;color:#2e3d44;font-size:14px;">Review Queue ({len(pending_suggestions)})</summary>
+{f'<table style="margin-top:8px"><tr><th>Mosque</th><th>Field</th><th>Current</th><th>Suggested</th><th>Votes</th><th></th></tr>{review_rows}</table>' if review_rows else '<p style="color:#999;font-size:11px;margin-top:8px;">No pending suggestions</p>'}
+</details>
+</div>
+
+<!-- System details (collapsible) -->
+<div class="sect">
+<details>
+<summary style="cursor:pointer;font-weight:600;color:#2e3d44;font-size:14px;">System Details</summary>
+<div style="margin-top:8px">
 <table>
 <tr><th>Metric</th><th>Value</th></tr>
-<tr><td>Users today</td><td>{stats.get('user_activity',{}).get('users_today',0)}</td></tr>
-<tr><td>Users this week</td><td>{stats.get('user_activity',{}).get('users_this_week',0)}</td></tr>
-<tr><td>Searches today</td><td>{stats.get('user_activity',{}).get('searches_today',0)}</td></tr>
-<tr><td>Routes today</td><td>{stats.get('user_activity',{}).get('routes_today',0)}</td></tr>
+<tr><td>Total Requests</td><td>{usage.get('total_requests',0):,}</td></tr>
+<tr><td>Avg Latency</td><td>{usage.get('avg_latency_ms',0)}ms</td></tr>
+<tr><td>Dead Websites</td><td>{wh.get('dead',0)}</td></tr>
+<tr><td>Avg Data Age</td><td>{data_fresh.get('avg_age_days','?')} days</td></tr>
+<tr><td>Last Scrape</td><td>{scraper_h.get('last_scrape','Never')}</td></tr>
+<tr><td>Jumuah Mosques</td><td>{j.get('mosques_with_jumuah',0)}</td></tr>
+<tr><td>With Website</td><td>{m.get('has_website',0):,}</td></tr>
+<tr><td>With Phone</td><td>{m.get('has_phone',0):,}</td></tr>
 </table>
 </div>
-<div>
-<h2>Prayer Spots</h2>
-<table>
-<tr><th>Metric</th><th>Value</th></tr>
-<tr><td>Total spots</td><td>{stats.get('prayer_spots',{}).get('total',0)}</td></tr>
-<tr><td>Added this week</td><td>{stats.get('prayer_spots',{}).get('added_this_week',0)}</td></tr>
-<tr><td>Added today</td><td>{stats.get('prayer_spots',{}).get('added_today',0)}</td></tr>
-<tr><td>Suggestions pending</td><td>{suggestions.get('pending',0)}</td></tr>
-<tr><td>Suggestions approved</td><td>{suggestions.get('approved',0)}</td></tr>
-</table>
-</div>
+</details>
 </div>
 
-<div class="section">
-<h2>Review Queue ({len(pending_suggestions)} pending)</h2>
-{f'''<table>
-<tr><th>Mosque</th><th>Field</th><th>Current</th><th>Suggested</th><th>Votes</th><th>Date</th><th>Action</th></tr>
-{review_rows}
-</table>''' if review_rows else '<p style="color:#999;font-size:12px;">No pending suggestions</p>'}
-</div>
-
-<div class="section two-col">
-<div>
-<h2>API Usage</h2>
-<div class="grid" style="grid-template-columns: repeat(3, 1fr);">
-  <div class="card"><div class="number">{usage.get('total_requests',0):,}</div><div class="label">Requests</div></div>
-  <div class="card"><div class="number">{usage.get('unique_locations',0)}</div><div class="label">Unique Locations</div></div>
-  <div class="card"><div class="number">{usage.get('avg_latency_ms',0)}ms</div><div class="label">Avg Latency</div></div>
-  <div class="card"><div class="number">{usage.get('routes_planned',0)}</div><div class="label">Routes</div></div>
-  <div class="card {'bad' if usage.get('errors_5xx',0) > 0 else ''}"><div class="number">{usage.get('errors_5xx',0)}</div><div class="label">5xx Errors</div></div>
-  <div class="card"><div class="number">{usage.get('spots_submitted',0)}</div><div class="label">Spots</div></div>
-</div>
-</div>
-<div>
-<h2>Top Endpoints</h2>
-<table>
-<tr><th>Endpoint</th><th>Hits</th></tr>
-{top_ep_rows if top_ep_rows else '<tr><td colspan="2" style="color:#999">No requests yet</td></tr>'}
-</table>
-</div>
-</div>
-
-<div class="section">
-<h2>Live Traffic (Hourly — Last 48h)</h2>
-<div style="background:white;border-radius:12px;padding:14px;box-shadow:0 1px 3px rgba(0,0,0,0.1);">
-<canvas id="traffic-chart" height="180"></canvas>
-</div>
-</div>
-
-<div class="section two-col">
-<div>
-<h2>Daily Volume (Last 30 Days)</h2>
-<div style="background:white;border-radius:12px;padding:14px;box-shadow:0 1px 3px rgba(0,0,0,0.1);">
-<canvas id="daily-chart" height="200"></canvas>
-</div>
-</div>
-<div>
-<h2>Latency by Endpoint (24h)</h2>
-<table>
-<tr><th>Endpoint</th><th>Hits</th><th>Avg</th><th>P95</th><th>Max</th></tr>
-{ep_latency_rows if ep_latency_rows else '<tr><td colspan="5" style="color:#999">No data yet</td></tr>'}
-</table>
-</div>
-</div>
-
-<div class="section" style="color:#999;font-size:11px;text-align:center;margin-top:20px;">
-Updated: {stats['server']['timestamp'][:19]} UTC — <span id="refresh-timer">auto-refresh in 60s</span>
-</div>
+<p style="color:#aaa;font-size:10px;text-align:center;margin-top:20px;">
+{stats['server']['timestamp'][:19]} UTC
+</p>
 
 <script id="loc-data" type="application/json">""" + locations_json + """</script>
 <script id="search-data" type="application/json">""" + _json.dumps(stats.get("user_searches", [])) + """</script>
@@ -728,85 +687,50 @@ function reviewAction(id, action) {{
 </script>"""
 
     chart_script = """<script>
-// --- Traffic chart (requests + latency dual axis) ---
-var hLabels = JSON.parse(document.getElementById('hourly-labels').textContent);
-var hReqs = JSON.parse(document.getElementById('hourly-reqs').textContent);
-var hLatency = JSON.parse(document.getElementById('hourly-latency').textContent);
-var hErrors = JSON.parse(document.getElementById('hourly-errors').textContent);
-
-new Chart(document.getElementById('traffic-chart'), {
-    type: 'line',
-    data: {
-        labels: hLabels,
-        datasets: [
-            {label:'Requests', data:hReqs, borderColor:'#0d9488', backgroundColor:'rgba(13,148,136,0.1)', fill:true, tension:0.3, yAxisID:'y'},
-            {label:'Avg Latency (ms)', data:hLatency, borderColor:'#f59e0b', borderDash:[5,3], tension:0.3, yAxisID:'y1'},
-            {label:'Errors', data:hErrors, borderColor:'#dc2626', backgroundColor:'rgba(220,38,38,0.2)', type:'bar', yAxisID:'y'}
-        ]
+// --- Tabbed trend chart ---
+var trendData = {
+    real: {
+        type:'line',
+        data:{labels:JSON.parse(document.getElementById('trend-real-labels').textContent),
+            datasets:[{label:'Real Data %',data:JSON.parse(document.getElementById('trend-real-values').textContent),
+                borderColor:'#0d9488',backgroundColor:'rgba(13,148,136,0.1)',fill:true,tension:0.3,pointRadius:3}]},
+        options:{responsive:true,plugins:{legend:{display:false}},
+            scales:{y:{beginAtZero:true,max:100,ticks:{callback:function(v){return v+'%'}}},x:{ticks:{font:{size:9}}}}}
     },
-    options: {
-        responsive:true, interaction:{intersect:false, mode:'index'},
-        scales: {
-            y: {position:'left', title:{display:true, text:'Requests / Errors'}, beginAtZero:true},
-            y1: {position:'right', title:{display:true, text:'Latency (ms)'}, beginAtZero:true, grid:{drawOnChartArea:false}}
-        },
-        plugins: {legend:{position:'bottom', labels:{boxWidth:12, font:{size:11}}}}
+    traffic: {
+        type:'line',
+        data:{labels:JSON.parse(document.getElementById('hourly-labels').textContent),
+            datasets:[
+                {label:'Requests',data:JSON.parse(document.getElementById('hourly-reqs').textContent),borderColor:'#0d9488',backgroundColor:'rgba(13,148,136,0.1)',fill:true,tension:0.3},
+                {label:'Errors',data:JSON.parse(document.getElementById('hourly-errors').textContent),borderColor:'#dc2626',type:'bar'}]},
+        options:{responsive:true,interaction:{intersect:false,mode:'index'},
+            scales:{y:{beginAtZero:true},x:{ticks:{font:{size:8},maxRotation:45}}},
+            plugins:{legend:{position:'bottom',labels:{boxWidth:8,font:{size:10}}}}}
+    },
+    scraper: {
+        type:'bar',
+        data:{labels:JSON.parse(document.getElementById('trend-scraper-labels').textContent),
+            datasets:[
+                {label:'Success',data:JSON.parse(document.getElementById('trend-scraper-success').textContent),backgroundColor:'rgba(13,148,136,0.7)',borderRadius:3},
+                {label:'Failed',data:JSON.parse(document.getElementById('trend-scraper-failed').textContent),backgroundColor:'rgba(220,38,38,0.5)',borderRadius:3}]},
+        options:{responsive:true,scales:{x:{stacked:true,ticks:{font:{size:9}}},y:{stacked:true,beginAtZero:true}},
+            plugins:{legend:{position:'bottom',labels:{boxWidth:8,font:{size:10}}}}}
     }
-});
+};
 
-// --- Daily volume bar chart ---
-var dLabels = JSON.parse(document.getElementById('daily-labels').textContent);
-var dValues = JSON.parse(document.getElementById('daily-values').textContent);
-
-new Chart(document.getElementById('daily-chart'), {
-    type: 'bar',
-    data: {
-        labels: dLabels,
-        datasets: [{label:'Daily Requests', data:dValues, backgroundColor:'rgba(13,148,136,0.6)', borderRadius:4}]
-    },
-    options: {
-        responsive:true, plugins:{legend:{display:false}},
-        scales: {x:{ticks:{maxRotation:45, font:{size:9}}}, y:{beginAtZero:true}}
-    }
-});
-
-// --- Trend: Real Data % ---
-new Chart(document.getElementById('trend-real'), {
-    type: 'line',
-    data: {
-        labels: JSON.parse(document.getElementById('trend-real-labels').textContent),
-        datasets: [{data: JSON.parse(document.getElementById('trend-real-values').textContent),
-            borderColor:'#0d9488', backgroundColor:'rgba(13,148,136,0.1)', fill:true, tension:0.3, pointRadius:3}]
-    },
-    options: {responsive:true, plugins:{legend:{display:false}},
-        scales:{y:{beginAtZero:true, max:100, ticks:{callback:function(v){return v+'%'}}}, x:{ticks:{font:{size:9}}}}}
-});
-
-// --- Trend: Scraper Activity ---
-new Chart(document.getElementById('trend-scraper'), {
-    type: 'bar',
-    data: {
-        labels: JSON.parse(document.getElementById('trend-scraper-labels').textContent),
-        datasets: [
-            {label:'Success', data: JSON.parse(document.getElementById('trend-scraper-success').textContent), backgroundColor:'rgba(13,148,136,0.7)', borderRadius:3},
-            {label:'Failed', data: JSON.parse(document.getElementById('trend-scraper-failed').textContent), backgroundColor:'rgba(220,38,38,0.5)', borderRadius:3}
-        ]
-    },
-    options: {responsive:true, plugins:{legend:{position:'bottom',labels:{boxWidth:8,font:{size:10}}}},
-        scales:{x:{stacked:true,ticks:{font:{size:9}}}, y:{stacked:true,beginAtZero:true}}}
-});
-
-// --- Trend: Validation Issues ---
-new Chart(document.getElementById('trend-validation'), {
-    type: 'line',
-    data: {
-        labels: JSON.parse(document.getElementById('trend-val-labels').textContent),
-        datasets: [{data: JSON.parse(document.getElementById('trend-val-values').textContent),
-            borderColor:'#dc2626', backgroundColor:'rgba(220,38,38,0.1)', fill:true, tension:0.3, pointRadius:3}]
-    },
-    options: {responsive:true, plugins:{legend:{display:false}},
-        scales:{y:{beginAtZero:true}, x:{ticks:{font:{size:9}}}}}
-});
+var trendChart = null;
+function showTrend(name) {
+    if(trendChart) trendChart.destroy();
+    var cfg = trendData[name];
+    trendChart = new Chart(document.getElementById('trend-chart'), cfg);
+    document.querySelectorAll('.tabs .tab').forEach(function(t){
+        if(t.closest('.sect').querySelector('#trend-chart')){
+            t.classList.toggle('on', t.textContent.toLowerCase().indexOf(name.substring(0,4))>=0 ||
+                (name==='real' && t.textContent.indexOf('Quality')>=0));
+        }
+    });
+}
+showTrend('real');
 
 // --- Auto-refresh every 60 seconds ---
 var countdown = 60;
@@ -856,12 +780,10 @@ function showLayer(name) {
     activeLayer = name;
     layers[name].addTo(map);
     document.getElementById('heatmap-label').textContent = labels[name];
-    // Update button styles
-    var colors = {mosques:'#0d9488', searches:'#2563eb', routes:'#7c3aed', gaps:'#dc2626'};
+    // Update tab styles
     ['mosques','searches','routes','gaps'].forEach(function(n) {
         var btn = document.getElementById('btn-'+n);
-        if (n === name) { btn.style.background = colors[n]; btn.style.color = 'white'; }
-        else { btn.style.background = 'white'; btn.style.color = colors[n]; }
+        btn.classList.toggle('on', n === name);
     });
 }
 </script>"""
