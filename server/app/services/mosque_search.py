@@ -767,7 +767,7 @@ async def find_nearby_mosques(
     query = text("""
         SELECT
             id::text, name, lat, lng, address, city, state, country, timezone,
-            phone, website, has_womens_section, wheelchair_accessible,
+            phone, website, denomination, has_womens_section, wheelchair_accessible,
             ST_Distance(
                 geom::geography,
                 ST_SetSRID(ST_MakePoint(:lng, :lat), 4326)::geography
