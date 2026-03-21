@@ -164,26 +164,78 @@ def _normalize_time(h: str, m: str, ampm: str | None) -> str | None:
     return f"{hour:02d}:{minute:02d}"
 
 
+# Strict time ranges for US/Canada (local time)
+# These are generous bounds covering all seasons and latitudes
+VALID_RANGES = {
+    "fajr":    (2, 30,  7, 30),   # 2:30 AM - 7:30 AM
+    "sunrise": (4, 30,  8, 30),   # 4:30 AM - 8:30 AM
+    "dhuhr":   (11, 0,  14, 0),   # 11:00 AM - 2:00 PM
+    "asr":     (13, 0,  19, 0),   # 1:00 PM - 7:00 PM
+    "maghrib": (16, 0,  21, 30),  # 4:00 PM - 9:30 PM
+    "isha":    (18, 0,  23, 59),  # 6:00 PM - 11:59 PM
+}
+
+
+def _time_in_range(time_str: str, prayer: str) -> bool:
+    """Check if a time string is within valid range for a prayer."""
+    if not time_str or ":" not in time_str or time_str.startswith("+"):
+        return True  # offsets and empty values pass
+    try:
+        h, m = int(time_str.split(":")[0]), int(time_str.split(":")[1])
+    except (ValueError, IndexError):
+        return False
+    bounds = VALID_RANGES.get(prayer)
+    if not bounds:
+        return True
+    min_h, min_m, max_h, max_m = bounds
+    t = h * 60 + m
+    return (min_h * 60 + min_m) <= t <= (max_h * 60 + max_m)
+
+
 def validate_schedule(data: dict) -> bool:
     """Check if extracted data looks like a real prayer schedule."""
     adhan = data.get("adhan", {})
     if len(adhan) < 3:
         return False
 
-    # Basic sanity: fajr should be before sunrise, dhuhr before asr, etc.
-    # Just check we have reasonable times
+    # Every time must be within its valid range
     for prayer, t in adhan.items():
-        if not t or ":" not in t:
-            continue
-        h = int(t.split(":")[0])
-        if prayer == "fajr" and not (3 <= h <= 7):
-            return False
-        if prayer == "dhuhr" and not (11 <= h <= 14):
-            return False
-        if prayer == "isha" and not (18 <= h <= 23):
+        if not _time_in_range(t, prayer):
+            log.debug(f"  Rejected: {prayer} adhan={t} out of range")
             return False
 
+    for prayer, t in data.get("iqama", {}).items():
+        if not _time_in_range(t, prayer):
+            log.debug(f"  Rejected: {prayer} iqama={t} out of range")
+            return False
+
+    # Order check: fajr < dhuhr < asr < maghrib < isha
+    order = ["fajr", "dhuhr", "asr", "maghrib", "isha"]
+    prev_mins = 0
+    for prayer in order:
+        t = adhan.get(prayer)
+        if not t or ":" not in t or t.startswith("+"):
+            continue
+        h, m = int(t.split(":")[0]), int(t.split(":")[1])
+        mins = h * 60 + m
+        if mins <= prev_mins and prev_mins > 0:
+            log.debug(f"  Rejected: {prayer}={t} not after previous prayer")
+            return False
+        prev_mins = mins
+
     return True
+
+
+def sanitize_schedule(data: dict) -> dict:
+    """Remove any individual times that are outside valid ranges."""
+    for section in ("adhan", "iqama"):
+        bad_keys = []
+        for prayer, t in data.get(section, {}).items():
+            if not _time_in_range(t, prayer):
+                bad_keys.append(prayer)
+        for k in bad_keys:
+            del data[section][k]
+    return data
 
 
 # ---------------------------------------------------------------------------
@@ -409,6 +461,9 @@ async def scrape_with_playwright(websites: list[dict], engine, save: bool = True
 
                 # Extract prayer times
                 data = extract_times_from_text(text_content)
+
+                # Sanitize: remove any times outside valid ranges
+                data = sanitize_schedule(data)
 
                 if validate_schedule(data):
                     stats["success"] += 1
