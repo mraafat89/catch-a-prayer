@@ -350,33 +350,47 @@ def _save_to_db(engine, mosque_id: str, data: dict, today: date):
             "date": today,
         }
 
-        prayer_map = {
-            "fajr": "fajr", "sunrise": "sunrise", "dhuhr": "dhuhr",
-            "asr": "asr", "maghrib": "maghrib", "isha": "isha"
+        # Map prayer names to DB column prefixes
+        # sunrise has no adhan/iqama suffix — just "sunrise" and "sunrise_source"
+        adhan_col_map = {
+            "fajr": "fajr_adhan", "dhuhr": "dhuhr_adhan",
+            "asr": "asr_adhan", "maghrib": "maghrib_adhan", "isha": "isha_adhan",
+            "sunrise": "sunrise",
+        }
+        iqama_col_map = {
+            "fajr": "fajr_iqama", "dhuhr": "dhuhr_iqama",
+            "asr": "asr_iqama", "maghrib": "maghrib_iqama", "isha": "isha_iqama",
+        }
+        source_col_map = {
+            "fajr": "fajr_adhan_source", "dhuhr": "dhuhr_adhan_source",
+            "asr": "asr_adhan_source", "maghrib": "maghrib_adhan_source",
+            "isha": "isha_adhan_source", "sunrise": "sunrise_source",
         }
 
-        for prayer, col_prefix in prayer_map.items():
-            if prayer in adhan:
-                values[f"{col_prefix}_adhan"] = adhan[prayer]
-                values[f"{col_prefix}_adhan_source"] = "playwright_scrape"
-            if prayer in iqama:
-                val = iqama[prayer]
-                if val.startswith("+"):
-                    # Offset — store as-is for now, resolve later
-                    values[f"{col_prefix}_iqama"] = val
-                else:
-                    values[f"{col_prefix}_iqama"] = val
-                values[f"{col_prefix}_iqama_source"] = "playwright_scrape"
+        for prayer, t in adhan.items():
+            col = adhan_col_map.get(prayer)
+            src_col = source_col_map.get(prayer)
+            if col and t:
+                values[col] = t
+                if src_col:
+                    values[src_col] = "playwright_scrape"
+
+        for prayer, t in iqama.items():
+            col = iqama_col_map.get(prayer)
+            if col and t:
+                values[col] = t
+                values[col + "_source"] = "playwright_scrape"
 
         if len(values) <= 2:  # only mosque_id and date
             return
 
-        # Upsert
+        # Upsert — include id for new rows
+        values["id"] = str(__import__("uuid").uuid4())
         cols = ", ".join(values.keys())
         placeholders = ", ".join(f":{k}" for k in values.keys())
         updates = ", ".join(
             f"{k} = EXCLUDED.{k}" for k in values.keys()
-            if k not in ("mosque_id", "date")
+            if k not in ("mosque_id", "date", "id")
         )
 
         conn.execute(text(f"""
