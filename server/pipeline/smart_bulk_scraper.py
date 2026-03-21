@@ -34,7 +34,15 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 log = logging.getLogger(__name__)
 settings = get_settings()
 
-DB_URL = os.environ.get("DATABASE_URL", settings.database_url).replace("+asyncpg", "+psycopg2")
+# Build DB URL — handle case where DATABASE_URL has wrong password
+# (docker-compose environment: override uses shell default, not env_file)
+_raw_url = os.environ.get("DATABASE_URL", settings.database_url)
+_pg_pass = os.environ.get("POSTGRES_PASSWORD")
+if _pg_pass and f":{_pg_pass}@" not in _raw_url:
+    # Replace the password in the URL with the correct one
+    import re as _re
+    _raw_url = _re.sub(r'://([^:]+):([^@]*)@', f'://\\1:{_pg_pass}@', _raw_url)
+DB_URL = _raw_url.replace("+asyncpg", "+psycopg2")
 if "psycopg2" not in DB_URL:
     DB_URL = DB_URL.replace("postgresql://", "postgresql+psycopg2://")
 
