@@ -269,6 +269,72 @@ async def get_stats(db: AsyncSession = Depends(get_db)):
     return stats
 
 
+# ---------------------------------------------------------------------------
+# Admin Review Queue — accept/reject community suggestions
+# ---------------------------------------------------------------------------
+
+@router.get("/admin/suggestions", dependencies=[Depends(verify_admin)])
+async def list_pending_suggestions(db: AsyncSession = Depends(get_db)):
+    """List all pending community suggestions for admin review."""
+    r = await db.execute(text("""
+        SELECT s.id::text, s.mosque_id::text, m.name as mosque_name,
+               s.field_name, s.suggested_value, s.current_value,
+               s.upvote_count, s.downvote_count, s.submitted_by_session,
+               s.created_at::text, s.expires_at::text
+        FROM mosque_suggestions s
+        JOIN mosques m ON m.id = s.mosque_id
+        WHERE s.status = 'pending'
+        ORDER BY s.created_at DESC
+        LIMIT 100
+    """))
+    return [dict(row) for row in r.mappings()]
+
+
+@router.post("/admin/suggestions/{suggestion_id}/accept", dependencies=[Depends(verify_admin)])
+async def accept_suggestion(suggestion_id: str, db: AsyncSession = Depends(get_db)):
+    """Admin force-accept a suggestion and apply the change."""
+    r = await db.execute(text("""
+        SELECT id, mosque_id::text, field_name, suggested_value, status
+        FROM mosque_suggestions WHERE id = CAST(:id AS uuid)
+    """), {"id": suggestion_id})
+    row = r.mappings().first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Suggestion not found")
+    if row["status"] != "pending":
+        raise HTTPException(status_code=410, detail=f"Suggestion already {row['status']}")
+
+    # Apply the change
+    from app.api.suggestions import _apply_suggestion
+    await _apply_suggestion(db, row["mosque_id"], row["field_name"], row["suggested_value"])
+
+    await db.execute(text("""
+        UPDATE mosque_suggestions SET status = 'accepted', updated_at = NOW()
+        WHERE id = CAST(:id AS uuid)
+    """), {"id": suggestion_id})
+    await db.commit()
+    return {"status": "accepted", "id": suggestion_id}
+
+
+@router.post("/admin/suggestions/{suggestion_id}/reject", dependencies=[Depends(verify_admin)])
+async def reject_suggestion(suggestion_id: str, db: AsyncSession = Depends(get_db)):
+    """Admin force-reject a suggestion."""
+    r = await db.execute(text("""
+        SELECT id, status FROM mosque_suggestions WHERE id = CAST(:id AS uuid)
+    """), {"id": suggestion_id})
+    row = r.mappings().first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Suggestion not found")
+    if row["status"] != "pending":
+        raise HTTPException(status_code=410, detail=f"Suggestion already {row['status']}")
+
+    await db.execute(text("""
+        UPDATE mosque_suggestions SET status = 'rejected', updated_at = NOW()
+        WHERE id = CAST(:id AS uuid)
+    """), {"id": suggestion_id})
+    await db.commit()
+    return {"status": "rejected", "id": suggestion_id}
+
+
 @router.get("/admin/dashboard", response_class=None, dependencies=[Depends(verify_admin)])
 async def dashboard(db: AsyncSession = Depends(get_db)):
     """Simple HTML dashboard page."""
@@ -288,6 +354,18 @@ async def dashboard(db: AsyncSession = Depends(get_db)):
         pct = round(s["real_data"] * 100 / max(s["mosques"], 1))
         bar = "█" * (pct // 5) + "░" * (20 - pct // 5)
         coverage_rows += f"<tr><td>{s['state']}</td><td>{s['mosques']}</td><td>{s['real_data']}</td><td>{pct}%</td><td style='font-family:monospace'>{bar}</td></tr>"
+
+    # Pending suggestions for review queue
+    pending_sug = await db.execute(text("""
+        SELECT s.id::text, m.name as mosque_name,
+               s.field_name, s.suggested_value, s.current_value,
+               s.upvote_count, s.downvote_count, s.created_at::text
+        FROM mosque_suggestions s
+        JOIN mosques m ON m.id = s.mosque_id
+        WHERE s.status = 'pending'
+        ORDER BY s.created_at DESC LIMIT 20
+    """))
+    pending_suggestions = [dict(row) for row in pending_sug.mappings()]
 
     import json as _json
     locations_json = _json.dumps(stats.get("mosque_locations", []))
@@ -323,6 +401,17 @@ async def dashboard(db: AsyncSession = Depends(get_db)):
     top_ep_rows = ""
     for ep, count in list(usage.get("top_endpoints", {}).items())[:8]:
         top_ep_rows += f"<tr><td><code>{ep}</code></td><td>{count}</td></tr>"
+
+    # Review queue rows
+    review_rows = ""
+    for s in pending_suggestions:
+        votes = f"+{s['upvote_count']}/-{s['downvote_count']}"
+        created = s['created_at'][:16] if s['created_at'] else ''
+        review_rows += f"""<tr>
+<td>{s['mosque_name'][:30]}</td><td><code>{s['field_name']}</code></td>
+<td>{s['current_value'] or '—'}</td><td><b>{s['suggested_value']}</b></td><td>{votes}</td><td>{created}</td>
+<td><button onclick="reviewAction('{s['id']}','accept')" style="background:#16a34a;color:white;border:none;border-radius:4px;padding:3px 8px;cursor:pointer;font-size:11px;">✓</button>
+<button onclick="reviewAction('{s['id']}','reject')" style="background:#dc2626;color:white;border:none;border-radius:4px;padding:3px 8px;cursor:pointer;font-size:11px;">✗</button></td></tr>"""
 
     html = f"""<!DOCTYPE html>
 <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -411,6 +500,14 @@ h2 {{ color: #2e3d44; font-size: 15px; margin-bottom: 8px; }}
 </table>
 </div>
 
+<div class="section">
+<h2>📝 Review Queue ({len(pending_suggestions)} pending)</h2>
+{f'''<table>
+<tr><th>Mosque</th><th>Field</th><th>Current</th><th>Suggested</th><th>Votes</th><th>Date</th><th>Action</th></tr>
+{review_rows}
+</table>''' if review_rows else '<p style="color:#999;font-size:12px;">No pending suggestions</p>'}
+</div>
+
 <div class="section two-col">
 <div>
 <h2>🌐 API Usage</h2>
@@ -469,6 +566,17 @@ Updated: {stats['server']['timestamp'][:19]} UTC — <span id="refresh-timer">au
 <script id="hourly-errors" type="application/json">""" + hourly_errors_json + """</script>
 <script id="daily-labels" type="application/json">""" + daily_labels_json + """</script>
 <script id="daily-values" type="application/json">""" + daily_values_json + """</script>"""
+
+    admin_key = ADMIN_API_KEY
+    review_script = f"""<script>
+function reviewAction(id, action) {{
+    if (!confirm('Are you sure you want to ' + action + ' this suggestion?')) return;
+    fetch('/api/admin/suggestions/' + id + '/' + action + '?key={admin_key}', {{method:'POST'}})
+    .then(r => r.json())
+    .then(d => {{ alert(action + 'ed!'); location.reload(); }})
+    .catch(e => alert('Error: ' + e));
+}}
+</script>"""
 
     chart_script = """<script>
 // --- Traffic chart (requests + latency dual axis) ---
@@ -571,6 +679,6 @@ function showLayer(name) {
 }
 </script>"""
 
-    html += chart_script + map_script + "</body></html>"
+    html += review_script + chart_script + map_script + "</body></html>"
 
     return HTMLResponse(content=html)
