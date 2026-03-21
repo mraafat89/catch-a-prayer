@@ -11,7 +11,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Install Playwright browsers for JS-heavy site scraping (used by pipeline only)
-RUN playwright install chromium --with-deps 2>/dev/null || true
+RUN pip install playwright && playwright install chromium --with-deps
 
 COPY . .
 
