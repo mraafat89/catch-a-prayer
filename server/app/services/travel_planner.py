@@ -1407,6 +1407,38 @@ def build_itineraries(prayer_pairs: list[dict], allow_combining: bool = True) ->
 
 
 # ---------------------------------------------------------------------------
+# Itinerary scoring & ranking (ROUTE_PLANNING_ALGORITHM.md §5)
+# ---------------------------------------------------------------------------
+
+def score_itinerary(itinerary: dict) -> float:
+    """Score an itinerary. Lower is better.
+
+    Formula: (detour * 2) + (stops * 10) + (infeasible * 100) - (imam_catches * 5)
+    """
+    total_detour = itinerary.get("total_detour_minutes", 0)
+    stop_count = itinerary.get("stop_count", 0)
+
+    infeasible = 0
+    imam_catches = 0
+    for pc in itinerary.get("pair_choices", []):
+        opt = pc.get("option", {})
+        if not opt.get("feasible", True):
+            infeasible += 1
+        for stop in opt.get("stops", []):
+            if stop.get("status") == "can_catch_with_imam":
+                imam_catches += 1
+
+    return (total_detour * 2) + (stop_count * 10) + (infeasible * 100) - (imam_catches * 5)
+
+
+def rank_itineraries(itineraries: list[dict]) -> list[dict]:
+    """Sort itineraries by score ascending (best first)."""
+    scored = [(score_itinerary(it), i, it) for i, it in enumerate(itineraries)]
+    scored.sort(key=lambda x: (x[0], x[1]))
+    return [it for _, _, it in scored]
+
+
+# ---------------------------------------------------------------------------
 # Main entry point
 # ---------------------------------------------------------------------------
 
@@ -1679,7 +1711,7 @@ async def build_travel_plan(
             "route_geometry": base_geometry,
         },
         "prayer_pairs": prayer_pairs,
-        "itineraries": itineraries,
+        "itineraries": rank_itineraries(itineraries),
         "departure_time": departure_dt.isoformat(),
         "estimated_arrival_time": arrival_dt.isoformat(),
     }
