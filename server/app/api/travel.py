@@ -39,6 +39,11 @@ async def geocode_reverse(lat: float = Query(...), lng: float = Query(...)):
 @router.post("/travel/plan", response_model=TravelPlanResponse)
 async def travel_plan(req: TravelPlanRequest, db: AsyncSession = Depends(get_db)):
     """Build a route-based travel prayer plan."""
+    import logging
+    _log = logging.getLogger("travel_debug")
+    _log.info(f"TRAVEL REQUEST: mode={req.trip_mode} prayed={req.prayed_prayers} dep={req.departure_time} "
+              f"origin=({req.origin_lat},{req.origin_lng}) dest=({req.destination_lat},{req.destination_lng}) "
+              f"waypoints={len(req.waypoints)}")
     # Parse optional departure time
     departure_dt = None
     if req.departure_time:
@@ -66,4 +71,7 @@ async def travel_plan(req: TravelPlanRequest, db: AsyncSession = Depends(get_db)
         raise HTTPException(status_code=422, detail=str(e))
     if not result:
         raise HTTPException(status_code=503, detail="Could not build travel plan — routing unavailable")
+    _log.info(f"TRAVEL RESPONSE: pairs={[pp['pair'] for pp in result.get('prayer_pairs',[])]} "
+              f"itineraries={len(result.get('itineraries',[]))} "
+              f"pair_details={[(pp['pair'], len(pp['options'])) for pp in result.get('prayer_pairs',[])]}")
     return TravelPlanResponse(**result)

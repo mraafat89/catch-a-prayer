@@ -54,21 +54,35 @@ else:
 # ---------------------------------------------------------------------------
 
 PRAYER_NAMES = {
-    "fajr": "fajr", "fajar": "fajr", "subh": "fajr", "dawn": "fajr",
-    "sunrise": "sunrise", "shuruq": "sunrise", "ishraq": "sunrise",
+    "fajr": "fajr", "fajar": "fajr", "subh": "fajr", "dawn": "fajr", "fajir": "fajr",
+    "sunrise": "sunrise", "shuruq": "sunrise", "ishraq": "sunrise", "shorooq": "sunrise",
     "dhuhr": "dhuhr", "zuhr": "dhuhr", "dhuhur": "dhuhr", "noon": "dhuhr",
-    "asr": "asr", "asar": "asr",
+    "duhr": "dhuhr", "zohr": "dhuhr", "thuhr": "dhuhr",
+    "asr": "asr", "asar": "asr", "'asr": "asr",
     "maghrib": "maghrib", "magrib": "maghrib", "sunset": "maghrib", "iftar": "maghrib",
-    "isha": "isha", "ishaa": "isha", "esha": "isha",
+    "maghreb": "maghrib", "magreb": "maghrib",
+    "isha": "isha", "ishaa": "isha", "esha": "isha", "'isha": "isha", "isha'a": "isha",
 }
 
-JUMUAH_NAMES = {"jumuah", "jummah", "jumma", "jumu'ah", "friday", "khutbah", "khutba"}
+JUMUAH_NAMES = {
+    "jumuah", "jummah", "jumma", "jumu'ah", "friday", "khutbah", "khutba",
+    "jumua'ah", "jum'ah", "jumuaa", "jumah",
+}
 
-# Time patterns: 12:30, 12:30 PM, 12:30PM, 1:30pm
+# Time patterns: 12:30, 12:30 PM, 12:30PM, 1:30pm, 1:30 p.m.
 TIME_RE = re.compile(r'\b(\d{1,2}):(\d{2})\s*(am|pm|AM|PM|a\.m\.|p\.m\.)?\b')
 
-# Iqama offset pattern: +15, +20 min
-OFFSET_RE = re.compile(r'\+\s*(\d{1,3})\s*(?:min|minutes?|mins?)?', re.IGNORECASE)
+# Iqama offset: "+15", "20 min after athan", "30 mins after adhan", "X minutes after"
+OFFSET_RE = re.compile(
+    r'(?:\+\s*)?(\d{1,3})\s*(?:min(?:ute)?s?\s*(?:after|from)?\s*(?:ath[ae]n|adh[ae]n)?|min\b)',
+    re.IGNORECASE
+)
+
+# Direct "X min after athan" pattern (no + prefix needed)
+RELATIVE_IQAMA_RE = re.compile(
+    r'(\d{1,3})\s*(?:min(?:ute)?s?)\s+(?:after|from|past)\s+(?:ath[ae]n|adh[ae]n|azan)',
+    re.IGNORECASE
+)
 
 
 def extract_times_from_text(text_content: str) -> dict:
@@ -110,17 +124,35 @@ def extract_times_from_text(text_content: str) -> dict:
             # If no times on this line, check next line only
             times = TIME_RE.findall(lines[i + 1])
 
-        if len(times) >= 2:
+        # Determine if line mentions "iqama" — if so, the time is iqama not adhan
+        is_iqama_line = any(w in line_lower for w in ["iqama", "iqamah", "iqamaat", "congregation"])
+
+        if len(times) >= 2 and not is_iqama_line:
             # First time = adhan, second = iqama (common pattern)
             results["adhan"][found_prayer] = _normalize_time(*times[0])
             results["iqama"][found_prayer] = _normalize_time(*times[1])
+        elif len(times) >= 1 and is_iqama_line:
+            # "Fajr: Iqamah 06:15 AM" — this is an iqama time
+            results["iqama"][found_prayer] = _normalize_time(*times[0])
+        elif len(times) >= 2 and is_iqama_line:
+            # Two times on an iqama line — unlikely but take first
+            results["iqama"][found_prayer] = _normalize_time(*times[0])
         elif len(times) == 1:
             results["adhan"][found_prayer] = _normalize_time(*times[0])
-            # Check for iqama offset on this line or next
+            # Check for iqama offset: "+15", "20 min after athan"
             search_text = line + (" " + lines[i + 1] if i + 1 < len(lines) else "")
-            offsets = OFFSET_RE.findall(search_text)
-            if offsets:
-                results["iqama"][found_prayer] = f"+{offsets[0]}"
+            rel_match = RELATIVE_IQAMA_RE.search(search_text)
+            if rel_match:
+                results["iqama"][found_prayer] = f"+{rel_match.group(1)}"
+            else:
+                offsets = OFFSET_RE.findall(search_text)
+                if offsets:
+                    results["iqama"][found_prayer] = f"+{offsets[0]}"
+        elif len(times) == 0:
+            # No clock time found — check for "iqamah" line with just a relative time
+            rel_match = RELATIVE_IQAMA_RE.search(line)
+            if rel_match and found_prayer in results.get("adhan", {}):
+                results["iqama"][found_prayer] = f"+{rel_match.group(1)}"
 
     # Strategy 2: Look for a grid/table pattern (all times in a block)
     if len(results["adhan"]) < 3:
@@ -132,11 +164,12 @@ def extract_times_from_text(text_content: str) -> dict:
 
 def _extract_from_grid(lines: list[str], results: dict):
     """Look for a dense block of 5-6 times that might be a prayer schedule."""
-    # Find lines with multiple times
+    from pipeline.validation import hhmm_to_minutes
+
+    # Strategy A: Single line with 5+ times (horizontal table row)
     for i, line in enumerate(lines):
         times = TIME_RE.findall(line)
         if len(times) >= 5:
-            # This might be a row of all prayer times
             prayer_order = ["fajr", "sunrise", "dhuhr", "asr", "maghrib", "isha"]
             for j, (h, m, ampm) in enumerate(times[:6]):
                 if j < len(prayer_order):
@@ -153,6 +186,36 @@ def _extract_from_grid(lines: list[str], results: dict):
                             t = _normalize_time(h, m, ampm)
                             if t:
                                 results["iqama"][iqama_order[j]] = t
+            return
+
+    # Strategy B: Look for ascending time sequence across consecutive lines
+    # (vertical table — each line has 1-2 times, times go from early to late)
+    all_times = []
+    for i, line in enumerate(lines):
+        times = TIME_RE.findall(line)
+        for h, m, ampm in times:
+            t = _normalize_time(h, m, ampm)
+            if t:
+                mins = hhmm_to_minutes(t)
+                if mins and 120 <= mins <= 1440:  # 2AM to midnight
+                    all_times.append((i, t, mins))
+
+    # Find the longest ascending subsequence of 5+ times
+    if len(all_times) >= 5:
+        best_seq = []
+        for start in range(len(all_times)):
+            seq = [all_times[start]]
+            for j in range(start + 1, min(start + 20, len(all_times))):
+                if all_times[j][2] > seq[-1][2] and all_times[j][0] - seq[-1][0] <= 3:
+                    seq.append(all_times[j])
+            if len(seq) >= 5 and len(seq) > len(best_seq):
+                best_seq = seq
+
+        if len(best_seq) >= 5:
+            prayer_order = ["fajr", "sunrise", "dhuhr", "asr", "maghrib", "isha"]
+            for j, (line_idx, t, mins) in enumerate(best_seq[:6]):
+                if j < len(prayer_order) and prayer_order[j] not in results["adhan"]:
+                    results["adhan"][prayer_order[j]] = t
 
 
 def _normalize_time(h: str, m: str, ampm: str | None) -> str | None:
@@ -339,6 +402,14 @@ FALLBACK_PATHS = [
     "/prayer-times-iqama", "/services/prayer-times",
     "/prayers-mosques", "/masjid-services", "/salah",
     "/prayer-times-and-iqama", "/iqamah-times",
+    "/prayer-timings", "/salah-schedule", "/namaz-times",
+    "/iqamah", "/adhan-times", "/daily-schedule",
+    "/prayer-timing", "/namaz", "/salaat-times",
+    "/prayer-times-iqamah-times", "/daily-prayer-times",
+    # French (Quebec mosques)
+    "/horaires-de-priere", "/horaires", "/prieres",
+    # Non-standard
+    "/prayer-schedule", "/salah-time", "/athan-iqamah",
 ]
 
 
@@ -478,6 +549,21 @@ async def scrape_with_playwright(websites: list[dict], engine, save: bool = True
                 # Get all visible text from homepage
                 text_content = await page.inner_text("body")
 
+                # Spam/hijack detection — skip compromised domains
+                spam_keywords = ["slot deposit", "casino", "gambling", "poker online",
+                                 "togel", "judi online", "situs slot", "gacor"]
+                text_lower_check = text_content[:2000].lower()
+                if any(kw in text_lower_check for kw in spam_keywords):
+                    log.info(f"  ! Domain hijacked (gambling spam)")
+                    stats["error"] += 1
+                    await page.close()
+                    # Mark as dead in DB
+                    with engine.begin() as conn:
+                        conn.execute(text(
+                            "UPDATE scraping_jobs SET website_alive = false, status = 'failed' WHERE mosque_id = :mid"
+                        ), {"mid": mosque_id})
+                    continue
+
                 # Also check for iframes (prayer widgets often in iframes)
                 iframes = await page.query_selector_all("iframe")
                 for iframe in iframes[:3]:
@@ -578,6 +664,9 @@ JINA_PATHS = [
     "/iqama", "/salah-times", "/prayer-schedule",
     "/services/prayer-times", "/schedule",
     "/prayers-mosques", "/iqamah-times", "/salah",
+    "/prayer-timings", "/iqamah", "/daily-schedule",
+    "/prayer-timing", "/daily-prayer-times",
+    "/horaires-de-priere", "/prayer-schedule",
 ]
 
 
