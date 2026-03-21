@@ -657,41 +657,53 @@ async def scrape_with_jina(websites: list[dict], engine, save: bool = True) -> d
 
 
 def _save_to_db(engine, mosque_id: str, data: dict, today: date, source: str = "playwright_scrape"):
-    """Save extracted prayer schedule to DB."""
-    adhan = data["adhan"]
-    iqama = data["iqama"]
+    """Validate and save extracted prayer schedule to DB.
+    Runs full Islamic logic validation before writing anything."""
+    from pipeline.validation import validate_prayer_schedule, validate_jumuah
+
+    # Convert from {adhan: {fajr: "05:30"}} to {fajr_adhan: "05:30"} for validation
+    flat = {}
+    for prayer, t in data.get("adhan", {}).items():
+        col = {"fajr": "fajr_adhan", "dhuhr": "dhuhr_adhan", "asr": "asr_adhan",
+               "maghrib": "maghrib_adhan", "isha": "isha_adhan", "sunrise": "sunrise"}.get(prayer)
+        if col and t:
+            flat[col] = t
+    for prayer, t in data.get("iqama", {}).items():
+        col = {"fajr": "fajr_iqama", "dhuhr": "dhuhr_iqama", "asr": "asr_iqama",
+               "maghrib": "maghrib_iqama", "isha": "isha_iqama"}.get(prayer)
+        if col and t:
+            flat[col] = t
+
+    # Run validation
+    vr = validate_prayer_schedule(flat)
+
+    # Log validation issues to DB
+    if vr.issues:
+        _log_validation_issues(engine, mosque_id, today, vr.issues)
+
+    # If validation failed entirely, don't save — let daily_calculated fill the gap
+    if not vr.valid:
+        log.info(f"  ⚠ Validation failed: {vr.issues[0]['issue'] if vr.issues else 'unknown'}")
+        return
+
+    cleaned = vr.cleaned
 
     with engine.begin() as conn:
         values = {"mosque_id": mosque_id, "date": today}
 
-        adhan_col_map = {
-            "fajr": "fajr_adhan", "dhuhr": "dhuhr_adhan",
-            "asr": "asr_adhan", "maghrib": "maghrib_adhan", "isha": "isha_adhan",
-            "sunrise": "sunrise",
-        }
-        iqama_col_map = {
-            "fajr": "fajr_iqama", "dhuhr": "dhuhr_iqama",
-            "asr": "asr_iqama", "maghrib": "maghrib_iqama", "isha": "isha_iqama",
-        }
         source_col_map = {
-            "fajr": "fajr_adhan_source", "dhuhr": "dhuhr_adhan_source",
-            "asr": "asr_adhan_source", "maghrib": "maghrib_adhan_source",
-            "isha": "isha_adhan_source", "sunrise": "sunrise_source",
+            "fajr_adhan": "fajr_adhan_source", "dhuhr_adhan": "dhuhr_adhan_source",
+            "asr_adhan": "asr_adhan_source", "maghrib_adhan": "maghrib_adhan_source",
+            "isha_adhan": "isha_adhan_source", "sunrise": "sunrise_source",
+            "fajr_iqama": "fajr_iqama_source", "dhuhr_iqama": "dhuhr_iqama_source",
+            "asr_iqama": "asr_iqama_source", "maghrib_iqama": "maghrib_iqama_source",
+            "isha_iqama": "isha_iqama_source",
         }
 
-        for prayer, t in adhan.items():
-            col = adhan_col_map.get(prayer)
-            src_col = source_col_map.get(prayer)
-            if col and t:
-                values[col] = t
-                if src_col:
-                    values[src_col] = source
-
-        for prayer, t in iqama.items():
-            col = iqama_col_map.get(prayer)
-            if col and t:
-                values[col] = t
-                values[col + "_source"] = source
+        for col, val in cleaned.items():
+            if val is not None and col in source_col_map:
+                values[col] = val
+                values[source_col_map[col]] = source
 
         if len(values) <= 2:
             return
@@ -716,15 +728,42 @@ def _save_to_db(engine, mosque_id: str, data: dict, today: date, source: str = "
             WHERE mosque_id = :mid
         """), {"mid": mosque_id, "method": source})
 
-        for i, jtime in enumerate(data.get("jumuah", [])[:3]):
-            try:
+        # Validate and save jumuah
+        jumuah_times = data.get("jumuah", [])
+        if jumuah_times:
+            jr = validate_jumuah(jumuah_times, cleaned.get("dhuhr_adhan"))
+            if jr.issues:
+                _log_validation_issues(engine, mosque_id, today, jr.issues)
+            for i, jtime in enumerate(jr.cleaned.get("jumuah", [])[:3]):
+                try:
+                    conn.execute(text("""
+                        INSERT INTO jumuah_sessions (id, mosque_id, prayer_start, session_number, source, valid_date)
+                        VALUES (gen_random_uuid(), CAST(:mid AS uuid), :time, :num, :src, CURRENT_DATE)
+                        ON CONFLICT DO NOTHING
+                    """), {"mid": mosque_id, "time": jtime, "num": i + 1, "src": source})
+                except Exception:
+                    pass
+
+
+def _log_validation_issues(engine, mosque_id: str, scrape_date: date, issues: list[dict]):
+    """Log validation issues to scraping_validation_log table."""
+    try:
+        with engine.begin() as conn:
+            for issue in issues:
                 conn.execute(text("""
-                    INSERT INTO jumuah_sessions (id, mosque_id, prayer_start, session_number, source, valid_date)
-                    VALUES (gen_random_uuid(), CAST(:mid AS uuid), :time, :num, :src, CURRENT_DATE)
-                    ON CONFLICT DO NOTHING
-                """), {"mid": mosque_id, "time": jtime, "num": i + 1, "src": source})
-            except Exception:
-                pass
+                    INSERT INTO scraping_validation_log
+                        (mosque_id, scrape_date, field_name, scraped_value, expected_range, issue_description, action_taken)
+                    VALUES (CAST(:mid AS uuid), :dt, :field, :val, :expected, :issue, :action)
+                """), {
+                    "mid": mosque_id, "dt": scrape_date,
+                    "field": issue.get("field", ""),
+                    "val": issue.get("value"),
+                    "expected": issue.get("expected", ""),
+                    "issue": issue.get("issue", ""),
+                    "action": issue.get("action", ""),
+                })
+    except Exception as e:
+        log.debug(f"Failed to log validation issue: {e}")
 
 
 # ---------------------------------------------------------------------------
