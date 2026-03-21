@@ -58,9 +58,11 @@ PRAYER_NAMES = {
     "sunrise": "sunrise", "shuruq": "sunrise", "ishraq": "sunrise", "shorooq": "sunrise",
     "dhuhr": "dhuhr", "zuhr": "dhuhr", "dhuhur": "dhuhr", "noon": "dhuhr",
     "duhr": "dhuhr", "zohr": "dhuhr", "thuhr": "dhuhr",
+    "zohrain": "dhuhr",  # Shia: combined Dhuhr+Asr name
     "asr": "asr", "asar": "asr", "'asr": "asr",
     "maghrib": "maghrib", "magrib": "maghrib", "sunset": "maghrib", "iftar": "maghrib",
     "maghreb": "maghrib", "magreb": "maghrib",
+    "maghriban": "maghrib",  # Shia: combined Maghrib+Isha name
     "isha": "isha", "ishaa": "isha", "esha": "isha", "'isha": "isha", "isha'a": "isha",
 }
 
@@ -481,8 +483,11 @@ async def _discover_prayer_page(page, base_url: str) -> str | None:
                 from urllib.parse import urlparse
                 link_domain = urlparse(href).netloc.replace("www.", "")
                 base_domain = urlparse(base_url).netloc.replace("www.", "")
+                # Allow mawaqit.net and themasjidapp.org links (trusted prayer platforms)
+                trusted_externals = ["mawaqit.net", "themasjidapp.org"]
                 if link_domain and link_domain != base_domain:
-                    continue
+                    if not any(t in link_domain for t in trusted_externals):
+                        continue
                 log.info(f"  🔗 Found nav link: '{link['text'][:40]}' → {href}")
                 return href
     except Exception:
