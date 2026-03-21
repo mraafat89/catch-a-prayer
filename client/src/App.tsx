@@ -5,7 +5,7 @@ import { apiService } from './services/api';
 import { useStore, SESSION_ID } from './store';
 import { useTheme } from './theme';
 import {
-  Mosque, PrayerSpot, PrayerTime, JumuahSession,
+  Mosque, PrayerSpot, PrayerTime, JumuahSession, SpecialPrayer,
   STATUS_CONFIG, SPOT_TYPE_LABELS, SUGGESTION_FIELD_LABELS,
   SpotSubmitRequest, MosqueSuggestion,
   TravelPairPlan, TravelOption, TravelDestination, TravelStop, GeocodeSuggestion,
@@ -163,8 +163,14 @@ function dataSourceBadge(prayers: { adhan_source?: string | null; iqama_source?:
   if (adhanVerified && iqamaVerified) {
     return { label: `✓ From mosque website${freshSuffix}`, color: 'text-green-700' };
   }
+  if (adhanSrc === 'mawaqit_api' || iqamaSrc === 'mawaqit_api') {
+    return { label: `From Mawaqit${freshSuffix}`, color: 'text-green-700' };
+  }
   if (adhanSrc === 'islamicfinder' || iqamaSrc === 'islamicfinder') {
     return { label: `From IslamicFinder${freshSuffix}`, color: 'text-gray-500' };
+  }
+  if (adhanSrc === 'user_submitted' || iqamaSrc === 'user_submitted') {
+    return { label: `Community-submitted${freshSuffix}`, color: 'text-blue-600' };
   }
   if (adhanVerified && !iqamaVerified) {
     return {
@@ -174,7 +180,7 @@ function dataSourceBadge(prayers: { adhan_source?: string | null; iqama_source?:
     };
   }
   return {
-    label: '~ Estimated times',
+    label: '~ Estimated times — help us get real times',
     color: 'text-amber-600',
     title: 'Congregation time not confirmed — based on calculated prayer window',
   };
@@ -789,6 +795,18 @@ function MosqueDetailSheet({ mosque, onDismiss }: { mosque: Mosque; onDismiss?: 
       <div className="flex items-center justify-between mb-1">
         <h2 className="text-base font-bold text-gray-900 flex-1 pr-3 leading-tight truncate">{mosque.name}</h2>
         <div className="flex items-center gap-2 flex-shrink-0">
+          {/* P0-1: Call button — shown when mosque has phone */}
+          {mosque.phone && (
+            <a
+              href={`tel:${mosque.phone}`}
+              className="w-9 h-9 flex items-center justify-center rounded-full bg-gray-100 hover:bg-gray-200 text-gray-600 active:scale-95 transition-all"
+              aria-label="Call mosque"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"/>
+              </svg>
+            </a>
+          )}
           {mosque.website && (
             <a
               href={mosque.website}
@@ -820,10 +838,14 @@ function MosqueDetailSheet({ mosque, onDismiss }: { mosque: Mosque; onDismiss?: 
         </div>
       </div>
 
-      {/* Row 2: address */}
+      {/* Row 2: address + denomination */}
       {mosque.location.address && (
-        <p className="text-sm text-gray-500 mb-3 leading-snug">{mosque.location.address}</p>
+        <p className="text-sm text-gray-500 leading-snug">{mosque.location.address}</p>
       )}
+      {mosque.denomination && (
+        <p className="text-xs text-gray-400 capitalize">{mosque.denomination}</p>
+      )}
+      {(mosque.location.address || mosque.denomination) && <div className="mb-3" />}
 
       {/* Status badge — hidden when nc prayer is already marked as prayed */}
       {nc && cfg && (
@@ -919,6 +941,60 @@ function MosqueDetailSheet({ mosque, onDismiss }: { mosque: Mosque; onDismiss?: 
               </tbody>
             </table>
           </div>
+        </div>
+      )}
+
+      {/* Eid prayers — prominent card */}
+      {(mosque.special_prayers ?? []).filter((sp: SpecialPrayer) =>
+        sp.prayer_type === 'eid_fitr' || sp.prayer_type === 'eid_adha'
+      ).length > 0 && (
+        <div className="mb-4">
+          <h3 className="text-sm font-semibold text-gray-700 mb-2">
+            {(mosque.special_prayers ?? []).find((sp: SpecialPrayer) => sp.prayer_type === 'eid_fitr')
+              ? 'Eid ul-Fitr Prayer'
+              : 'Eid ul-Adha Prayer'}
+          </h3>
+          <div className="space-y-2">
+            {(mosque.special_prayers ?? [])
+              .filter((sp: SpecialPrayer) => sp.prayer_type === 'eid_fitr' || sp.prayer_type === 'eid_adha')
+              .map((sp: SpecialPrayer) => (
+                <div key={sp.session_number} className="rounded-lg border border-green-200 bg-green-50 px-3 py-2.5">
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm font-medium text-green-800">
+                      {sp.session_number > 1 ? `Session ${sp.session_number}` : 'Prayer'}
+                    </span>
+                    <div className="text-right text-sm text-green-800">
+                      {sp.takbeer_time && <span>Takbeer {fmtTime(sp.takbeer_time)}</span>}
+                      {sp.takbeer_time && sp.prayer_time && <span className="mx-1">·</span>}
+                      {sp.prayer_time && <span className="font-medium">Prayer {fmtTime(sp.prayer_time)}</span>}
+                    </div>
+                  </div>
+                  {sp.imam_name && <p className="text-xs text-green-700 mt-0.5">{sp.imam_name}</p>}
+                  {sp.location_notes && <p className="text-xs text-green-700 mt-0.5">{sp.location_notes}</p>}
+                  {sp.special_notes && <p className="text-xs text-gray-600 mt-1 italic">{sp.special_notes}</p>}
+                </div>
+              ))}
+          </div>
+        </div>
+      )}
+
+      {/* Taraweeh — shown during Ramadan */}
+      {(mosque.special_prayers ?? []).filter((sp: SpecialPrayer) => sp.prayer_type === 'taraweeh').length > 0 && (
+        <div className="mb-4">
+          <h3 className="text-sm font-semibold text-gray-700 mb-2">Taraweeh</h3>
+          {(mosque.special_prayers ?? [])
+            .filter((sp: SpecialPrayer) => sp.prayer_type === 'taraweeh')
+            .map((sp: SpecialPrayer, i: number) => (
+              <div key={i} className={`rounded-lg border px-3 py-2 ${th.bgLight} ${th.border}`}>
+                <div className="flex items-center justify-between">
+                  <span className={`text-sm font-medium ${th.textDark}`}>Taraweeh Nightly</span>
+                  {sp.prayer_time && (
+                    <span className={`text-sm font-medium ${th.textDark}`}>{fmtTime(sp.prayer_time)}</span>
+                  )}
+                </div>
+                {sp.imam_name && <p className={`text-xs ${th.text} mt-0.5`}>{sp.imam_name}</p>}
+              </div>
+            ))}
         </div>
       )}
 
@@ -1799,6 +1875,7 @@ function DestinationInput() {
   const [searchMode, setSearchMode] = useState(false);
   const [editMode, setEditMode] = useState(false);
   const [longTripModal, setLongTripModal] = useState<number | null>(null); // km distance if long trip
+  const setTravelPlanError = useStore((s) => s.setTravelPlanError);
 
   // Default departure time = right now in local time (datetime-local needs YYYY-MM-DDTHH:mm)
   const defaultDeparture = (() => {
@@ -1955,6 +2032,7 @@ function DestinationInput() {
     if (!originLat || !originLng) return;
 
     setLongTripKm(null);
+    setTravelPlanError(null);
     const depIso = departureInput ? new Date(departureInput).toISOString() : undefined;
     setTravelDepartureTime(depIso || null);
     setTravelPlanLoading(true);
@@ -1998,6 +2076,7 @@ function DestinationInput() {
     } catch {
       setTravelPlan(null);
       useStore.getState().setSelectedItineraryIndex(null);
+      setTravelPlanError('Failed to plan route. Please check your connection and try again.');
     } finally {
       setTravelPlanLoading(false);
     }
@@ -2506,6 +2585,7 @@ function TravelPlanView() {
   const th                = useTheme();
   const travelPlan        = useStore((s) => s.travelPlan);
   const travelPlanLoading = useStore((s) => s.travelPlanLoading);
+  const travelPlanError   = useStore((s) => s.travelPlanError);
   const travelDestination = useStore((s) => s.travelDestination);
 
   if (!travelDestination) return null;
@@ -2522,7 +2602,18 @@ function TravelPlanView() {
     );
   }
 
-  if (!travelPlan) return null;
+  if (!travelPlan) {
+    if (travelPlanError) {
+      return (
+        <div className="mx-3 py-6">
+          <div className="rounded-lg border border-red-200 bg-red-50 p-4 text-center">
+            <p className="text-sm text-red-700">{travelPlanError}</p>
+          </div>
+        </div>
+      );
+    }
+    return null;
+  }
 
   const { route, itineraries } = travelPlan;
   const durationHrs  = Math.floor(route.duration_minutes / 60);
@@ -2967,7 +3058,7 @@ function App() {
     const destLng  = params.get('dest_lng');
     const destName = params.get('dest_name');
     if (destLat && destLng) {
-      useStore.getState().setTravelMode(true);
+      // Set destination only — do NOT change travel mode (PRAYER_LOGIC_RULES §5)
       useStore.getState().setTravelDestination({
         lat: parseFloat(destLat),
         lng: parseFloat(destLng),
@@ -2980,11 +3071,9 @@ function App() {
       const sharedTitle = params.get('title') ?? params.get('text') ?? '';
       const parsed = parseMapShareUrl(sharedUrl);
       if (parsed) {
-        useStore.getState().setTravelMode(true);
         useStore.getState().setTravelDestination(parsed);
       } else if (sharedTitle) {
         // Shortened URL (goo.gl/maps.app.goo.gl) — pre-fill search with title
-        useStore.getState().setTravelMode(true);
         sessionStorage.setItem('cap_pending_dest', sharedTitle);
       }
       handled = true;
@@ -2995,15 +3084,30 @@ function App() {
     }
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Fetch when location, radius, or travel mode changes, and auto-refresh every 5 minutes
+  // Fetch when location, radius, or travel mode changes, and auto-refresh with backoff
+  const refreshFailCount = useRef(0);
   useEffect(() => {
     if (!userLocation) return;
-    fetchData(userLocation.latitude, userLocation.longitude);
-    const interval = setInterval(
-      () => fetchData(userLocation.latitude, userLocation.longitude),
-      5 * 60 * 1000
-    );
-    return () => clearInterval(interval);
+    fetchData(userLocation.latitude, userLocation.longitude)
+      .then(() => { refreshFailCount.current = 0; })
+      .catch(() => { refreshFailCount.current = Math.min(refreshFailCount.current + 1, 3); });
+
+    const BASE_INTERVAL = 5 * 60 * 1000; // 5 minutes
+    let timer: ReturnType<typeof setTimeout>;
+    const scheduleNext = () => {
+      const backoff = BASE_INTERVAL * Math.pow(2, refreshFailCount.current); // 5→10→20→40 min
+      timer = setTimeout(async () => {
+        try {
+          await fetchData(userLocation.latitude, userLocation.longitude);
+          refreshFailCount.current = 0;
+        } catch {
+          refreshFailCount.current = Math.min(refreshFailCount.current + 1, 3);
+        }
+        scheduleNext();
+      }, backoff);
+    };
+    scheduleNext();
+    return () => clearTimeout(timer);
   }, [userLocation, radiusKm, travelModeStore]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Clear travel plan when destination is removed

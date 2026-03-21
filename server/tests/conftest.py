@@ -1,9 +1,8 @@
 """
-Shared test fixtures for the Catch a Prayer test suite.
+Test fixtures for Catch a Prayer.
 
-Key: We create a FRESH engine inside the test session's event loop, then
-monkey-patch app.database to use it. This avoids the "attached to a different
-loop" error that occurs when the app's engine was created at import time.
+Each test gets a fresh async engine created in its own event loop.
+Tables created once via sync engine (avoids async loop issues).
 """
 from __future__ import annotations
 
@@ -18,11 +17,10 @@ os.environ["DATABASE_URL"] = os.environ.get(
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy import text
+from sqlalchemy import text, create_engine
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
 
-import app.database as db_module
-from app.database import Base, get_db
+from app.database import Base, get_db, set_engine
 from app.main import app
 from app.models import new_uuid
 
@@ -33,68 +31,50 @@ TABLES_TO_TRUNCATE = [
     "mosques",
 ]
 
-_test_engine = None
-_TestSessionLocal = None
+# One-time sync table creation
+_tables_created = False
+
+def _ensure_tables():
+    global _tables_created
+    if _tables_created:
+        return
+    sync_url = os.environ["DATABASE_URL"].replace("+asyncpg", "")
+    eng = create_engine(sync_url)
+    with eng.begin() as conn:
+        conn.execute(text("CREATE EXTENSION IF NOT EXISTS postgis"))
+    Base.metadata.drop_all(bind=eng)
+    Base.metadata.create_all(bind=eng)
+    eng.dispose()
+    _tables_created = True
 
 
-@pytest_asyncio.fixture(scope="session")
-async def _setup_db():
-    """Create a fresh engine in the test event loop and patch the app to use it."""
-    global _test_engine, _TestSessionLocal
-
-    # Dispose the old engine's connection pool to avoid stale loop references
-    await db_module.engine.dispose()
-
-    _test_engine = create_async_engine(os.environ["DATABASE_URL"], echo=False)
-    _TestSessionLocal = async_sessionmaker(_test_engine, class_=AsyncSession, expire_on_commit=False)
-
-    # Monkey-patch the app's database module so all API handlers use our engine
-    db_module.engine = _test_engine
-    db_module.AsyncSessionLocal = _TestSessionLocal
-
-    async with _test_engine.begin() as conn:
-        await conn.execute(text("CREATE EXTENSION IF NOT EXISTS postgis"))
-        await conn.run_sync(Base.metadata.drop_all)
-        await conn.run_sync(Base.metadata.create_all)
-
-    yield
-
-    async with _test_engine.begin() as conn:
-        await conn.run_sync(Base.metadata.drop_all)
-    await _test_engine.dispose()
-
-
-@pytest_asyncio.fixture(autouse=True)
-async def _clean_tables(_setup_db):
-    yield
-    async with _TestSessionLocal() as session:
+# Per-test engine + factory (created in the test's event loop)
+@pytest_asyncio.fixture
+async def _test_db():
+    _ensure_tables()
+    eng = create_async_engine(os.environ["DATABASE_URL"], echo=False)
+    factory = async_sessionmaker(eng, class_=AsyncSession, expire_on_commit=False)
+    set_engine(eng, factory)
+    yield eng, factory
+    # Cleanup
+    async with factory() as session:
         for table in TABLES_TO_TRUNCATE:
             await session.execute(text(f"TRUNCATE {table} CASCADE"))
         await session.commit()
+    await eng.dispose()
 
 
 @pytest_asyncio.fixture
-async def async_client(_setup_db):
-    # Override get_db to use our test session factory
-    async def _test_get_db():
-        async with _TestSessionLocal() as session:
-            try:
-                yield session
-                await session.commit()
-            except Exception:
-                await session.rollback()
-                raise
-
-    app.dependency_overrides[get_db] = _test_get_db
+async def async_client(_test_db):
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         yield client
-    app.dependency_overrides.clear()
 
 
 @pytest_asyncio.fixture
-async def db_session(_setup_db):
-    async with _TestSessionLocal() as session:
+async def db_session(_test_db):
+    _, factory = _test_db
+    async with factory() as session:
         yield session
 
 
@@ -108,12 +88,13 @@ async def seed_mosque_direct(
     timezone_str: str = "America/New_York",
     schedule: dict | None = None,
 ) -> str:
+    from app.database import _session_factory
     mosque_id = new_uuid()
-    async with _TestSessionLocal() as session:
+    async with _session_factory() as session:
         await session.execute(text("""
-            INSERT INTO mosques (id, name, lat, lng, geom, timezone, country, is_active, verified)
+            INSERT INTO mosques (id, name, lat, lng, geom, timezone, country, is_active, verified, places_enriched)
             VALUES (:id, :name, :lat, :lng, ST_SetSRID(ST_MakePoint(:lng, :lat), 4326),
-                    :tz, 'US', true, false)
+                    :tz, 'US', true, false, false)
         """), {"id": mosque_id, "name": name, "lat": lat, "lng": lng, "tz": timezone_str})
 
         if schedule:
@@ -131,7 +112,6 @@ async def seed_mosque_direct(
             cols = ", ".join(params.keys())
             vals = ", ".join(f":{k}" for k in params.keys())
             await session.execute(text(f"INSERT INTO prayer_schedules ({cols}) VALUES ({vals})"), params)
-
         await session.commit()
     return mosque_id
 
@@ -145,8 +125,9 @@ async def seed_spot_direct(
     status: str = "active",
     verification_count: int = 3,
 ) -> str:
+    from app.database import _session_factory
     spot_id = new_uuid()
-    async with _TestSessionLocal() as session:
+    async with _session_factory() as session:
         await session.execute(text("""
             INSERT INTO prayer_spots (
                 id, name, spot_type, lat, lng, geom, timezone, country,
@@ -165,7 +146,7 @@ async def seed_spot_direct(
     return spot_id
 
 
-# Backward-compat aliases
+# Backward-compat
 async def seed_mosque(session, **kwargs):
     return await seed_mosque_direct(**kwargs)
 
@@ -173,7 +154,8 @@ async def seed_spot(session, **kwargs):
     return await seed_spot_direct(**kwargs)
 
 def get_test_engine():
-    return _test_engine, _TestSessionLocal
+    from app.database import _engine, _session_factory
+    return _engine, _session_factory
 
 
 NYC_SCHEDULE = {

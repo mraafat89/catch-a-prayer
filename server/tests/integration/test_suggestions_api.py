@@ -163,9 +163,9 @@ async def test_duplicate_vote_rejected(async_client):
 
 
 @pytest.mark.asyncio
-async def test_suggestion_accepted_after_threshold(async_client, db_session):
+async def test_suggestion_accepted_after_threshold(async_client):
     """Iqama suggestion accepted at net +2 upvotes."""
-    mosque_id = await seed_mosque(db_session, schedule=NYC_SCHEDULE)
+    mosque_id = await seed_mosque_direct(schedule=NYC_SCHEDULE)
 
     r1 = await async_client.post(f"/api/mosques/{mosque_id}/suggestions", json={
         "mosque_id": mosque_id,
@@ -173,19 +173,23 @@ async def test_suggestion_accepted_after_threshold(async_client, db_session):
         "suggested_value": "13:30",
         "session_id": "threshold-author",
     })
+    assert r1.status_code == 201
     suggestion_id = r1.json()["id"]
 
-    # Vote 1
-    await async_client.post(f"/api/suggestions/{suggestion_id}/vote", json={
-        "session_id": "threshold-voter-1",
-        "is_positive": True,
-    })
+    # Vote 1 — use X-Forwarded-For to simulate different IP
+    r2 = await async_client.post(
+        f"/api/suggestions/{suggestion_id}/vote",
+        json={"session_id": "threshold-voter-1", "is_positive": True},
+        headers={"X-Forwarded-For": "10.0.0.1"},
+    )
+    assert r2.status_code == 200
 
-    # Vote 2 — should trigger acceptance (iqama threshold = 2)
-    r3 = await async_client.post(f"/api/suggestions/{suggestion_id}/vote", json={
-        "session_id": "threshold-voter-2",
-        "is_positive": True,
-    })
+    # Vote 2 — different session AND different IP
+    r3 = await async_client.post(
+        f"/api/suggestions/{suggestion_id}/vote",
+        json={"session_id": "threshold-voter-2", "is_positive": True},
+        headers={"X-Forwarded-For": "10.0.0.2"},
+    )
     assert r3.status_code == 200
     assert r3.json()["status"] == "accepted"
 

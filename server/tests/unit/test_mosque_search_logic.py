@@ -323,7 +323,6 @@ class TestGetNextCatchable:
         if result:
             assert result["prayer"] not in ("dhuhr", "asr")
 
-    @pytest.mark.xfail(reason="BUG: Muqeem mode doesn't skip prayed prayers in get_next_catchable — only Musafir does via _musafir_active_prayers")
     def test_returns_none_when_all_prayed_muqeem(self):
         """When all are marked prayed in Muqeem, should return None."""
         result = get_next_catchable(

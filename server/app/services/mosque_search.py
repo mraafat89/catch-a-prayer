@@ -576,7 +576,12 @@ def get_next_catchable(
     (the pair is handled by travel_combinations instead).
     """
     priority_order = ["fajr", "dhuhr", "asr", "maghrib", "isha"]
-    skip = _musafir_active_prayers(prayed_prayers or set()) if travel_mode else set()
+    # In Musafir: sequential inference (Asr prayed → skip Dhuhr+Asr)
+    # In Muqeem: skip individually prayed prayers
+    if travel_mode:
+        skip = _musafir_active_prayers(prayed_prayers or set())
+    else:
+        skip = set(prayed_prayers) if prayed_prayers else set()
     UPCOMING_WINDOW_MINUTES = 120  # show upcoming if adhan within 2 hours
 
     STATUS_RANK = {
@@ -603,7 +608,9 @@ def get_next_catchable(
         # Filter out upcoming prayers that are more than 2 hours away when
         # there are other active options to show — but keep them in the fallback.
         if status["status"] == "upcoming":
-            minutes_until = status.get("minutes_until_iqama", 9999)
+            # Use adhan time for the 2-hour window, not iqama (PRAYER_LOGIC_RULES §2)
+            adhan_t = status.get("adhan_time")
+            minutes_until = (hhmm_to_minutes(adhan_t) - current_minutes) if adhan_t else 9999
             if minutes_until > UPCOMING_WINDOW_MINUTES:
                 continue
         candidates.append(status)
@@ -650,7 +657,10 @@ def get_catchable_prayers(
     """
     priority_order = ["fajr", "dhuhr", "asr", "maghrib", "isha"]
     UPCOMING_WINDOW_MINUTES = 120
-    skip = _musafir_active_prayers(prayed_prayers or set()) if travel_mode else set()
+    if travel_mode:
+        skip = _musafir_active_prayers(prayed_prayers or set())
+    else:
+        skip = set(prayed_prayers) if prayed_prayers else set()
 
     results = []
     for prayer in priority_order:
@@ -664,7 +674,9 @@ def get_catchable_prayers(
         if status["status"] == "missed_make_up":
             continue
         if status["status"] == "upcoming":
-            minutes_until = status.get("minutes_until_iqama", 9999)
+            # Use adhan time for the 2-hour window, not iqama (PRAYER_LOGIC_RULES §2)
+            adhan_t = status.get("adhan_time")
+            minutes_until = (hhmm_to_minutes(adhan_t) - current_minutes) if adhan_t else 9999
             if minutes_until > UPCOMING_WINDOW_MINUTES:
                 continue
         results.append(status)
@@ -755,7 +767,7 @@ async def find_nearby_mosques(
     query = text("""
         SELECT
             id::text, name, lat, lng, address, city, state, country, timezone,
-            phone, website, has_womens_section, wheelchair_accessible,
+            phone, website, denomination, has_womens_section, wheelchair_accessible,
             ST_Distance(
                 geom::geography,
                 ST_SetSRID(ST_MakePoint(:lng, :lat), 4326)::geography

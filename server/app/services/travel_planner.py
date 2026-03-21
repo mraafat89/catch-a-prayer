@@ -40,10 +40,68 @@ logger = logging.getLogger(__name__)
 settings = get_settings()
 
 DETOUR_OVERHEAD_MINUTES = 15      # time to stop, pray, re-enter route
-ROUTE_CORRIDOR_KM = 25            # search radius around each route waypoint
+ROUTE_CORRIDOR_KM = 25            # initial search radius around each route waypoint
+PROGRESSIVE_RADII = [25, 50, 75]  # progressive expansion when no mosque found
 WAYPOINT_INTERVAL_MINUTES = 30    # sample route waypoints every 30 minutes
 MAX_DETOUR_MINUTES = 60           # skip mosques requiring > 60 min total detour
 HIGHWAY_SPEED_KMH = 60            # speed used for detour estimate (highway avg)
+MAX_TRIP_HOURS = 72               # max trip duration (3 days)
+PRAYERS = ["fajr", "dhuhr", "asr", "maghrib", "isha"]
+
+
+def validate_trip_duration(departure_dt: datetime, arrival_dt: datetime) -> tuple[bool, str]:
+    """Validate trip duration. Returns (is_valid, error_message)."""
+    duration = arrival_dt - departure_dt
+    hours = duration.total_seconds() / 3600
+    if hours > MAX_TRIP_HOURS:
+        return False, (
+            f"This trip is longer than 3 days ({hours:.0f} hours). "
+            "Please break it into shorter segments for accurate prayer planning."
+        )
+    if hours <= 0:
+        return False, "Arrival must be after departure."
+    return True, ""
+
+
+def enumerate_trip_prayers(
+    departure_dt: datetime,
+    arrival_dt: datetime,
+    schedules_by_date: dict,
+) -> list[dict]:
+    """
+    Enumerate all prayers that fall within a multi-day trip window.
+    Returns list of {prayer, date, adhan_time, iqama_time, day_number}.
+    Each calendar day uses its own prayer schedule.
+    """
+    results = []
+    current_date = departure_dt.date()
+    end_date = arrival_dt.date()
+    day_number = 1
+
+    while current_date <= end_date:
+        schedule = schedules_by_date.get(current_date, {})
+        for prayer in PRAYERS:
+            adhan = schedule.get(f"{prayer}_adhan")
+            if not adhan:
+                continue
+            adhan_min = hhmm_to_minutes(adhan)
+            prayer_dt = datetime(
+                current_date.year, current_date.month, current_date.day,
+                adhan_min // 60, adhan_min % 60,
+                tzinfo=departure_dt.tzinfo,
+            )
+            if departure_dt <= prayer_dt <= arrival_dt:
+                results.append({
+                    "prayer": prayer,
+                    "date": current_date,
+                    "adhan_time": adhan,
+                    "iqama_time": schedule.get(f"{prayer}_iqama"),
+                    "day_number": day_number,
+                })
+        current_date += timedelta(days=1)
+        day_number += 1
+
+    return results
 
 
 def fmt_duration(minutes: int) -> str:
@@ -353,9 +411,10 @@ async def find_route_mosques(
     db: AsyncSession,
     checkpoints: list[dict],
     departure_dt: datetime,
+    corridor_km: float = ROUTE_CORRIDOR_KM,
 ) -> list[dict]:
     """
-    Find mosques within ROUTE_CORRIDOR_KM of the route.
+    Find mosques within corridor_km of the route.
     Samples search centres every WAYPOINT_INTERVAL_MINUTES along the route,
     then searches a radius around each centre — giving uniform corridor coverage
     without the false positives of a single bounding box on diagonal routes.
@@ -364,8 +423,8 @@ async def find_route_mosques(
         return []
 
     search_wps = sample_route_waypoints(checkpoints, WAYPOINT_INTERVAL_MINUTES)
-    lat_buf = ROUTE_CORRIDOR_KM / 111.0
-    lng_buf = ROUTE_CORRIDOR_KM / 85.0  # conservative
+    lat_buf = corridor_km / 111.0
+    lng_buf = corridor_km / 85.0  # conservative
 
     # Build per-waypoint bbox OR clauses.
     # Values are computed floats from route geometry (not user input) — safe to inline.
@@ -519,6 +578,10 @@ async def fetch_anchor_mosques(
             if calc:
                 schedule = {**calc, **estimate_iqama_times(calc)}
 
+        # Compute actual detour from anchor point to this mosque (round trip)
+        dist_km = haversine_km(lat, lng, row["lat"], row["lng"])
+        detour_est = max(1, round(dist_km * 2 * 1.3 / 60 * 60))  # round trip, road factor 1.3, 60 km/h
+
         mosques.append({
             "id": row["id"],
             "name": row["name"],
@@ -528,7 +591,7 @@ async def fetch_anchor_mosques(
             "city": row["city"],
             "state": row["state"],
             "google_place_id": row.get("google_place_id"),
-            "detour_minutes": 0,
+            "detour_minutes": detour_est,
             "minutes_into_trip": 0,
             "local_arrival_minutes": local_pass.hour * 60 + local_pass.minute,
             "local_arrival_time_fmt": f"{local_pass.hour:02d}:{local_pass.minute:02d}",
@@ -1403,6 +1466,38 @@ def build_itineraries(prayer_pairs: list[dict], allow_combining: bool = True) ->
 
 
 # ---------------------------------------------------------------------------
+# Itinerary scoring & ranking (ROUTE_PLANNING_ALGORITHM.md §5)
+# ---------------------------------------------------------------------------
+
+def score_itinerary(itinerary: dict) -> float:
+    """Score an itinerary. Lower is better.
+
+    Formula: (detour * 2) + (stops * 10) + (infeasible * 100) - (imam_catches * 5)
+    """
+    total_detour = itinerary.get("total_detour_minutes", 0)
+    stop_count = itinerary.get("stop_count", 0)
+
+    infeasible = 0
+    imam_catches = 0
+    for pc in itinerary.get("pair_choices", []):
+        opt = pc.get("option", {})
+        if not opt.get("feasible", True):
+            infeasible += 1
+        for stop in opt.get("stops", []):
+            if stop.get("status") == "can_catch_with_imam":
+                imam_catches += 1
+
+    return (total_detour * 2) + (stop_count * 10) + (infeasible * 100) - (imam_catches * 5)
+
+
+def rank_itineraries(itineraries: list[dict]) -> list[dict]:
+    """Sort itineraries by score ascending (best first)."""
+    scored = [(score_itinerary(it), i, it) for i, it in enumerate(itineraries)]
+    scored.sort(key=lambda x: (x[0], x[1]))
+    return [it for _, _, it in scored]
+
+
+# ---------------------------------------------------------------------------
 # Main entry point
 # ---------------------------------------------------------------------------
 
@@ -1459,6 +1554,11 @@ async def build_travel_plan(
 
     arrival_dt = departure_dt + timedelta(seconds=route["duration"])
 
+    # Validate trip duration (max 3 days)
+    valid, error_msg = validate_trip_duration(departure_dt, arrival_dt)
+    if not valid:
+        raise ValueError(error_msg)
+
     # 2. Build checkpoints
     checkpoints = build_checkpoints(route, departure_dt)
     if len(checkpoints) < 2:
@@ -1480,19 +1580,29 @@ async def build_travel_plan(
     origin_schedule = {**(origin_calc or {}), **estimate_iqama_times(origin_calc or {})}
 
     # Get destination schedule (for arrival time prayers)
+    # Use ARRIVAL date and arrival-time offset (not departure) for correct
+    # date and DST handling (ROUTE_PLANNING_ALGORITHM.md — Timezone Crossing)
+    arrival_date = arrival_dt.date()
     try:
         from timezonefinder import TimezoneFinder
         dest_tz_str = TimezoneFinder().timezone_at(lat=dest_lat, lng=dest_lng) or timezone_str
         dest_ptz = pytz.timezone(dest_tz_str)
-        dest_offset_h = dest_ptz.utcoffset(departure_dt.replace(tzinfo=None)).total_seconds() / 3600
+        dest_offset_h = dest_ptz.utcoffset(arrival_dt.replace(tzinfo=None)).total_seconds() / 3600
     except Exception:
         dest_tz_str = timezone_str
         dest_offset_h = offset_h
-    dest_calc = calculate_prayer_times(dest_lat, dest_lng, today, timezone_offset=dest_offset_h)
+    dest_calc = calculate_prayer_times(dest_lat, dest_lng, arrival_date, timezone_offset=dest_offset_h)
     dest_schedule = {**(dest_calc or {}), **estimate_iqama_times(dest_calc or {})}
 
-    # 4. Find mosques along route + anchor mosques near origin and destination
-    route_mosques = await find_route_mosques(db, checkpoints, departure_dt)
+    # 4. Find mosques along route with progressive radius search
+    # Start at 25 km, expand to 50/75 km if too few mosques found
+    route_mosques = []
+    for radius in PROGRESSIVE_RADII:
+        route_mosques = await find_route_mosques(db, checkpoints, departure_dt, corridor_km=radius)
+        if len(route_mosques) >= 3:  # enough candidates to build viable plans
+            break
+        logger.info(f"Progressive search: {len(route_mosques)} mosques at {radius}km, expanding...")
+
     origin_mosques = await fetch_anchor_mosques(db, origin_lat, origin_lng, timezone_str, departure_dt)
     dest_mosques = await fetch_anchor_mosques(db, dest_lat, dest_lng, dest_tz_str, arrival_dt)
 
@@ -1672,7 +1782,7 @@ async def build_travel_plan(
             "route_geometry": base_geometry,
         },
         "prayer_pairs": prayer_pairs,
-        "itineraries": itineraries,
+        "itineraries": rank_itineraries(itineraries),
         "departure_time": departure_dt.isoformat(),
         "estimated_arrival_time": arrival_dt.isoformat(),
     }

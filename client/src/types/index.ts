@@ -57,6 +57,20 @@ export interface Mosque {
   prayers: PrayerTime[];
   sunrise: string | null;
   jumuah_sessions: JumuahSession[];
+  special_prayers: SpecialPrayer[];
+}
+
+export interface SpecialPrayer {
+  prayer_type: string;  // eid_fitr / eid_adha / taraweeh / tahajjud
+  prayer_time: string | null;
+  takbeer_time: string | null;
+  doors_open_time: string | null;
+  session_number: number;
+  imam_name: string | null;
+  language: string | null;
+  location_notes: string | null;
+  special_notes: string | null;
+  valid_date: string | null;
 }
 
 export interface JumuahSession {
