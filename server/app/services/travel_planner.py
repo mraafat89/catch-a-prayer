@@ -934,27 +934,24 @@ def build_combination_plan(
     _p2_dep = prayer_status_at_arrival(prayer2, schedule, dep_min)
 
     # ── Stale prayer check ────────────────────────────────────────────────
-    # If the prayer's adhan was more than 3 hours before departure AND status
-    # is "can_pray_solo", it's a stale period (e.g., Isha adhan at 8:30 PM,
-    # departure at 1:30 AM — technically in Isha window but 5 hours stale).
-    # Don't include stale prayers in "pray before leaving" options.
-    STALE_THRESHOLD = 180  # 3 hours
-    for prayer_name, status_ref in [(prayer1, '_p1_dep'), (prayer2, '_p2_dep')]:
-        status = locals()[status_ref]
-        if status and status.get("status") == "can_pray_solo_at_mosque":
-            adhan_str = schedule.get(f"{prayer_name}_adhan")
-            if adhan_str:
-                adhan_m = hhmm_to_minutes(adhan_str)
-                # Time since adhan (handle midnight wrap)
-                if dep_min < adhan_m:
-                    time_since = (dep_min + 1440) - adhan_m
-                else:
-                    time_since = dep_min - adhan_m
-                if time_since > STALE_THRESHOLD:
-                    if status_ref == '_p1_dep':
-                        _p1_dep = None
-                    else:
-                        _p2_dep = None
+    # If a prayer's adhan was > 3 hours before departure AND the status is
+    # just "can_pray_solo" (not "can_catch_with_imam"), it's a stale period.
+    # Example: Isha adhan at 8:30 PM, departure at 1:30 AM → 5 hours stale.
+    # Don't offer "pray before leaving" for stale prayers.
+    def _is_stale(prayer_name: str, status: dict | None) -> bool:
+        if not status or status.get("status") != "can_pray_solo_at_mosque":
+            return False
+        adhan_str = schedule.get(f"{prayer_name}_adhan")
+        if not adhan_str:
+            return False
+        adhan_m = hhmm_to_minutes(adhan_str)
+        time_since = ((dep_min - adhan_m) + 1440) % 1440
+        return time_since > 180  # > 3 hours
+
+    if _is_stale(prayer1, _p1_dep):
+        _p1_dep = None
+    if _is_stale(prayer2, _p2_dep):
+        _p2_dep = None
 
     # ── Period-closed check (Muqeem mode only) ─────────────────────────────
     # In Muqeem mode (no combining), if prayer1's window has already closed at departure
