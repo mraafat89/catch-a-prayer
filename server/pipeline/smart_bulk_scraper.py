@@ -406,6 +406,10 @@ FALLBACK_PATHS = [
     "/iqamah", "/adhan-times", "/daily-schedule",
     "/prayer-timing", "/namaz", "/salaat-times",
     "/prayer-times-iqamah-times", "/daily-prayer-times",
+    # French (Quebec mosques)
+    "/horaires-de-priere", "/horaires", "/prieres",
+    # Non-standard
+    "/prayer-schedule", "/salah-time", "/athan-iqamah",
 ]
 
 
@@ -662,6 +666,7 @@ JINA_PATHS = [
     "/prayers-mosques", "/iqamah-times", "/salah",
     "/prayer-timings", "/iqamah", "/daily-schedule",
     "/prayer-timing", "/daily-prayer-times",
+    "/horaires-de-priere", "/prayer-schedule",
 ]
 
 
