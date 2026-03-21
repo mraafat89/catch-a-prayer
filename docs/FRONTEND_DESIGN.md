@@ -228,6 +228,12 @@ Rendered **inline inside `MapBottomSheet`** when `singleMosqueNav` is set (no lo
 
 **Prayer fallback after marking prayed:** Uses `PRAYER_ORDER` starting from the current prayer period (not from Fajr). Handles the case where Asr adhan has already passed.
 
+**Mode switching:** When user switches Muqeem → Musafir, apply sequential inference (Asr marked → add Dhuhr). When switching Musafir → Muqeem, carry prayed Set as-is. See `PRAYER_LOGIC_RULES.md` section 3 for full rules.
+
+**Midnight behavior:** Prayed state persists past midnight using Fajr-to-Fajr day boundary (not calendar midnight). After all prayers pass, shows "Next: Fajr tomorrow" with leave-by time.
+
+**After Isha passes:** Instead of showing "Isha — make it up", show "Next: Fajr tomorrow at {time}" with leave-by calculation. This is the only prayer that gets a "tomorrow" preview.
+
 ### Prayer Spot Card
 
 The spot detail card has a navigate diamond-arrow icon in its header. Tapping it opens a navigate action sheet with options: Google Maps / Apple Maps / Share. The bottom "Get Directions" link has been removed.
@@ -332,7 +338,7 @@ When `travelMode=true`, mosque cards and detail sheets show combining options (J
 - If both available (before second prayer): show Taqdeem as primary, Ta'kheer as secondary
 - Section header shows `{pair.label} — Musafir` text only — no emojis
 
-**Sequential inference:** If Asr is marked as prayed, Dhuhr is implicitly treated as prayed. If Isha is marked as prayed, Maghrib is implicitly prayed. This inference applies to the `PrayedBanner`, the `MosqueCard` filter, and the `travel_combinations` filter.
+**Sequential inference:** If Asr is marked as prayed, Dhuhr is implicitly treated as prayed (you cannot pray Asr without Dhuhr). If Isha is marked as prayed, Maghrib is implicitly prayed. The reverse does NOT hold: marking Dhuhr does not imply Asr. This inference applies to the `PrayedBanner`, the `MosqueCard` filter, and the `travel_combinations` filter. On mode switch (Muqeem → Musafir), inferred prayers are persisted to the Set. See `PRAYER_LOGIC_RULES.md` for complete rules.
 
 ---
 
