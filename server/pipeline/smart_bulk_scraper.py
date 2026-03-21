@@ -337,7 +337,50 @@ FALLBACK_PATHS = [
     "/salat", "/daily-prayers", "/schedule", "/prayer",
     "/index.php/prayer-schedules", "/index.php/prayer-times",
     "/prayer-times-iqama", "/services/prayer-times",
+    "/prayers-mosques", "/masjid-services", "/salah",
+    "/prayer-times-and-iqama", "/iqamah-times",
 ]
+
+
+async def _extract_from_praytimes_js(page) -> dict | None:
+    """Detect PrayTimes.js library and extract times from it."""
+    try:
+        result = await page.evaluate("""() => {
+            // Check if prayTimes object exists
+            if (typeof prayTimes !== 'undefined' || typeof PrayTimes !== 'undefined') {
+                var pt = typeof prayTimes !== 'undefined' ? prayTimes : new PrayTimes();
+                var now = new Date();
+                var times = pt.getTimes(now, [document._capLat || 0, document._capLng || 0], 'auto', 0, '24h');
+                return times;
+            }
+            // Check for hardcoded coordinates in scripts
+            var scripts = document.querySelectorAll('script');
+            for (var s of scripts) {
+                var text = s.textContent || '';
+                var match = text.match(/getTimes\\s*\\([^,]+,\\s*\\[([\\d.-]+),\\s*([\\d.-]+)\\]/);
+                if (match) {
+                    return {_coords: [parseFloat(match[1]), parseFloat(match[2])]};
+                }
+                // Also check for method setting
+                var method = text.match(/setMethod\\s*\\(['"](\\w+)['"]/);
+                if (method) {
+                    return {_method: method[1]};
+                }
+            }
+            return null;
+        }""")
+        if result and "_coords" not in result:
+            # Got actual prayer times from PrayTimes.js
+            data = {"adhan": {}, "iqama": {}, "jumuah": []}
+            prayer_map = {"fajr": "fajr", "sunrise": "sunrise", "dhuhr": "dhuhr",
+                          "asr": "asr", "maghrib": "maghrib", "isha": "isha"}
+            for key, canonical in prayer_map.items():
+                if key in result and result[key]:
+                    data["adhan"][canonical] = result[key]
+            return data if len(data["adhan"]) >= 3 else None
+    except Exception:
+        pass
+    return None
 
 
 async def _discover_prayer_page(page, base_url: str) -> str | None:
@@ -471,7 +514,16 @@ async def scrape_with_playwright(websites: list[dict], engine, save: bool = True
                         except Exception:
                             pass
 
+                # Try PrayTimes.js detection before closing page
+                pt_data = await _extract_from_praytimes_js(page)
                 await page.close()
+
+                if pt_data and validate_schedule(pt_data):
+                    log.info(f"  ✓ PrayTimes.js detected: {len(pt_data['adhan'])} prayers")
+                    if save:
+                        _save_to_db(engine, mosque_id, pt_data, today, source="praytimes_js")
+                    stats["success"] += 1
+                    continue
 
                 # Extract prayer times
                 data = extract_times_from_text(text_content)
@@ -525,6 +577,7 @@ JINA_PATHS = [
     "/prayer-times", "/prayer-time", "/prayers",
     "/iqama", "/salah-times", "/prayer-schedule",
     "/services/prayer-times", "/schedule",
+    "/prayers-mosques", "/iqamah-times", "/salah",
 ]
 
 
