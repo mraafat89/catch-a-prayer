@@ -116,8 +116,9 @@ def extract_times_from_text(text_content: str) -> dict:
             results["iqama"][found_prayer] = _normalize_time(*times[1])
         elif len(times) == 1:
             results["adhan"][found_prayer] = _normalize_time(*times[0])
-            # Check for iqama offset
-            offsets = OFFSET_RE.findall(context)
+            # Check for iqama offset on this line or next
+            search_text = line + (" " + lines[i + 1] if i + 1 < len(lines) else "")
+            offsets = OFFSET_RE.findall(search_text)
             if offsets:
                 results["iqama"][found_prayer] = f"+{offsets[0]}"
 
