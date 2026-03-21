@@ -119,28 +119,100 @@ Functional and non-functional requirements for Catch a Prayer. This document + `
 - Trips exceeding 3 days: show message "This trip is longer than 3 days. Please break it into shorter segments for accurate prayer planning."
 - Multi-day trips track prayers per calendar day with correct timezone-aware schedules
 
-### FR-4.5: Plan Results
-- Return 3-5 itinerary options with different prayer strategies
-- Each itinerary shows: label, summary, detour minutes, mosque stops, route geometry
-- First itinerary auto-selected
+### FR-4.5: Route Planning Algorithm
+
+#### 4.5.1: Mosque Discovery (Corridor Search)
+- Sample waypoints every 30 minutes along the route
+- Search within 25 km radius of each waypoint (default corridor)
+- Skip mosques requiring > 60 min total detour
+- Compute detour time using haversine + 1.3x road factor at 60 km/h
+- Origin/destination anchor mosques: compute ACTUAL detour (not hardcoded 0)
+
+#### 4.5.2: Mosque Selection (Scoring)
+- For each prayer, score candidate mosques by:
+  - **Detour cost** (lower is better): time added to trip in minutes
+  - **Iqama alignment** (higher is better): how close arrival is to iqama (catching with imam preferred over solo)
+  - **Data confidence** (higher is better): scraped mosque > calculated times
+- Select the top-scoring mosque per prayer, not just the first one found
+- This is the key optimization: we don't pick the first mosque along the route — we pick the BEST one
+
+#### 4.5.3: Itinerary Generation
+- Generate 3-5 itinerary templates per trip:
+  - **All early (Jam' Taqdeem)**: combine both pairs at first prayer's time — minimizes stops
+  - **All late (Jam' Ta'kheer)**: combine at second prayer's time — maximizes flexibility
+  - **Mixed**: Taqdeem for first pair, Ta'kheer for second
+  - **Separate stops**: individual mosque stop for each prayer (Muqeem mode)
+  - **At destination**: pray all at arrival if timing allows
+- Each itinerary scored and ranked (see 4.5.4)
+
+#### 4.5.4: Itinerary Ranking (Default Sort)
+- Score each itinerary: `score = (total_detour_minutes * 2) + (stop_count * 10) + (infeasible_prayers * 100)`
+- Lower score = better. Rank ascending.
+- Best-ranked itinerary is auto-selected and shown first
+- Infeasible prayers heavily penalized (missing a prayer is worse than a long detour)
+
+#### 4.5.5: User Sort Options
+- After results load, user can re-sort itineraries by:
+  - **Recommended** (default ranking from 4.5.4)
+  - **Least detour** (sort by total_detour_minutes ascending)
+  - **Fewest stops** (sort by stop_count ascending, detour as tiebreak)
+  - **Most prayers with Imam** (sort by count of `can_catch_with_imam` stops descending)
+- Sort selector appears above itinerary list as a small dropdown or segmented control
+
+#### 4.5.6: Progressive Radius Search (No Mosque Found)
+- If no mosque found for a prayer within 25 km corridor:
+  1. Expand search to 50 km radius and retry
+  2. If still none at 50 km: expand to 75 km and retry
+  3. If still none at 75 km: show "No mosque found for {prayer}. Consider praying at a rest stop. Nearest mosque is {distance} away ({detour} min detour)."
+- Each expansion only runs for the missing prayer, not all prayers
+- The nearest mosque (even if over the limit) is always returned as a fallback option with a warning label
+
+#### 4.5.7: Multi-Day Trip Planning
+- For trips spanning multiple calendar days (up to 3 days):
+  - Track which DATE each prayer belongs to
+  - Fetch prayer schedule for each specific date at each location along the route
+  - Group prayer stops by day in the itinerary display:
+    ```
+    Day 1 (Mar 20)
+      Dhuhr + Asr at Islamic Center of Durham — 1:15 PM (8 min detour)
+    Day 2 (Mar 21)
+      Fajr at Masjid Al-Noor — 5:45 AM (12 min detour)
+      Dhuhr + Asr at Mosque of Raleigh — 1:30 PM (5 min detour)
+    ```
+  - Each day's Fajr is a separate prayer (not carried from previous day)
+  - Prayed state is per-date: marking Fajr as prayed on Day 1 doesn't skip Day 2's Fajr
+
+#### 4.5.8: Timezone Crossing
+- All prayer time comparisons use the MOSQUE's local timezone
+- Destination schedule uses ARRIVAL date in destination timezone (not departure date)
+- Timezone offset computed from arrival_dt (not departure_dt) to handle DST correctly
+- Each checkpoint's local time is computed in the timezone at that geographic point
+
+### FR-4.6: Plan Results Display
+- Itinerary list with sort selector at top
+- Each itinerary shows: label, summary, total detour, stop count, route geometry
+- Best-ranked itinerary auto-selected
 - Tap itinerary → select it, show route on map
 - Tap mosque stop → focus on map, show details
+- Multi-day trips: day headers between stops
 
-### FR-4.6: Plan Caching
-- Cache by: mode + origin + destination + waypoints + departure time
+### FR-4.7: Plan Caching
+- Cache by: mode + origin + destination + waypoints + departure time + sort preference
 - Cache invalidated on: clearAll(), prayed state change (replan with new prayed set)
 - Cache does NOT persist across app reloads
+- Limit cache to 10 entries (LRU eviction)
 
-### FR-4.7: Navigation
+### FR-4.8: Navigation
 - "Bismillah — Navigate" button when itinerary selected
 - Opens action sheet: Google Maps, Apple Maps (iOS only), Share Route
 - Waypoints from selected itinerary included in navigation URL
 - Uses Google Place ID when available for more accurate pin placement
 
-### FR-4.8: Error Handling
+### FR-4.9: Error Handling
 - Plan loading: show spinner "Planning your prayer route..."
 - Plan failure: show error message "Failed to plan route. Please check your connection and try again." — do NOT leave spinner hanging
-- No mosques along route: show "No prayer stops found along this route"
+- No mosques along route after progressive search: show nearest mosque as fallback with detour warning
+- Trip > 3 days: show message before planning starts
 
 ---
 
