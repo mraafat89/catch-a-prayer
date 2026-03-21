@@ -260,6 +260,69 @@ async def check_alive(websites: list[dict], engine) -> dict:
 # Phase 2+3: Playwright render + extract
 # ---------------------------------------------------------------------------
 
+PRAYER_LINK_KEYWORDS = re.compile(
+    r'prayer|salah|salat|iqama|namaz|schedule|times|daily|athan|adhan',
+    re.IGNORECASE
+)
+
+FALLBACK_PATHS = [
+    "/prayer-times", "/prayer-time", "/prayers", "/salah-times",
+    "/iqama", "/iqama-times", "/prayer-schedule", "/prayertimes",
+    "/salat", "/daily-prayers", "/schedule", "/prayer",
+    "/index.php/prayer-schedules", "/index.php/prayer-times",
+    "/prayer-times-iqama", "/services/prayer-times",
+]
+
+
+async def _discover_prayer_page(page, base_url: str) -> str | None:
+    """
+    Find the prayer times page by:
+    1. Scanning all <a> links on the page for prayer-related keywords
+    2. Falling back to common URL patterns
+    """
+    from urllib.parse import urljoin
+
+    # Strategy 1: Parse nav/footer links for prayer-related keywords
+    try:
+        links = await page.evaluate("""() => {
+            return Array.from(document.querySelectorAll('a[href]')).map(a => ({
+                href: a.href,
+                text: (a.textContent || '').trim().substring(0, 100)
+            })).filter(l => l.href && l.text);
+        }""")
+
+        for link in links:
+            if PRAYER_LINK_KEYWORDS.search(link["text"]) or PRAYER_LINK_KEYWORDS.search(link["href"]):
+                href = link["href"]
+                # Skip anchors, mailto, tel, social media
+                if any(x in href for x in ["#", "mailto:", "tel:", "facebook", "instagram", "twitter", "youtube"]):
+                    continue
+                # Must be same domain or relative
+                from urllib.parse import urlparse
+                link_domain = urlparse(href).netloc.replace("www.", "")
+                base_domain = urlparse(base_url).netloc.replace("www.", "")
+                if link_domain and link_domain != base_domain:
+                    continue
+                log.info(f"  🔗 Found nav link: '{link['text'][:40]}' → {href}")
+                return href
+    except Exception:
+        pass
+
+    # Strategy 2: Try common URL patterns
+    base = base_url.rstrip("/")
+    for path in FALLBACK_PATHS:
+        try:
+            full_url = base + path
+            resp = await page.context.request.head(full_url, timeout=5000)
+            if resp.ok:
+                log.info(f"  🔗 Found path: {path}")
+                return full_url
+        except Exception:
+            continue
+
+    return None
+
+
 async def scrape_with_playwright(websites: list[dict], engine, save: bool = True) -> dict:
     """Render websites with Playwright and extract prayer times."""
     from playwright.async_api import async_playwright
@@ -285,33 +348,26 @@ async def scrape_with_playwright(websites: list[dict], engine, save: bool = True
                 log.info(f"[{i+1}/{len(websites)}] {name}: {url}")
 
                 # Navigate with timeout
-                await page.goto(url, wait_until="networkidle", timeout=20000)
-                await page.wait_for_timeout(2000)  # let JS finish
+                resp = await page.goto(url, wait_until="networkidle", timeout=20000)
+
+                # --- Hijack/redirect detection ---
+                final_url = page.url
+                from urllib.parse import urlparse
+                orig_domain = urlparse(url).netloc.replace("www.", "")
+                final_domain = urlparse(final_url).netloc.replace("www.", "")
+                if orig_domain and final_domain and orig_domain != final_domain:
+                    # Allow subdomains but reject totally different domains
+                    if not final_domain.endswith(orig_domain) and not orig_domain.endswith(final_domain):
+                        log.info(f"  ✗ Redirected to unrelated domain: {final_domain}")
+                        stats["error"] += 1
+                        await page.close()
+                        continue
+
+                # Wait for JS frameworks (Wix, React, etc.) to render
+                await page.wait_for_timeout(3000)
 
                 # Get all visible text from homepage
                 text_content = await page.inner_text("body")
-
-                # If no prayer data on homepage, try common prayer time URLs
-                quick_check = extract_times_from_text(text_content)
-                if len(quick_check.get("adhan", {})) < 3:
-                    prayer_paths = [
-                        "/prayer-times", "/prayers", "/salah-times", "/iqama",
-                        "/prayer-schedule", "/salat", "/prayertimes",
-                        "/iqama-times", "/daily-prayers", "/schedule",
-                    ]
-                    base = url.rstrip("/")
-                    for path in prayer_paths:
-                        try:
-                            await page.goto(base + path, wait_until="networkidle", timeout=8000)
-                            await page.wait_for_timeout(1500)
-                            sub_text = await page.inner_text("body")
-                            sub_check = extract_times_from_text(sub_text)
-                            if len(sub_check.get("adhan", {})) >= 3:
-                                text_content = sub_text
-                                log.info(f"  → Found data at {path}")
-                                break
-                        except Exception:
-                            continue
 
                 # Also check for iframes (prayer widgets often in iframes)
                 iframes = await page.query_selector_all("iframe")
@@ -323,6 +379,31 @@ async def scrape_with_playwright(websites: list[dict], engine, save: bool = True
                             text_content += "\n" + iframe_text
                     except Exception:
                         pass
+
+                # If no prayer data on homepage, discover prayer page from nav links
+                quick_check = extract_times_from_text(text_content)
+                if len(quick_check.get("adhan", {})) < 3:
+                    prayer_url = await _discover_prayer_page(page, url)
+                    if prayer_url:
+                        try:
+                            await page.goto(prayer_url, wait_until="networkidle", timeout=15000)
+                            await page.wait_for_timeout(3000)
+                            sub_text = await page.inner_text("body")
+                            # Check iframes on subpage too
+                            sub_iframes = await page.query_selector_all("iframe")
+                            for iframe in sub_iframes[:3]:
+                                try:
+                                    frame = await iframe.content_frame()
+                                    if frame:
+                                        sub_text += "\n" + await frame.inner_text("body")
+                                except Exception:
+                                    pass
+                            sub_check = extract_times_from_text(sub_text)
+                            if len(sub_check.get("adhan", {})) >= 3:
+                                text_content = sub_text
+                                log.info(f"  → Found data at {prayer_url}")
+                        except Exception:
+                            pass
 
                 await page.close()
 
