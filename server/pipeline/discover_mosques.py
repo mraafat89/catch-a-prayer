@@ -241,6 +241,89 @@ SEARCH_GRID = [
     ("Sherbrooke QC", 45.4042, -71.8929, 15000),
     ("Trois-Rivieres QC", 46.3432, -72.5418, 15000),
 
+    # === LOW-COVERAGE US STATES — targeted gap filling ===
+    # Montana (0 mosques!)
+    ("Great Falls MT", 47.5002, -111.3008, 25000),
+    ("Missoula MT", 46.8721, -113.9940, 25000),
+    ("Helena MT", 46.5958, -112.0270, 20000),
+    ("Bozeman MT", 45.6770, -111.0429, 20000),
+
+    # Wyoming (2 mosques)
+    ("Cheyenne WY", 41.1400, -104.8202, 25000),
+    ("Casper WY", 42.8666, -106.3131, 25000),
+    ("Laramie WY", 41.3114, -105.5911, 20000),
+
+    # Vermont (2 mosques)
+    ("Burlington VT", 44.4759, -73.2121, 25000),
+    ("Montpelier VT", 44.2601, -72.5754, 20000),
+
+    # West Virginia (4 mosques)
+    ("Charleston WV", 38.3498, -81.6326, 25000),
+    ("Morgantown WV", 39.6295, -79.9559, 20000),
+    ("Huntington WV", 38.4192, -82.4452, 20000),
+
+    # Hawaii (1 mosque)
+    ("Maui HI", 20.7984, -156.3319, 30000),
+    ("Big Island HI", 19.7241, -155.0868, 30000),
+
+    # New Mexico (6 mosques)
+    ("Las Cruces NM", 32.3199, -106.7637, 25000),
+    ("Santa Fe NM", 35.6870, -105.9378, 20000),
+    ("Rio Rancho NM", 35.2328, -106.6630, 15000),
+
+    # Mississippi (7 mosques)
+    ("Gulfport-Biloxi MS", 30.3674, -89.0928, 25000),
+    ("Hattiesburg MS", 31.3271, -89.2903, 20000),
+    ("Meridian MS", 32.3643, -88.7037, 20000),
+
+    # Nevada (7 mosques)
+    ("Henderson NV", 36.0395, -114.9817, 20000),
+    ("North Las Vegas NV", 36.1989, -115.1175, 15000),
+
+    # Idaho (5 mosques)
+    ("Idaho Falls ID", 43.4917, -112.0339, 20000),
+    ("Pocatello ID", 42.8713, -112.4455, 20000),
+    ("Twin Falls ID", 42.5558, -114.4701, 20000),
+
+    # Maine (8 mosques)
+    ("Bangor ME", 44.8012, -68.7778, 25000),
+    ("Lewiston ME", 44.1004, -70.2148, 20000),
+
+    # South Dakota (5 mosques)
+    ("Rapid City SD", 44.0805, -103.2310, 25000),
+    ("Aberdeen SD", 45.4647, -98.4865, 20000),
+
+    # Iowa (11 mosques)
+    ("Cedar Rapids IA", 42.0083, -91.6441, 20000),
+    ("Davenport IA", 41.5236, -90.5776, 20000),
+    ("Waterloo IA", 42.4928, -92.3426, 20000),
+
+    # Utah (10 mosques)
+    ("Provo UT", 40.2338, -111.6585, 20000),
+    ("Ogden UT", 41.2230, -111.9738, 20000),
+    ("St George UT", 37.0965, -113.5684, 20000),
+
+    # === CANADA — gap filling ===
+    # Quebec (11 mosques, 0% real data)
+    ("Longueuil QC", 45.5312, -73.5185, 15000),
+    ("Quebec City South", 46.7880, -71.2540, 20000),
+    ("Saguenay QC", 48.4279, -71.0548, 20000),
+
+    # British Columbia (5 mosques)
+    ("Burnaby BC", 49.2488, -122.9805, 15000),
+    ("Coquitlam BC", 49.2838, -122.7932, 15000),
+    ("Nanaimo BC", 49.1659, -123.9401, 20000),
+    ("Kamloops BC", 50.6745, -120.3273, 20000),
+    ("Prince George BC", 53.9171, -122.7497, 20000),
+
+    # Manitoba (missing smaller cities)
+    ("Brandon MB", 49.8439, -99.9502, 20000),
+    ("Thompson MB", 55.7431, -97.8558, 20000),
+
+    # Atlantic Canada
+    ("Saint John NB", 45.2733, -66.0633, 20000),
+    ("Sydney NS", 46.1368, -60.1942, 20000),
+
     # === CANADA ===
     ("Toronto", 43.6532, -79.3832, 45000),
     ("Mississauga ON", 43.5890, -79.6441, 25000),
@@ -359,6 +442,34 @@ async def run(args):
 
     # Filter grid by region/state if specified
     grid = SEARCH_GRID
+
+    if args.low_coverage:
+        # Query DB for states with fewer than threshold mosques
+        with engine.connect() as conn:
+            rows = conn.execute(text("""
+                SELECT state, count(*) as cnt
+                FROM mosques WHERE is_active AND state IS NOT NULL AND length(state) = 2
+                GROUP BY state HAVING count(*) < :threshold
+            """), {"threshold": args.threshold}).fetchall()
+            low_states = {r[0] for r in rows}
+            # Also add states with zero mosques
+            all_us = {"AL","AK","AZ","AR","CA","CO","CT","DE","FL","GA","HI","ID","IL","IN","IA",
+                       "KS","KY","LA","ME","MD","MA","MI","MN","MS","MO","MT","NE","NV","NH","NJ",
+                       "NM","NY","NC","ND","OH","OK","OR","PA","RI","SC","SD","TN","TX","UT","VT",
+                       "VA","WA","WV","WI","WY","DC","PR"}
+            all_ca = {"ON","QC","BC","AB","SK","MB","NB","NS","NL","PE","NT","NU","YT"}
+            existing_states = {r[0] for r in conn.execute(text(
+                "SELECT DISTINCT state FROM mosques WHERE is_active AND state IS NOT NULL"
+            )).fetchall()}
+            missing = (all_us | all_ca) - existing_states
+            low_states = low_states | missing
+            logger.info(f"Low-coverage states (< {args.threshold} mosques): {sorted(low_states)}")
+
+        # State abbreviations appear in city names like "Billings MT", "Bangor ME"
+        grid = [(n,la,ln,r) for n,la,ln,r in grid
+                if any(f" {st}" in n or n.endswith(f" {st}") for st in low_states)]
+        logger.info(f"Filtered grid to {len(grid)} circles for low-coverage states")
+
     if args.state:
         grid = [(n,la,ln,r) for n,la,ln,r in grid if args.state.upper() in n.upper()]
     if args.region:
@@ -488,9 +599,11 @@ def main():
     parser.add_argument("--region", type=str, help="Region: northeast, southeast, midwest, south, west, canada")
     parser.add_argument("--state", type=str, help="Filter by state/province name")
     parser.add_argument("--save", action="store_true", help="Save results to database")
+    parser.add_argument("--low-coverage", action="store_true", help="Only search low-coverage states (<15 mosques)")
+    parser.add_argument("--threshold", type=int, default=15, help="Mosque count threshold for --low-coverage (default 15)")
     args = parser.parse_args()
 
-    if not any([args.dry_run, args.all, args.region, args.state]):
+    if not any([args.dry_run, args.all, args.region, args.state, args.low_coverage]):
         parser.print_help()
         sys.exit(1)
 

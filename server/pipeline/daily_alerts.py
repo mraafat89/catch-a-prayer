@@ -198,68 +198,68 @@ def check_alerts(metrics: dict, prev: dict) -> list[str]:
     # ── Bad things ──────────────────────────────────────────────
     # 5xx errors in the last hour
     if metrics["errors_1h"] > 5:
-        alerts.append(f"🔴 {metrics['errors_1h']} server errors in the last hour!")
+        alerts.append(f"{metrics['errors_1h']} server errors in the last hour!")
 
     # 5xx error rate > 5% in last 24h
     if metrics["requests_24h"] > 20:
         err_rate = metrics["errors_5xx_24h"] * 100 / metrics["requests_24h"]
         if err_rate > 5:
-            alerts.append(f"🔴 Error rate {err_rate:.1f}% in last 24h ({metrics['errors_5xx_24h']} of {metrics['requests_24h']})")
+            alerts.append(f"Error rate {err_rate:.1f}% in last 24h ({metrics['errors_5xx_24h']} of {metrics['requests_24h']})")
 
     # P95 latency above 2 seconds
     if metrics["p95_latency_24h"] > 2000:
-        alerts.append(f"🟡 P95 latency is {metrics['p95_latency_24h']:.0f}ms — responses are slow!")
+        alerts.append(f"P95 latency is {metrics['p95_latency_24h']:.0f}ms — responses are slow!")
 
     # No requests at all in 24h (API might be down)
     if metrics["requests_24h"] == 0 and prev.get("requests_24h", 0) > 0:
-        alerts.append("🔴 Zero API requests in the last 24h — is the server down?")
+        alerts.append("Zero API requests in the last 24h — is the server down?")
 
     # Real data percentage dropped significantly
     prev_pct = prev.get("real_pct", 0)
     if prev_pct > 0 and metrics["real_pct"] < prev_pct - 5:
-        alerts.append(f"🟡 Real data dropped from {prev_pct}% to {metrics['real_pct']}%")
+        alerts.append(f"Real data dropped from {prev_pct}% to {metrics['real_pct']}%")
 
     # Scraper failures > 50% of runs
     scraper_total = metrics["scraper_ok_24h"] + metrics["scraper_fail_24h"]
     if scraper_total > 5 and metrics["scraper_fail_24h"] > scraper_total * 0.5:
-        alerts.append(f"🟡 Scraper failing: {metrics['scraper_fail_24h']}/{scraper_total} failed in 24h")
+        alerts.append(f"Scraper failing: {metrics['scraper_fail_24h']}/{scraper_total} failed in 24h")
 
     # ── Good things ─────────────────────────────────────────────
     # Traffic milestone crossed
     for milestone in [100, 500, 1000, 5000, 10000, 50000]:
         if metrics["requests_24h"] >= milestone and prev.get("requests_24h", 0) < milestone:
-            alerts.append(f"🎉 Hit {milestone:,} requests in a day!")
+            alerts.append(f"Hit {milestone:,} requests in a day!")
             break
 
     # Unique users milestone
     for milestone in [10, 50, 100, 500, 1000]:
         if metrics["unique_users_24h"] >= milestone and prev.get("unique_users_24h", 0) < milestone:
-            alerts.append(f"🎉 {milestone} unique users in a day!")
+            alerts.append(f"{milestone} unique users in a day!")
             break
 
     # New state appeared in searches
     prev_states = set(prev.get("active_states", []))
     new_states = set(metrics["active_states"]) - prev_states
     if new_states and prev_states:  # only alert if we had state data before
-        alerts.append(f"🟢 New activity from: {', '.join(sorted(new_states))}")
+        alerts.append(f"New activity from: {', '.join(sorted(new_states))}")
 
     # Canada activity starting
     if metrics["canada_searches_7d"] > 0 and prev.get("canada_searches_7d", 0) == 0:
-        alerts.append(f"🇨🇦 First Canadian searches detected! ({metrics['canada_searches_7d']} in 7 days)")
+        alerts.append(f"First Canadian searches detected! ({metrics['canada_searches_7d']} in 7 days)")
     elif metrics["canada_searches_7d"] >= 10 and prev.get("canada_searches_7d", 0) < 10:
-        alerts.append(f"🇨🇦 Canada is picking up: {metrics['canada_searches_7d']} searches this week")
+        alerts.append(f"Canada is picking up: {metrics['canada_searches_7d']} searches this week")
 
     # Route planning usage growing
     if metrics["routes_24h"] >= 10 and prev.get("routes_24h", 0) < 10:
-        alerts.append(f"🗺️ Route planning taking off: {metrics['routes_24h']} routes planned today")
+        alerts.append(f"Route planning taking off: {metrics['routes_24h']} routes planned today")
 
     # Real data improvement
     if metrics["real_pct"] >= prev_pct + 5 and prev_pct > 0:
-        alerts.append(f"📈 Real data improved: {prev_pct}% → {metrics['real_pct']}%!")
+        alerts.append(f"Real data improved: {prev_pct}% → {metrics['real_pct']}%!")
 
     # Mosque count growth
     if metrics["new_mosques_7d"] > 10:
-        alerts.append(f"🕌 {metrics['new_mosques_7d']} new mosques added this week")
+        alerts.append(f"{metrics['new_mosques_7d']} new mosques added this week")
 
     return alerts
 
@@ -281,7 +281,7 @@ def format_daily_digest(metrics: dict) -> str:
     if len(metrics["active_states"]) > 10:
         states_str += f" +{len(metrics['active_states']) - 10} more"
 
-    msg = f"""📊 Catch a Prayer — Daily Report
+    msg = f"""Catch a Prayer — Daily Report
 {today_str}
 
 {health} System Health
@@ -289,22 +289,22 @@ def format_daily_digest(metrics: dict) -> str:
 • Unique users: {metrics['unique_users_24h']}
 • Errors: {metrics['errors_5xx_24h']} | Latency: {metrics['avg_latency_24h']:.0f}ms avg, {metrics['p95_latency_24h']:.0f}ms p95
 
-🕌 Coverage
+Coverage
 • Mosques: {metrics['mosques_total']:,} ({metrics['mosques_website']:,} websites, {metrics['mosques_phone']:,} phones)
 • Jumuah data: {metrics['jumuah_mosques']} mosques
 
-📋 Prayer Data Quality
+Prayer Data Quality
 • Real: {metrics['real_data']:,} ({real_pct}%) | Calc: {metrics['schedules_total'] - metrics['real_data']:,}
 
-🔍 User Activity
+User Activity
 • Searches: {metrics['searches_24h']} | Routes: {metrics['routes_24h']}
 • Active states: {states_str}
 • Canada: {metrics['canada_searches_7d']} searches (7d)
 
-🔧 Scraper (24h): {metrics['scraper_ok_24h']} ok, {metrics['scraper_fail_24h']} failed
-💾 DB size: {metrics['db_size']}
+Scraper (24h): {metrics['scraper_ok_24h']} ok, {metrics['scraper_fail_24h']} failed
+DB size: {metrics['db_size']}
 
-📈 {DASHBOARD_URL}"""
+{DASHBOARD_URL}"""
 
     return msg
 
@@ -318,7 +318,7 @@ async def run(mode: str):
         prev = load_state()
 
         if mode == "test":
-            send_whatsapp(f"🧪 Test alert from Catch a Prayer\nTimestamp: {datetime.utcnow().isoformat()[:19]} UTC\n\n{DASHBOARD_URL}")
+            send_whatsapp(f"Test alert from Catch a Prayer\nTimestamp: {datetime.utcnow().isoformat()[:19]} UTC\n\n{DASHBOARD_URL}")
             return
 
         if mode == "digest":
@@ -328,7 +328,7 @@ async def run(mode: str):
             # Also check for alerts and append if any
             alerts = check_alerts(metrics, prev)
             if alerts:
-                msg += "\n\n⚡ Alerts:\n" + "\n".join(alerts)
+                msg += "\n\nAlerts:\n" + "\n".join(alerts)
 
             send_whatsapp(msg)
             log.info("Daily digest sent")
@@ -337,9 +337,9 @@ async def run(mode: str):
             # Hourly smart alerts — only send if there's something noteworthy
             alerts = check_alerts(metrics, prev)
             if alerts:
-                msg = f"⚡ Cap Alert — {datetime.utcnow().strftime('%b %d %H:%M')} UTC\n\n"
+                msg = f"Cap Alert — {datetime.utcnow().strftime('%b %d %H:%M')} UTC\n\n"
                 msg += "\n".join(alerts)
-                msg += f"\n\n📈 {DASHBOARD_URL}"
+                msg += f"\n\n{DASHBOARD_URL}"
                 send_whatsapp(msg)
                 log.info("Sent %d alerts", len(alerts))
             else:
