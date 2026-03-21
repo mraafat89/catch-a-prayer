@@ -1056,10 +1056,18 @@ def save_result(engine, result: dict, target_date: date):
             logger.info(f"   💾 Saved prayer schedule ({source_label})")
 
         # ── 3. Save enrichment ─────────────────────────────────────────────
-        _save_enrichment(conn, mosque_id, result.get("enrichment", {}))
+        enrichment_data = result.get("enrichment", {})
+        # Also save phone from scraper if found
+        phone = result.get("phone")
+        if phone and not enrichment_data.get("phone"):
+            enrichment_data["phone"] = phone
+        _save_enrichment(conn, mosque_id, enrichment_data)
 
         # ── 4. Save jumuah ─────────────────────────────────────────────────
         _save_jumuah(conn, mosque_id, result.get("jumuah", []), target_date, source_label, confidence)
+
+        # ── 5. Save special prayers (Eid, Taraweeh, etc.) ─────────────────
+        _save_special_prayers(conn, mosque_id, result.get("special_prayers", []), target_date, source_label, confidence)
 
 
 def _save_enrichment(conn, mosque_id: str, enrichment: dict):
@@ -1123,6 +1131,40 @@ def _save_jumuah(conn, mosque_id: str, jumuah: list, target_date: date,
         })
 
     logger.info(f"   💾 Saved {len(jumuah)} jumuah session(s)")
+
+
+def _save_special_prayers(conn, mosque_id: str, special_prayers: list,
+                           target_date: date, source_label: str, confidence: str):
+    """Save special prayers (Eid, Taraweeh, Tahajjud)."""
+    if not special_prayers:
+        return
+
+    for sp in special_prayers:
+        if not isinstance(sp, dict):
+            continue
+        prayer_type = sp.get("prayer_type")
+        prayer_time = sp.get("prayer_time")
+        if not prayer_type or not prayer_time:
+            continue
+
+        try:
+            conn.execute(text("""
+                INSERT INTO special_prayers (id, mosque_id, prayer_type, valid_date, session_number,
+                    prayer_time, takbeer_time, special_notes, source, confidence, scraped_at, created_at)
+                VALUES (gen_random_uuid(), :mid, :ptype, :date, 1,
+                    :ptime, :takbeer, :notes, :source, :conf, now(), now())
+                ON CONFLICT (mosque_id, prayer_type, valid_date, session_number)
+                DO UPDATE SET prayer_time = :ptime, takbeer_time = :takbeer,
+                    special_notes = :notes, source = :source, updated_at = now()
+            """), {
+                "mid": mosque_id, "ptype": prayer_type, "date": target_date,
+                "ptime": prayer_time, "takbeer": sp.get("takbeer_time"),
+                "notes": sp.get("special_notes"), "source": source_label, "conf": confidence,
+            })
+        except Exception as e:
+            logger.debug(f"  Special prayer save failed: {e}")
+
+    logger.info(f"   💾 Saved {len(special_prayers)} special prayer(s)")
 
 
 # ---------------------------------------------------------------------------

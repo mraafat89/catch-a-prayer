@@ -75,6 +75,31 @@ KHUTBAH_PATTERN = re.compile(
     re.IGNORECASE
 )
 
+# Special prayer patterns
+EID_PATTERN = re.compile(
+    r'eid\s*(ul|al)?\s*-?\s*(fitr|adha|al-fitr|al-adha)|eid\s+prayer|eid\s+salah',
+    re.IGNORECASE
+)
+
+TARAWEEH_PATTERN = re.compile(
+    r'taraweeh|tarawih|taravih|taraveeh|qiyam\s*(ul|al)?\s*-?\s*layl',
+    re.IGNORECASE
+)
+
+TAHAJJUD_PATTERN = re.compile(
+    r'tahajjud|tahajud|night\s+prayer|qiyam',
+    re.IGNORECASE
+)
+
+PHONE_PATTERN = re.compile(
+    r'(?:\+?1[-.\s]?)?\(?(\d{3})\)?[-.\s]?(\d{3})[-.\s]?(\d{4})'
+)
+
+TAKBEER_PATTERN = re.compile(
+    r'takbeer|takbir|takbirat|starts?\s+at',
+    re.IGNORECASE
+)
+
 
 def parse_time_12h(h, m, ampm=None):
     """Convert 12h time to HH:MM 24h format."""
@@ -389,14 +414,73 @@ def _parse_prayer_html(html: str, name: str) -> Optional[dict]:
             if match:
                 sunrise = parse_time_12h(match.group(1), match.group(2), match.group(3))
 
+    # Strategy 4: Find special prayers (Eid, Taraweeh, Tahajjud)
+    special_prayers = []
+    lines = text.split("\n")
+    for i, line in enumerate(lines):
+        context = " ".join(lines[max(0,i-1):min(len(lines),i+3)])
+
+        # Eid prayers
+        if EID_PATTERN.search(line):
+            times_found = []
+            for match in TIME_PATTERN.finditer(context):
+                t = parse_time_12h(match.group(1), match.group(2), match.group(3))
+                if t: times_found.append(t)
+
+            prayer_type = "eid_fitr" if "fitr" in line.lower() else ("eid_adha" if "adha" in line.lower() else "eid")
+            has_takbeer = bool(TAKBEER_PATTERN.search(context))
+
+            if times_found:
+                special_prayers.append({
+                    "prayer_type": prayer_type,
+                    "prayer_time": times_found[-1],  # prayer is usually the last time mentioned
+                    "takbeer_time": times_found[0] if has_takbeer and len(times_found) > 1 else None,
+                    "special_notes": line.strip()[:200],
+                })
+
+        # Taraweeh
+        if TARAWEEH_PATTERN.search(line) and not any(sp["prayer_type"] == "taraweeh" for sp in special_prayers):
+            times_found = []
+            for match in TIME_PATTERN.finditer(context):
+                t = parse_time_12h(match.group(1), match.group(2), match.group(3))
+                if t: times_found.append(t)
+            if times_found:
+                special_prayers.append({
+                    "prayer_type": "taraweeh",
+                    "prayer_time": times_found[0],
+                    "special_notes": line.strip()[:200],
+                })
+
+        # Tahajjud
+        if TAHAJJUD_PATTERN.search(line) and not TARAWEEH_PATTERN.search(line):
+            if not any(sp["prayer_type"] == "tahajjud" for sp in special_prayers):
+                times_found = []
+                for match in TIME_PATTERN.finditer(context):
+                    t = parse_time_12h(match.group(1), match.group(2), match.group(3))
+                    if t: times_found.append(t)
+                if times_found:
+                    special_prayers.append({
+                        "prayer_type": "tahajjud",
+                        "prayer_time": times_found[0],
+                        "special_notes": line.strip()[:200],
+                    })
+
+    # Strategy 5: Find phone numbers
+    phone = None
+    for match in PHONE_PATTERN.finditer(text):
+        phone = f"({match.group(1)}) {match.group(2)}-{match.group(3)}"
+        break  # take first phone number found
+
     count = sum(1 for v in prayer_times.values() if v.get("adhan") or v.get("iqama"))
-    if count == 0:
+    if count == 0 and not special_prayers and not jumuah:
         return None
 
     return {
         "prayer_times": prayer_times,
         "sunrise": sunrise,
         "jumuah": jumuah,
+        "special_prayers": special_prayers,
+        "phone": phone,
         "prayers_found": count,
     }
 

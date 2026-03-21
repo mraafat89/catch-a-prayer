@@ -154,6 +154,46 @@ Grid parameters:
 
 ---
 
+### Data to Scrape/Collect Per Mosque
+
+| Data | Source | Priority | Status |
+|------|--------|----------|--------|
+| **Daily prayer times** (adhan + iqama) | Scraper / Mawaqit | P0 | 280 mosques |
+| **Jumuah** (khutbah time, prayer time, language, imam) | Scraper | P0 | 173 mosques |
+| **Phone number** | Google Places / Scraper | P0 | 377 mosques |
+| **Address** | OSM / Google Places | P0 | ~2,000 mosques |
+| **Eid prayers** (Fitr + Adha: time, takbeer, sessions) | Scraper / Community | P1 | 0 mosques |
+| **Taraweeh** (time, imam, nightly during Ramadan) | Scraper / Community | P1 | 0 mosques |
+| **Tahajjud/Qiyam** (late night prayers in Ramadan) | Scraper / Community | P2 | 0 mosques |
+| **Women's section** | Scraper / Community | P1 | 3 mosques |
+| **Wheelchair accessible** | Google Places / Scraper | P1 | 38 mosques |
+| **Parking** | Google Places | P2 | 0 mosques |
+| **Website** | OSM / Google Places | P0 | 1,044 mosques |
+| **Denomination** (Sunni/Shia) | Scraper | P2 | 342 mosques |
+| **Languages spoken** | Scraper / Community | P2 | 98 mosques |
+| **Photos** | Google Places | P2 | 0 mosques |
+
+### Special Prayers Schema
+
+```sql
+special_prayers table:
+- prayer_type: 'eid_fitr', 'eid_adha', 'taraweeh', 'tahajjud', 'janazah'
+- valid_date / valid_from / valid_until (date or range)
+- session_number (for multiple Eid sessions)
+- prayer_time, takbeer_time, doors_open_time
+- imam_name, language, location_notes, capacity
+- booking_required, booking_url, special_notes
+```
+
+### Client Features for Mosque Info
+
+- **Call mosque button**: tap phone number → native dialer
+- **Eid prayer card**: shows upcoming Eid with all sessions, takbeer times
+- **Taraweeh card**: during Ramadan, shows nightly Taraweeh time + imam
+- **Special prayers badge**: visual indicator when mosque has Eid/Taraweeh data
+
+---
+
 ### v1.1.0 — First Major Update — Target: 1 month after launch
 
 #### Features

@@ -41,6 +41,19 @@ class NextCatchable(BaseModel):
     period_ends_at: Optional[str] = None
 
 
+class SpecialPrayer(BaseModel):
+    prayer_type: str  # 'eid_fitr', 'eid_adha', 'taraweeh', 'tahajjud'
+    prayer_time: Optional[str] = None
+    takbeer_time: Optional[str] = None
+    doors_open_time: Optional[str] = None
+    session_number: int = 1
+    imam_name: Optional[str] = None
+    language: Optional[str] = None
+    location_notes: Optional[str] = None
+    special_notes: Optional[str] = None
+    valid_date: Optional[str] = None
+
+
 class MosqueResponse(BaseModel):
     id: str
     name: str
@@ -53,12 +66,14 @@ class MosqueResponse(BaseModel):
     website: Optional[str]
     has_womens_section: Optional[bool]
     wheelchair_accessible: Optional[bool]
+    denomination: Optional[str] = None
     next_catchable: Optional[NextCatchable]
     catchable_prayers: list[NextCatchable] = []
     travel_combinations: list
     prayers: list[PrayerTime]
     sunrise: Optional[str]
     jumuah_sessions: list
+    special_prayers: list[SpecialPrayer] = []
 
 
 class NearbyResponse(BaseModel):

@@ -715,6 +715,23 @@ async def _fetch_jumuah_sessions(db: AsyncSession, mosque_id: str, today) -> lis
     return [dict(r) for r in rows]
 
 
+async def _fetch_special_prayers(db: AsyncSession, mosque_id: str, today) -> list[dict]:
+    """Return active special prayers (Eid, Taraweeh, etc.) for today or upcoming."""
+    result = await db.execute(text("""
+        SELECT prayer_type, prayer_time, takbeer_time, doors_open_time,
+               session_number, imam_name, language, location_notes, special_notes,
+               valid_date::text
+        FROM special_prayers
+        WHERE mosque_id = CAST(:mosque_id AS uuid)
+          AND (valid_date = :date
+               OR (valid_from IS NOT NULL AND valid_from <= :date AND valid_until >= :date)
+               OR (valid_date >= :date AND valid_date <= :date + 7))
+        ORDER BY prayer_type, session_number
+    """), {"mosque_id": mosque_id, "date": today})
+    rows = result.mappings().all()
+    return [dict(r) for r in rows]
+
+
 # ---------------------------------------------------------------------------
 # Main search function
 # ---------------------------------------------------------------------------
@@ -886,6 +903,8 @@ async def find_nearby_mosques(
             "prayers": prayers_out,
             "sunrise": schedule.get("sunrise"),
             "jumuah_sessions": await _fetch_jumuah_sessions(db, row["id"], mosque_today),
+            "denomination": row.get("denomination"),
+            "special_prayers": await _fetch_special_prayers(db, row["id"], mosque_today),
         }
         mosques.append(mosque_out)
 
