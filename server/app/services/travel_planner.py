@@ -1885,7 +1885,35 @@ async def build_travel_plan(
     elif departure_dt.tzinfo is None:
         departure_dt = departure_dt.replace(tzinfo=tz_zone)
 
-    prayed = prayed_prayers or set()
+    prayed = set(prayed_prayers) if prayed_prayers else set()
+
+    # For long trips: remove prayers from prayed set if their adhan time
+    # is AFTER departure. The user prayed Isha last night, but tonight's
+    # Isha during the trip is a NEW obligation.
+    # Only apply if trip is > 10 hours (spans into a new prayer cycle).
+    if prayed:
+        dep_local = departure_dt.astimezone(tz_zone) if departure_dt.tzinfo else departure_dt
+        dep_min = dep_local.hour * 60 + dep_local.minute
+        try:
+            import pytz as _pytz
+            _ptz = _pytz.timezone(timezone_str)
+            _off = _ptz.utcoffset(departure_dt.replace(tzinfo=None)).total_seconds() / 3600
+        except Exception:
+            _off = -7
+        _dep_schedule = calculate_prayer_times(origin_lat, origin_lng, departure_dt.date(), timezone_offset=_off)
+        if _dep_schedule:
+            cleaned_prayed = set()
+            for p in prayed:
+                adhan = _dep_schedule.get(f"{p}_adhan")
+                if adhan:
+                    adhan_min = hhmm_to_minutes(adhan)
+                    # Prayer adhan is BEFORE departure → it was prayed before the trip → keep
+                    if adhan_min < dep_min:
+                        cleaned_prayed.add(p)
+                    # Prayer adhan is AFTER departure → it will happen during the trip → don't skip
+                    # (user marked yesterday's prayer, not today's upcoming one)
+            prayed = cleaned_prayed
+            logger.info(f"Prayed filter: input={prayed_prayers} cleaned={prayed} dep_min={dep_min}")
 
     # 1. Get Mapbox route (through waypoints if any)
     route = await get_mapbox_route(origin_lat, origin_lng, dest_lat, dest_lng, waypoints=waypoints)
