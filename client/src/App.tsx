@@ -2441,7 +2441,13 @@ function TravelItineraryCard({ itinerary, index }: { itinerary: TripItinerary; i
                     <span className="font-medium text-gray-800">{stop.mosque_name}</span>
                     {stop.mosque_address ? <span className="text-gray-500"> · {stop.mosque_address}</span> : null}
                     {stop.iqama_time ? <span className="text-gray-600"> · Iqama {fmtTime(stop.iqama_time)}</span> : null}
-                    <span className={`ml-1 ${th.textMid}`}> +{fmtDuration(stop.detour_minutes)} detour</span>
+                    {stop.estimated_arrival_time && (
+                      <span className="text-gray-500"> · Arrive ~{fmtTime(stop.estimated_arrival_time)}</span>
+                    )}
+                    {stop.detour_minutes > 0
+                      ? <span className={`ml-1 ${th.textMid}`}> +{fmtDuration(stop.detour_minutes)} detour</span>
+                      : <span className="ml-1 text-gray-400"> Near departure</span>
+                    }
                   </button>
                 ))}
                 {pc.option.note && (
@@ -2581,12 +2587,33 @@ function NavigateBar() {
   );
 }
 
+type SortOption = 'recommended' | 'least_detour' | 'fewest_stops' | 'most_imam';
+
+function sortItineraries(its: TripItinerary[], sort: SortOption): TripItinerary[] {
+  const copy = [...its];
+  switch (sort) {
+    case 'least_detour':
+      return copy.sort((a, b) => a.total_detour_minutes - b.total_detour_minutes);
+    case 'fewest_stops':
+      return copy.sort((a, b) => a.stop_count - b.stop_count || a.total_detour_minutes - b.total_detour_minutes);
+    case 'most_imam':
+      return copy.sort((a, b) => {
+        const countImam = (it: TripItinerary) => it.pair_choices.reduce((n, pc) =>
+          n + pc.option.stops.filter((s: TravelStop) => s.status === 'can_catch_with_imam').length, 0);
+        return countImam(b) - countImam(a);
+      });
+    default:
+      return copy; // 'recommended' — already ranked by server
+  }
+}
+
 function TravelPlanView() {
   const th                = useTheme();
   const travelPlan        = useStore((s) => s.travelPlan);
   const travelPlanLoading = useStore((s) => s.travelPlanLoading);
   const travelPlanError   = useStore((s) => s.travelPlanError);
   const travelDestination = useStore((s) => s.travelDestination);
+  const [sortBy, setSortBy] = useState<SortOption>('recommended');
 
   if (!travelDestination) return null;
 
@@ -2628,18 +2655,47 @@ function TravelPlanView() {
       <div className="mx-3 bg-white border border-gray-200 rounded-xl px-3 py-2.5 text-sm text-gray-600">
         <span className="font-semibold text-gray-800">Route: </span>
         {durationHrs > 0 ? `${durationHrs}h ` : ''}{durationMins}min · {distDisplay}
+        {(() => {
+          // Show arrival day if trip crosses midnight
+          try {
+            const dep = new Date(travelPlan.departure_time);
+            const arr = new Date(travelPlan.estimated_arrival_time);
+            const depDay = dep.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' });
+            const arrDay = arr.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' });
+            const arrTime = arr.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+            if (depDay !== arrDay) {
+              const dayDiff = Math.round((arr.getTime() - dep.getTime()) / 86400000);
+              return <span className="text-gray-500"> · Arrive {arrTime} {dayDiff === 1 ? '(+1 day)' : `(+${dayDiff} days)`}</span>;
+            }
+          } catch {}
+          return null;
+        })()}
       </div>
 
-      {/* Itinerary count label */}
+      {/* Itinerary count + sort selector */}
       {itineraries && itineraries.length > 0 && (
-        <p className="mx-3 text-xs font-bold text-gray-400 uppercase tracking-wider">
-          {itineraries.length} complete prayer plan{itineraries.length !== 1 ? 's' : ''}
-        </p>
+        <div className="mx-3 flex items-center justify-between">
+          <p className="text-xs font-bold text-gray-400 uppercase tracking-wider">
+            {itineraries.length} prayer plan{itineraries.length !== 1 ? 's' : ''}
+          </p>
+          {itineraries.length > 1 && (
+            <select
+              value={sortBy}
+              onChange={(e) => setSortBy(e.target.value as SortOption)}
+              className="text-xs text-gray-500 bg-transparent border border-gray-200 rounded px-1.5 py-0.5 focus:outline-none"
+            >
+              <option value="recommended">Recommended</option>
+              <option value="least_detour">Least detour</option>
+              <option value="fewest_stops">Fewest stops</option>
+              <option value="most_imam">Most prayers with Imam</option>
+            </select>
+          )}
+        </div>
       )}
 
-      {/* Complete trip itineraries */}
-      {(itineraries ?? []).map((it: TripItinerary, i: number) => (
-        <TravelItineraryCard key={i} itinerary={it} index={i} />
+      {/* Complete trip itineraries (sorted) */}
+      {sortItineraries(itineraries ?? [], sortBy).map((it: TripItinerary, i: number) => (
+        <TravelItineraryCard key={`${sortBy}-${i}`} itinerary={it} index={i} />
       ))}
 
       {(!itineraries || itineraries.length === 0) && (
