@@ -40,7 +40,8 @@ logger = logging.getLogger(__name__)
 settings = get_settings()
 
 DETOUR_OVERHEAD_MINUTES = 15      # time to stop, pray, re-enter route
-ROUTE_CORRIDOR_KM = 25            # search radius around each route waypoint
+ROUTE_CORRIDOR_KM = 25            # initial search radius around each route waypoint
+PROGRESSIVE_RADII = [25, 50, 75]  # progressive expansion when no mosque found
 WAYPOINT_INTERVAL_MINUTES = 30    # sample route waypoints every 30 minutes
 MAX_DETOUR_MINUTES = 60           # skip mosques requiring > 60 min total detour
 HIGHWAY_SPEED_KMH = 60            # speed used for detour estimate (highway avg)
@@ -353,9 +354,10 @@ async def find_route_mosques(
     db: AsyncSession,
     checkpoints: list[dict],
     departure_dt: datetime,
+    corridor_km: float = ROUTE_CORRIDOR_KM,
 ) -> list[dict]:
     """
-    Find mosques within ROUTE_CORRIDOR_KM of the route.
+    Find mosques within corridor_km of the route.
     Samples search centres every WAYPOINT_INTERVAL_MINUTES along the route,
     then searches a radius around each centre — giving uniform corridor coverage
     without the false positives of a single bounding box on diagonal routes.
@@ -364,8 +366,8 @@ async def find_route_mosques(
         return []
 
     search_wps = sample_route_waypoints(checkpoints, WAYPOINT_INTERVAL_MINUTES)
-    lat_buf = ROUTE_CORRIDOR_KM / 111.0
-    lng_buf = ROUTE_CORRIDOR_KM / 85.0  # conservative
+    lat_buf = corridor_km / 111.0
+    lng_buf = corridor_km / 85.0  # conservative
 
     # Build per-waypoint bbox OR clauses.
     # Values are computed floats from route geometry (not user input) — safe to inline.
@@ -1530,8 +1532,15 @@ async def build_travel_plan(
     dest_calc = calculate_prayer_times(dest_lat, dest_lng, arrival_date, timezone_offset=dest_offset_h)
     dest_schedule = {**(dest_calc or {}), **estimate_iqama_times(dest_calc or {})}
 
-    # 4. Find mosques along route + anchor mosques near origin and destination
-    route_mosques = await find_route_mosques(db, checkpoints, departure_dt)
+    # 4. Find mosques along route with progressive radius search
+    # Start at 25 km, expand to 50/75 km if too few mosques found
+    route_mosques = []
+    for radius in PROGRESSIVE_RADII:
+        route_mosques = await find_route_mosques(db, checkpoints, departure_dt, corridor_km=radius)
+        if len(route_mosques) >= 3:  # enough candidates to build viable plans
+            break
+        logger.info(f"Progressive search: {len(route_mosques)} mosques at {radius}km, expanding...")
+
     origin_mosques = await fetch_anchor_mosques(db, origin_lat, origin_lng, timezone_str, departure_dt)
     dest_mosques = await fetch_anchor_mosques(db, dest_lat, dest_lng, dest_tz_str, arrival_dt)
 
