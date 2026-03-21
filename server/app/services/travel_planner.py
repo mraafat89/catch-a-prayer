@@ -1606,6 +1606,11 @@ async def build_travel_plan(
         # so that mosques along the route (not just near origin/destination) can be found.
         dist_km = haversine_km(origin_lat, origin_lng, dest_lat, dest_lng)
         duration_min = estimate_travel_minutes(origin_lat, origin_lng, dest_lat, dest_lng)
+        # Include waypoints in the fallback route so the map shows the correct path
+        all_points = [(origin_lat, origin_lng)]
+        for wp in (waypoints or []):
+            all_points.append((wp.get("lat", wp.get("latitude", 0)), wp.get("lng", wp.get("longitude", 0))))
+        all_points.append((dest_lat, dest_lng))
         n_segments = max(4, int(dist_km / 50))
         fallback_coords = [
             [origin_lng + (dest_lng - origin_lng) * i / n_segments,
