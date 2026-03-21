@@ -11,7 +11,7 @@ set -euo pipefail
 
 PHONE="14342499037@s.whatsapp.net"
 COMPOSE="/opt/cap/docker-compose.prod.yml"
-MODE="${1:---alerts}"
+MODE="${1:-}"
 
 # Load env vars for DB password
 export $(grep -v '^#' /opt/cap/server/.env.prod | xargs) 2>/dev/null || true
