@@ -38,7 +38,7 @@ STATE_FILE = "/tmp/cap_alert_state.json"
 
 
 def send_whatsapp(message: str) -> bool:
-    """Send a WhatsApp message via OpenClaw CLI."""
+    """Send a WhatsApp message via OpenClaw CLI, or print to stdout if not available."""
     try:
         result = subprocess.run(
             ["openclaw", "message", "send",
@@ -53,8 +53,11 @@ def send_whatsapp(message: str) -> bool:
         log.error("OpenClaw failed: %s", result.stderr)
         return False
     except FileNotFoundError:
-        log.error("openclaw not found — is it installed?")
-        return False
+        # Running inside Docker — print message for bash wrapper to pick up
+        print("__WHATSAPP_MSG_START__")
+        print(message)
+        print("__WHATSAPP_MSG_END__")
+        return True
     except Exception as e:
         log.error("Failed to send: %s", e)
         return False

@@ -27,10 +27,10 @@ mkdir -p /var/log/cap
 0 3 1 1,7 * cd /opt/cap && docker compose -f docker-compose.prod.yml exec -T api python -m pipeline.full_discovery --all --save >> /var/log/cap/discovery.log 2>&1
 
 # Daily 2 PM UTC (9 AM ET): Send daily digest to WhatsApp
-0 14 * * * cd /opt/cap && docker compose -f docker-compose.prod.yml exec -T api python -m pipeline.daily_alerts --digest >> /var/log/cap/daily_alerts.log 2>&1
+0 14 * * * bash /opt/cap/scripts/daily-alerts.sh --digest >> /var/log/cap/daily_alerts.log 2>&1
 
 # Every hour: Smart alerts — only sends if thresholds breached
-0 * * * * cd /opt/cap && docker compose -f docker-compose.prod.yml exec -T api python -m pipeline.daily_alerts >> /var/log/cap/hourly_alerts.log 2>&1
+0 * * * * bash /opt/cap/scripts/daily-alerts.sh >> /var/log/cap/hourly_alerts.log 2>&1
 CRON
 ) | crontab -
 
