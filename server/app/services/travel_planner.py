@@ -616,7 +616,12 @@ def prayer_status_at_arrival(prayer: str, schedule: dict, arrival_minutes: int) 
         return None
 
     adhan_min = hhmm_to_minutes(adhan)
+    if adhan_min == 0 and prayer != "fajr":
+        # Malformed adhan data (hhmm_to_minutes returned 0 for non-midnight prayer)
+        return None
     iqama_min = hhmm_to_minutes(iqama) if iqama else adhan_min + 15
+    if iqama_min == 0:
+        iqama_min = adhan_min + 15  # fallback if iqama is malformed
     cong_end = iqama_min + CONGREGATION_WINDOW_MINUTES
 
     # Period end
