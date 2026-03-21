@@ -12,9 +12,26 @@ function saveConfirmed(set: Set<string>) {
   localStorage.setItem('cap_confirmed_spots', JSON.stringify(Array.from(set)));
 }
 
-// Prayed tracker — keyed by today's date so it auto-resets at midnight
+// Prayed tracker — keyed by Islamic prayer day (Fajr-to-Fajr, not midnight).
+// Uses 4:00 AM local time as the day boundary (earliest US/Canada Fajr).
+// Before 4 AM: yesterday's key. After 4 AM: today's key.
+// This means Isha prayed at 11 PM and at 1 AM use the same day key.
 function todayKey(): string {
-  return new Date().toISOString().slice(0, 10); // "YYYY-MM-DD"
+  const now = new Date();
+  // Use LOCAL date (not UTC) — pad month/day to 2 digits
+  const localDate = (d: Date) => {
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${y}-${m}-${day}`;
+  };
+  if (now.getHours() < 4) {
+    // Before 4 AM — still "yesterday" in prayer terms
+    const yesterday = new Date(now);
+    yesterday.setDate(yesterday.getDate() - 1);
+    return localDate(yesterday);
+  }
+  return localDate(now);
 }
 function loadPrayed(): Set<string> {
   try {

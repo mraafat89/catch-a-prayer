@@ -519,6 +519,10 @@ async def fetch_anchor_mosques(
             if calc:
                 schedule = {**calc, **estimate_iqama_times(calc)}
 
+        # Compute actual detour from anchor point to this mosque (round trip)
+        dist_km = haversine_km(lat, lng, row["lat"], row["lng"])
+        detour_est = max(1, round(dist_km * 2 * 1.3 / 60 * 60))  # round trip, road factor 1.3, 60 km/h
+
         mosques.append({
             "id": row["id"],
             "name": row["name"],
@@ -528,7 +532,7 @@ async def fetch_anchor_mosques(
             "city": row["city"],
             "state": row["state"],
             "google_place_id": row.get("google_place_id"),
-            "detour_minutes": 0,
+            "detour_minutes": detour_est,
             "minutes_into_trip": 0,
             "local_arrival_minutes": local_pass.hour * 60 + local_pass.minute,
             "local_arrival_time_fmt": f"{local_pass.hour:02d}:{local_pass.minute:02d}",
@@ -1480,15 +1484,18 @@ async def build_travel_plan(
     origin_schedule = {**(origin_calc or {}), **estimate_iqama_times(origin_calc or {})}
 
     # Get destination schedule (for arrival time prayers)
+    # Use ARRIVAL date and arrival-time offset (not departure) for correct
+    # date and DST handling (ROUTE_PLANNING_ALGORITHM.md — Timezone Crossing)
+    arrival_date = arrival_dt.date()
     try:
         from timezonefinder import TimezoneFinder
         dest_tz_str = TimezoneFinder().timezone_at(lat=dest_lat, lng=dest_lng) or timezone_str
         dest_ptz = pytz.timezone(dest_tz_str)
-        dest_offset_h = dest_ptz.utcoffset(departure_dt.replace(tzinfo=None)).total_seconds() / 3600
+        dest_offset_h = dest_ptz.utcoffset(arrival_dt.replace(tzinfo=None)).total_seconds() / 3600
     except Exception:
         dest_tz_str = timezone_str
         dest_offset_h = offset_h
-    dest_calc = calculate_prayer_times(dest_lat, dest_lng, today, timezone_offset=dest_offset_h)
+    dest_calc = calculate_prayer_times(dest_lat, dest_lng, arrival_date, timezone_offset=dest_offset_h)
     dest_schedule = {**(dest_calc or {}), **estimate_iqama_times(dest_calc or {})}
 
     # 4. Find mosques along route + anchor mosques near origin and destination
