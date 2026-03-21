@@ -93,12 +93,13 @@ IQAMA_LIMITS = {
 }
 
 # Minimum gaps between consecutive prayers (minutes)
+# Relaxed for high latitudes (Canada) where gaps can be very short
 MIN_GAPS = {
-    ("fajr_adhan", "sunrise"):       30,
-    ("sunrise", "dhuhr_adhan"):      180,
-    ("dhuhr_adhan", "asr_adhan"):    90,
-    ("asr_adhan", "maghrib_adhan"):  30,
-    ("maghrib_adhan", "isha_adhan"): 30,
+    ("fajr_adhan", "sunrise"):       10,   # Can be short near equinox at high latitudes
+    ("sunrise", "dhuhr_adhan"):      120,  # Morning is always at least 2 hours
+    ("dhuhr_adhan", "asr_adhan"):    60,   # At least 1 hour between dhuhr and asr
+    ("asr_adhan", "maghrib_adhan"):  20,   # Short in winter
+    ("maghrib_adhan", "isha_adhan"): 10,   # Very short in summer at high latitudes
 }
 
 # Max deviation from calculated times (minutes)
@@ -211,7 +212,7 @@ def validate_prayer_schedule(
     for i in range(len(valid_times) - 1):
         f1, t1 = valid_times[i]
         f2, t2 = valid_times[i + 1]
-        if t1 >= t2:
+        if t1 > t2:  # Strictly greater — equal times are allowed (maghrib=isha at high latitudes)
             result.fail(
                 f"{f1}/{f2}", f"{cleaned.get(f1)}/{cleaned.get(f2)}",
                 f"{f1} < {f2}",
