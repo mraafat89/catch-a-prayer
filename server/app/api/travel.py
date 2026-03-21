@@ -47,20 +47,23 @@ async def travel_plan(req: TravelPlanRequest, db: AsyncSession = Depends(get_db)
         except ValueError:
             pass
 
-    result = await build_travel_plan(
-        db=db,
-        origin_lat=req.origin_lat,
-        origin_lng=req.origin_lng,
-        dest_lat=req.destination_lat,
-        dest_lng=req.destination_lng,
-        destination_name=req.destination_name,
-        timezone_str=req.timezone,
-        origin_name=req.origin_name or "Current location",
-        departure_dt=departure_dt,
-        trip_mode=req.trip_mode,
-        waypoints=req.waypoints,
-        prayed_prayers=set(req.prayed_prayers),
-    )
+    try:
+        result = await build_travel_plan(
+            db=db,
+            origin_lat=req.origin_lat,
+            origin_lng=req.origin_lng,
+            dest_lat=req.destination_lat,
+            dest_lng=req.destination_lng,
+            destination_name=req.destination_name,
+            timezone_str=req.timezone,
+            origin_name=req.origin_name or "Current location",
+            departure_dt=departure_dt,
+            trip_mode=req.trip_mode,
+            waypoints=req.waypoints,
+            prayed_prayers=set(req.prayed_prayers),
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
     if not result:
         raise HTTPException(status_code=503, detail="Could not build travel plan — routing unavailable")
     return TravelPlanResponse(**result)

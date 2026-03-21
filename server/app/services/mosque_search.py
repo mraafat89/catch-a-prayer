@@ -120,14 +120,20 @@ async def get_mapbox_travel_times(
 # Time helpers
 # ---------------------------------------------------------------------------
 
-def hhmm_to_minutes(t: str) -> int:
-    if not t or ":" not in str(t):
+def hhmm_to_minutes(t) -> int:
+    """Parse 'HH:MM' to minutes since midnight. Returns 0 for any malformed input."""
+    if t is None or isinstance(t, bool):
+        return 0
+    s = str(t).strip()
+    if ":" not in s:
         return 0
     try:
-        parts = str(t).split(":")
+        parts = s.split(":")
         h, m = int(parts[0]), int(parts[1])
+        if h < 0 or m < 0 or m > 59:
+            return 0
         return h * 60 + m
-    except (ValueError, IndexError):
+    except (ValueError, IndexError, TypeError):
         return 0
 
 
