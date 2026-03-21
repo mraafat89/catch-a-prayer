@@ -167,6 +167,56 @@ async def get_stats(db: AsyncSession = Depends(get_db)):
     row = r.mappings().first()
     stats["scraper_history"] = dict(row) if row else {}
 
+    # === Scraper method breakdown ===
+    r = await db.execute(text("""
+        SELECT scrape_method, count(*) as cnt
+        FROM scraping_jobs WHERE status = 'success' AND scrape_method IS NOT NULL
+        GROUP BY 1 ORDER BY 2 DESC
+    """))
+    stats["scraper_methods"] = {row["scrape_method"]: row["cnt"] for row in r.mappings()}
+
+    # === Alive/dead websites ===
+    r = await db.execute(text("""
+        SELECT
+            count(*) filter (where website_alive = true) as alive,
+            count(*) filter (where website_alive = false) as dead
+        FROM scraping_jobs
+    """))
+    row = r.mappings().first()
+    stats["website_health"] = dict(row) if row else {}
+
+    # === Validation issues (today) ===
+    r = await db.execute(text("""
+        SELECT count(*) as total_issues,
+            count(distinct mosque_id) as mosques_with_issues
+        FROM scraping_validation_log WHERE scrape_date = CURRENT_DATE
+    """))
+    row = r.mappings().first()
+    stats["validation_today"] = dict(row) if row else {}
+
+    # === Prayer spots ===
+    r = await db.execute(text("""
+        SELECT
+            count(*) as total,
+            count(*) filter (where created_at > now() - interval '7 days') as added_this_week,
+            count(*) filter (where created_at > now() - interval '24 hours') as added_today
+        FROM prayer_spots
+    """))
+    row = r.mappings().first()
+    stats["prayer_spots"] = dict(row) if row else {}
+
+    # === User activity (from request_logs) ===
+    r = await db.execute(text("""
+        SELECT
+            count(distinct session_id) filter (where created_at > now() - interval '24 hours') as users_today,
+            count(distinct session_id) filter (where created_at > now() - interval '7 days') as users_this_week,
+            count(*) filter (where endpoint like '%nearby%' and created_at > now() - interval '24 hours') as searches_today,
+            count(*) filter (where endpoint like '%travel%' and created_at > now() - interval '24 hours') as routes_today
+        FROM request_logs WHERE session_id IS NOT NULL
+    """))
+    row = r.mappings().first()
+    stats["user_activity"] = dict(row) if row else {}
+
     # === User search locations (from request_logs) ===
     r = await db.execute(text("""
         SELECT lat, lng, count(*) as searches
@@ -439,8 +489,8 @@ h2 {{ color: #2e3d44; font-size: 15px; margin-bottom: 8px; }}
 .two-col {{ display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }}
 @media (max-width: 700px) {{ .two-col {{ grid-template-columns: 1fr; }} }}
 </style></head><body>
-<h1>🕌 Catch a Prayer</h1>
-<p class="subtitle">Admin Dashboard — {stats['server']['date']}</p>
+<h1>Catch a Prayer</h1>
+<p class="subtitle">Admin Dashboard &mdash; {stats['server']['date']}</p>
 
 <div class="grid">
   <div class="card"><div class="number">{m.get('total',0):,}</div><div class="label">Total Mosques</div></div>
@@ -454,12 +504,12 @@ h2 {{ color: #2e3d44; font-size: 15px; margin-bottom: 8px; }}
 </div>
 
 <div class="section">
-<h2>🗺️ Heatmaps</h2>
+<h2>Heatmaps</h2>
 <div style="margin-bottom:8px;">
 <button onclick="showLayer('mosques')" id="btn-mosques" style="padding:6px 12px;border-radius:8px;border:1px solid #0d9488;background:#0d9488;color:white;cursor:pointer;margin-right:4px;font-size:12px;">Mosques</button>
 <button onclick="showLayer('searches')" id="btn-searches" style="padding:6px 12px;border-radius:8px;border:1px solid #2563eb;background:white;color:#2563eb;cursor:pointer;margin-right:4px;font-size:12px;">User Searches</button>
 <button onclick="showLayer('routes')" id="btn-routes" style="padding:6px 12px;border-radius:8px;border:1px solid #7c3aed;background:white;color:#7c3aed;cursor:pointer;margin-right:4px;font-size:12px;">Route Planning</button>
-<button onclick="showLayer('gaps')" id="btn-gaps" style="padding:6px 12px;border-radius:8px;border:1px solid #dc2626;background:white;color:#dc2626;cursor:pointer;font-size:12px;">Coverage Gaps</button>
+<button onclick="showLayer('gaps')" id="btn-gaps" style="padding:6px 12px;border-radius:8px;border:1px solid #dc2626;background:white;color:#dc2626;cursor:pointer;font-size:12px;" title="Areas where users searched but fewer than 3 mosques exist within ~10km">Coverage Gaps</button>
 </div>
 <div id="heatmap"></div>
 <p id="heatmap-label" style="font-size:11px;color:#666;margin-top:4px;"></p>
@@ -467,7 +517,7 @@ h2 {{ color: #2e3d44; font-size: 15px; margin-bottom: 8px; }}
 
 <div class="section two-col">
 <div>
-<h2>📊 Data Sources (Today)</h2>
+<h2>Data Sources (Today)</h2>
 <table>
 <tr><th>Source</th><th>Count</th></tr>
 <tr><td>Calculated (estimated)</td><td>{p.get('calculated',0):,}</td></tr>
@@ -480,28 +530,54 @@ h2 {{ color: #2e3d44; font-size: 15px; margin-bottom: 8px; }}
 </table>
 </div>
 <div>
-<h2>🔧 Scraper Health</h2>
+<h2>Scraper Health</h2>
 <table>
 <tr><th>Metric</th><th>Value</th></tr>
 <tr><td>Last scrape</td><td>{scraper_h.get('last_scrape','Never')}</td></tr>
 <tr><td>Scraped this week</td><td>{scraper_h.get('scraped_this_week',0)}</td></tr>
 <tr><td>Scraped today</td><td>{scraper_h.get('scraped_today',0)}</td></tr>
 <tr><td>Avg data age</td><td>{data_fresh.get('avg_age_days','?')} days</td></tr>
-<tr><td>Dead websites</td><td>{stats.get('scraper',{}).get('dead_websites',0)}</td></tr>
+<tr><td>Alive websites</td><td>{stats.get('website_health',{}).get('alive',0)}</td></tr>
+<tr><td>Dead websites</td><td>{stats.get('website_health',{}).get('dead',0)}</td></tr>
+<tr><td>Validation issues (today)</td><td>{stats.get('validation_today',{}).get('total_issues',0)}</td></tr>
 </table>
 </div>
 </div>
 
 <div class="section">
-<h2>📍 Coverage by State</h2>
+<h2>Coverage by State</h2>
 <table>
 <tr><th>State</th><th>Mosques</th><th>Real Data</th><th>%</th><th>Coverage</th></tr>
 {coverage_rows}
 </table>
 </div>
 
+<div class="section two-col">
+<div>
+<h2>User Activity</h2>
+<table>
+<tr><th>Metric</th><th>Value</th></tr>
+<tr><td>Users today</td><td>{stats.get('user_activity',{}).get('users_today',0)}</td></tr>
+<tr><td>Users this week</td><td>{stats.get('user_activity',{}).get('users_this_week',0)}</td></tr>
+<tr><td>Searches today</td><td>{stats.get('user_activity',{}).get('searches_today',0)}</td></tr>
+<tr><td>Routes today</td><td>{stats.get('user_activity',{}).get('routes_today',0)}</td></tr>
+</table>
+</div>
+<div>
+<h2>Prayer Spots</h2>
+<table>
+<tr><th>Metric</th><th>Value</th></tr>
+<tr><td>Total spots</td><td>{stats.get('prayer_spots',{}).get('total',0)}</td></tr>
+<tr><td>Added this week</td><td>{stats.get('prayer_spots',{}).get('added_this_week',0)}</td></tr>
+<tr><td>Added today</td><td>{stats.get('prayer_spots',{}).get('added_today',0)}</td></tr>
+<tr><td>Suggestions pending</td><td>{suggestions.get('pending',0)}</td></tr>
+<tr><td>Suggestions approved</td><td>{suggestions.get('approved',0)}</td></tr>
+</table>
+</div>
+</div>
+
 <div class="section">
-<h2>📝 Review Queue ({len(pending_suggestions)} pending)</h2>
+<h2>Review Queue ({len(pending_suggestions)} pending)</h2>
 {f'''<table>
 <tr><th>Mosque</th><th>Field</th><th>Current</th><th>Suggested</th><th>Votes</th><th>Date</th><th>Action</th></tr>
 {review_rows}
@@ -510,7 +586,7 @@ h2 {{ color: #2e3d44; font-size: 15px; margin-bottom: 8px; }}
 
 <div class="section two-col">
 <div>
-<h2>🌐 API Usage</h2>
+<h2>API Usage</h2>
 <div class="grid" style="grid-template-columns: repeat(3, 1fr);">
   <div class="card"><div class="number">{usage.get('total_requests',0):,}</div><div class="label">Requests</div></div>
   <div class="card"><div class="number">{usage.get('unique_locations',0)}</div><div class="label">Unique Locations</div></div>
@@ -521,7 +597,7 @@ h2 {{ color: #2e3d44; font-size: 15px; margin-bottom: 8px; }}
 </div>
 </div>
 <div>
-<h2>🔥 Top Endpoints</h2>
+<h2>Top Endpoints</h2>
 <table>
 <tr><th>Endpoint</th><th>Hits</th></tr>
 {top_ep_rows if top_ep_rows else '<tr><td colspan="2" style="color:#999">No requests yet</td></tr>'}
@@ -530,7 +606,7 @@ h2 {{ color: #2e3d44; font-size: 15px; margin-bottom: 8px; }}
 </div>
 
 <div class="section">
-<h2>📈 Live Traffic (Hourly — Last 48h)</h2>
+<h2>Live Traffic (Hourly — Last 48h)</h2>
 <div style="background:white;border-radius:12px;padding:14px;box-shadow:0 1px 3px rgba(0,0,0,0.1);">
 <canvas id="traffic-chart" height="180"></canvas>
 </div>
@@ -538,13 +614,13 @@ h2 {{ color: #2e3d44; font-size: 15px; margin-bottom: 8px; }}
 
 <div class="section two-col">
 <div>
-<h2>📊 Daily Volume (Last 30 Days)</h2>
+<h2>Daily Volume (Last 30 Days)</h2>
 <div style="background:white;border-radius:12px;padding:14px;box-shadow:0 1px 3px rgba(0,0,0,0.1);">
 <canvas id="daily-chart" height="200"></canvas>
 </div>
 </div>
 <div>
-<h2>⚡ Latency by Endpoint (24h)</h2>
+<h2>Latency by Endpoint (24h)</h2>
 <table>
 <tr><th>Endpoint</th><th>Hits</th><th>Avg</th><th>P95</th><th>Max</th></tr>
 {ep_latency_rows if ep_latency_rows else '<tr><td colspan="5" style="color:#999">No data yet</td></tr>'}
@@ -632,7 +708,7 @@ setInterval(function() {
 </script>"""
 
     map_script = """<script>
-var map = L.map('heatmap').setView([39.8, -98.5], 4);
+var map = L.map('heatmap').fitBounds([[24.5, -130], [55, -55]]);  // US + Canada
 L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
     maxZoom: 18, attribution: '&copy; OpenStreetMap'
 }).addTo(map);
@@ -657,7 +733,7 @@ var labels = {
     mosques: mosqueData.length + ' mosques in database',
     searches: searchData.length + ' unique search locations (last 30 days)',
     routes: routeData.length + ' route planning origins (last 30 days)',
-    gaps: gapData.length + ' areas with few nearby mosques (coverage gaps)'
+    gaps: gapData.length + ' areas where users searched but fewer than 3 mosques exist nearby'
 };
 
 var activeLayer = 'mosques';
