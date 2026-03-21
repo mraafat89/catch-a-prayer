@@ -487,17 +487,8 @@ class TestTripDuration48h:
         pairs = _pair_names(result)
         assert "dhuhr_asr" in pairs, f"48h trip must include Dhuhr+Asr. Got: {pairs}"
         assert "maghrib_isha" in pairs, f"48h trip must include Maghrib+Isha. Got: {pairs}"
-        # BUG DETECTOR: 48h trip from 8 AM crosses multiple Fajr windows.
-        # If Fajr is missing, the multi-day prayer overlap detection is broken.
-        # The planner uses dep_min/arr_min as minutes-from-midnight which wraps for
-        # multi-day trips — this is a known limitation flagged here.
-        if "fajr" not in pairs:
-            # This is a POTENTIAL BUG: 48h trip should include Fajr
-            # The _prayer_overlaps_trip function may not handle multi-day wrapping
-            pytest.xfail(
-                "BUG: 48h trip does not include Fajr — multi-day overlap detection "
-                f"may be broken. dep_min/arr_min wraps around midnight. Got: {pairs}"
-            )
+        assert "fajr" in pairs, \
+            f"48h trip from 8 AM must include Fajr (spans multiple day cycles). Got: {pairs}"
         # Verify at least 1 itinerary generated
         assert len(result["itineraries"]) >= 1, \
             f"48h trip should generate at least 1 itinerary, got {len(result['itineraries'])}"
@@ -742,15 +733,9 @@ class TestDeparture9PM:
         pairs = _pair_names(result)
         # 9 PM: Isha is active (adhan ~8:30 PM)
         assert "maghrib_isha" in pairs, f"9 PM departure: Maghrib+Isha should be present. Got: {pairs}"
-        # 9 PM -> 5 AM: Fajr (adhan ~5:42 AM) should overlap the trip window.
-        # BUG DETECTOR: If Fajr is missing, the multi-day prayer overlap check
-        # may not correctly handle trips crossing midnight.
-        if "fajr" not in pairs:
-            pytest.xfail(
-                f"KNOWN ISSUE: 9 PM -> 5 AM overnight trip does not detect Fajr. "
-                f"The _prayer_overlaps_trip function may not correctly handle "
-                f"cross-midnight trips when dep_min > arr_min. Got: {pairs}"
-            )
+        # 9 PM -> 5 AM: Fajr (adhan ~5:42 AM) is approaching at arrival.
+        assert "fajr" in pairs, \
+            f"9 PM -> 5 AM overnight trip must detect Fajr (approaching at destination). Got: {pairs}"
 
 
 class TestDepartureMidnight:
@@ -778,16 +763,9 @@ class TestDepartureMidnight:
         assert result is not None
         pairs = _pair_names(result)
         assert "maghrib_isha" not in pairs, f"Midnight with Isha prayed: no stale Maghrib+Isha. Got: {pairs}"
-        # Fajr should appear (midnight -> 5 AM covers Fajr adhan ~5:42)
-        # BUG DETECTOR: If Fajr is missing, the overnight trip prayer detection is broken.
-        # The _prayer_overlaps_trip uses dep_min=0 and arr_min=300 which should catch Fajr
-        # at ~342 minutes. But the schedule date might be wrong.
-        if "fajr" not in pairs:
-            pytest.xfail(
-                f"KNOWN ISSUE: Midnight -> 5 AM trip does not detect Fajr. "
-                f"The schedule may be seeded for the wrong date, or overlap detection "
-                f"fails for post-midnight departures. Got: {pairs}"
-            )
+        # Fajr should appear (midnight -> 5 AM, Fajr adhan ~5:42 is approaching at arrival)
+        assert "fajr" in pairs, \
+            f"Midnight -> 5 AM trip must detect Fajr (approaching at destination). Got: {pairs}"
 
 
 class TestDeparture3AM:
@@ -1227,13 +1205,9 @@ class TestChronologicalOrdering:
                         f"> {stops[i + 1]['mosque_name']}@{stops[i + 1]['minutes_into_trip']}min "
                         f"(pairs: {stops[i]['_pair']} -> {stops[i + 1]['_pair']})"
                     )
-        if violations:
-            pytest.xfail(
-                f"BUG: Itinerary stops out of chronological order. "
-                f"The planner sets minutes_into_trip=0 for pray_before/at_destination "
-                f"stops, breaking ordering when mixed with en-route stops. "
-                f"Violations: {'; '.join(violations)}"
-            )
+        assert not violations, (
+            f"Itinerary stops out of chronological order: {'; '.join(violations)}"
+        )
 
 
 class TestNoStalePrayers:
