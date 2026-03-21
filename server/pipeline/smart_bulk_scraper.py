@@ -470,7 +470,7 @@ async def scrape_with_playwright(websites: list[dict], engine, save: bool = True
                     log.info(f"  ✓ Found: {len(data['adhan'])} adhan, {len(data['iqama'])} iqama, {len(data['jumuah'])} jumuah")
 
                     if save:
-                        _save_to_db(engine, mosque_id, data, today)
+                        _save_to_db(engine, mosque_id, data, today, source="playwright_scrape")
                 else:
                     stats["no_data"] += 1
                     adhan_count = len(data.get("adhan", {}))
@@ -496,20 +496,92 @@ async def scrape_with_playwright(websites: list[dict], engine, save: bool = True
     return stats
 
 
-def _save_to_db(engine, mosque_id: str, data: dict, today: date):
+
+
+# ---------------------------------------------------------------------------
+# Jina Reader scraping — lightweight, no Chromium needed
+# ---------------------------------------------------------------------------
+
+JINA_BASE = "https://r.jina.ai/"
+
+# Common prayer page paths to try with Jina
+JINA_PATHS = [
+    "",  # homepage first
+    "/prayer-times", "/prayer-time", "/prayers", "/salah-times",
+    "/iqama", "/iqama-times", "/prayer-schedule", "/prayertimes",
+    "/salat", "/schedule", "/prayer", "/services/prayer-times",
+]
+
+
+async def scrape_with_jina(websites: list[dict], engine, save: bool = True) -> dict:
+    """Scrape using Jina Reader — no Chromium, much lighter."""
+    stats = {"attempted": 0, "success": 0, "no_data": 0, "error": 0}
+    today = date.today()
+    sem = asyncio.Semaphore(5)  # 5 concurrent Jina requests
+
+    async def scrape_one(w: dict) -> tuple[str, dict | None]:
+        mosque_id, name, url = w["id"], w["name"], w["website"]
+        base = url.rstrip("/")
+
+        async with sem:
+            async with httpx.AsyncClient(timeout=20, follow_redirects=True) as client:
+                for path in JINA_PATHS:
+                    target = base + path
+                    jina_url = JINA_BASE + target
+                    try:
+                        resp = await client.get(jina_url, headers={
+                            "Accept": "text/plain",
+                            "X-Return-Format": "text",
+                        })
+                        if resp.status_code != 200:
+                            continue
+                        text = resp.text
+                        if len(text) < 100:
+                            continue
+
+                        data = extract_times_from_text(text)
+                        data = sanitize_schedule(data)
+
+                        if validate_schedule(data):
+                            log.info(f"  ✓ {name}: {len(data['adhan'])} adhan, {len(data['iqama'])} iqama via Jina ({path or '/'})")
+                            return mosque_id, data
+                    except Exception:
+                        continue
+
+        return mosque_id, None
+
+    log.info(f"Scraping {len(websites)} websites with Jina Reader (5 concurrent)")
+
+    for i in range(0, len(websites), 10):
+        batch = websites[i:i + 10]
+        tasks = [scrape_one(w) for w in batch]
+        results = await asyncio.gather(*tasks)
+
+        for mosque_id, data in results:
+            stats["attempted"] += 1
+            if data:
+                stats["success"] += 1
+                if save:
+                    _save_to_db(engine, mosque_id, data, today, source="jina_reader")
+            else:
+                stats["no_data"] += 1
+
+        done = min(i + 10, len(websites))
+        if done % 20 == 0 or done == len(websites):
+            rate = stats['success'] * 100 // max(stats['attempted'], 1)
+            log.info(f"  --- Jina progress: {done}/{len(websites)} — {stats['success']} success ({rate}%)")
+
+    return stats
+
+
+def _save_to_db(engine, mosque_id: str, data: dict, today: date, source: str = "playwright_scrape"):
     """Save extracted prayer schedule to DB."""
     adhan = data["adhan"]
     iqama = data["iqama"]
 
     with engine.begin() as conn:
-        # Build the prayer schedule row
-        values = {
-            "mosque_id": mosque_id,
-            "date": today,
-        }
+        values = {"mosque_id": mosque_id, "date": today}
 
-        # Map prayer names to DB column prefixes
-        # sunrise has no adhan/iqama suffix — just "sunrise" and "sunrise_source"
         adhan_col_map = {
             "fajr": "fajr_adhan", "dhuhr": "dhuhr_adhan",
             "asr": "asr_adhan", "maghrib": "maghrib_adhan", "isha": "isha_adhan",
@@ -531,18 +603,17 @@ def _save_to_db(engine, mosque_id: str, data: dict, today: date):
             if col and t:
                 values[col] = t
                 if src_col:
-                    values[src_col] = "playwright_scrape"
+                    values[src_col] = source
 
         for prayer, t in iqama.items():
             col = iqama_col_map.get(prayer)
             if col and t:
                 values[col] = t
-                values[col + "_source"] = "playwright_scrape"
+                values[col + "_source"] = source
 
-        if len(values) <= 2:  # only mosque_id and date
+        if len(values) <= 2:
             return
 
-        # Upsert — include id for new rows
         values["id"] = str(__import__("uuid").uuid4())
         cols = ", ".join(values.keys())
         placeholders = ", ".join(f":{k}" for k in values.keys())
@@ -557,21 +628,19 @@ def _save_to_db(engine, mosque_id: str, data: dict, today: date):
             ON CONFLICT (mosque_id, date) DO UPDATE SET {updates}
         """), values)
 
-        # Update scraping job
         conn.execute(text("""
             UPDATE scraping_jobs
-            SET status = 'success', scraped_at = now(), scrape_method = 'playwright_scrape'
+            SET status = 'success', scraped_at = now(), scrape_method = :method
             WHERE mosque_id = :mid
-        """), {"mid": mosque_id})
+        """), {"mid": mosque_id, "method": source})
 
-        # Save jumuah if found
         for i, jtime in enumerate(data.get("jumuah", [])[:3]):
             try:
                 conn.execute(text("""
                     INSERT INTO jumuah_sessions (id, mosque_id, prayer_start, session_number, source, valid_date)
-                    VALUES (gen_random_uuid(), CAST(:mid AS uuid), :time, :num, 'playwright_scrape', CURRENT_DATE)
+                    VALUES (gen_random_uuid(), CAST(:mid AS uuid), :time, :num, :src, CURRENT_DATE)
                     ON CONFLICT DO NOTHING
-                """), {"mid": mosque_id, "time": jtime, "num": i + 1})
+                """), {"mid": mosque_id, "time": jtime, "num": i + 1, "src": source})
             except Exception:
                 pass
 
@@ -580,10 +649,15 @@ def _save_to_db(engine, mosque_id: str, data: dict, today: date):
 # Main
 # ---------------------------------------------------------------------------
 
+# Priority states for ordering (highest user density first)
+HIGH_PRIORITY_STATES = "('NY','CA','TX','IL','NJ','FL','MI','PA','MD','VA','GA','OH','DC','ON','QC','BC','AB')"
+
+
 def main():
-    parser = argparse.ArgumentParser(description="Smart bulk scraper with Playwright")
+    parser = argparse.ArgumentParser(description="Smart bulk scraper with Playwright + Jina")
     parser.add_argument("--check-alive", action="store_true", help="Phase 1: check which websites are alive")
-    parser.add_argument("--scrape", action="store_true", help="Phase 2+3: render and extract")
+    parser.add_argument("--scrape", action="store_true", help="Phase 2+3: Playwright render and extract")
+    parser.add_argument("--jina", action="store_true", help="Scrape using Jina Reader (lighter, no Chromium)")
     parser.add_argument("--analyze", action="store_true", help="Show current stats")
     parser.add_argument("--limit", type=int, default=20, help="Max sites to scrape (default 20)")
     parser.add_argument("--all", action="store_true", help="Scrape all alive sites without real data")
@@ -630,31 +704,43 @@ def main():
         log.info(f"\nALIVE CHECK COMPLETE: {results}")
         return
 
-    if args.scrape:
+    if args.scrape or args.jina:
         limit = None if args.all else args.limit
 
         with engine.connect() as conn:
             # Get alive websites that don't have real data today
-            q = """
+            # Prioritize high-population states first
+            q = f"""
                 SELECT m.id::text, m.name, m.website
                 FROM mosques m
                 JOIN scraping_jobs sj ON sj.mosque_id = m.id AND sj.website_alive = true
                 WHERE m.is_active AND m.website IS NOT NULL
                   AND m.website NOT LIKE '%%facebook%%'
                   AND m.website NOT LIKE '%%instagram%%'
+                  AND m.website NOT LIKE '%%youtube%%'
+                  AND m.website NOT LIKE '%%yelp%%'
+                  AND m.website NOT LIKE '%%x.com%%'
+                  AND m.website NOT LIKE '%%twitter%%'
                   AND m.id NOT IN (
                       SELECT mosque_id FROM prayer_schedules
                       WHERE date = CURRENT_DATE AND fajr_adhan_source NOT IN ('calculated')
                   )
-                ORDER BY random()
+                ORDER BY
+                    CASE WHEN m.state IN {HIGH_PRIORITY_STATES} THEN 0 ELSE 1 END,
+                    m.state, random()
             """
             if limit:
                 q += f" LIMIT {limit}"
             rows = conn.execute(text(q)).fetchall()
             websites = [{"id": r[0], "name": r[1], "website": r[2]} for r in rows]
 
-        log.info(f"Scraping {len(websites)} websites with Playwright")
-        stats = asyncio.run(scrape_with_playwright(websites, engine, save=not args.no_save))
+        if args.jina:
+            log.info(f"Scraping {len(websites)} websites with Jina Reader")
+            stats = asyncio.run(scrape_with_jina(websites, engine, save=not args.no_save))
+        else:
+            log.info(f"Scraping {len(websites)} websites with Playwright")
+            stats = asyncio.run(scrape_with_playwright(websites, engine, save=not args.no_save))
+
         log.info(f"\nSCRAPE COMPLETE: {stats}")
         rate = stats['success'] * 100 // max(stats['attempted'], 1)
         log.info(f"Success rate: {rate}%")
