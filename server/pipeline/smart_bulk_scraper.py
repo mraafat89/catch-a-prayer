@@ -54,21 +54,35 @@ else:
 # ---------------------------------------------------------------------------
 
 PRAYER_NAMES = {
-    "fajr": "fajr", "fajar": "fajr", "subh": "fajr", "dawn": "fajr",
-    "sunrise": "sunrise", "shuruq": "sunrise", "ishraq": "sunrise",
+    "fajr": "fajr", "fajar": "fajr", "subh": "fajr", "dawn": "fajr", "fajir": "fajr",
+    "sunrise": "sunrise", "shuruq": "sunrise", "ishraq": "sunrise", "shorooq": "sunrise",
     "dhuhr": "dhuhr", "zuhr": "dhuhr", "dhuhur": "dhuhr", "noon": "dhuhr",
-    "asr": "asr", "asar": "asr",
+    "duhr": "dhuhr", "zohr": "dhuhr", "thuhr": "dhuhr",
+    "asr": "asr", "asar": "asr", "'asr": "asr",
     "maghrib": "maghrib", "magrib": "maghrib", "sunset": "maghrib", "iftar": "maghrib",
-    "isha": "isha", "ishaa": "isha", "esha": "isha",
+    "maghreb": "maghrib", "magreb": "maghrib",
+    "isha": "isha", "ishaa": "isha", "esha": "isha", "'isha": "isha", "isha'a": "isha",
 }
 
-JUMUAH_NAMES = {"jumuah", "jummah", "jumma", "jumu'ah", "friday", "khutbah", "khutba"}
+JUMUAH_NAMES = {
+    "jumuah", "jummah", "jumma", "jumu'ah", "friday", "khutbah", "khutba",
+    "jumua'ah", "jum'ah", "jumuaa", "jumah",
+}
 
-# Time patterns: 12:30, 12:30 PM, 12:30PM, 1:30pm
+# Time patterns: 12:30, 12:30 PM, 12:30PM, 1:30pm, 1:30 p.m.
 TIME_RE = re.compile(r'\b(\d{1,2}):(\d{2})\s*(am|pm|AM|PM|a\.m\.|p\.m\.)?\b')
 
-# Iqama offset pattern: +15, +20 min
-OFFSET_RE = re.compile(r'\+\s*(\d{1,3})\s*(?:min|minutes?|mins?)?', re.IGNORECASE)
+# Iqama offset: "+15", "20 min after athan", "30 mins after adhan", "X minutes after"
+OFFSET_RE = re.compile(
+    r'(?:\+\s*)?(\d{1,3})\s*(?:min(?:ute)?s?\s*(?:after|from)?\s*(?:ath[ae]n|adh[ae]n)?|min\b)',
+    re.IGNORECASE
+)
+
+# Direct "X min after athan" pattern (no + prefix needed)
+RELATIVE_IQAMA_RE = re.compile(
+    r'(\d{1,3})\s*(?:min(?:ute)?s?)\s+(?:after|from|past)\s+(?:ath[ae]n|adh[ae]n|azan)',
+    re.IGNORECASE
+)
 
 
 def extract_times_from_text(text_content: str) -> dict:
@@ -116,11 +130,20 @@ def extract_times_from_text(text_content: str) -> dict:
             results["iqama"][found_prayer] = _normalize_time(*times[1])
         elif len(times) == 1:
             results["adhan"][found_prayer] = _normalize_time(*times[0])
-            # Check for iqama offset on this line or next
+            # Check for iqama offset: "+15", "20 min after athan"
             search_text = line + (" " + lines[i + 1] if i + 1 < len(lines) else "")
-            offsets = OFFSET_RE.findall(search_text)
-            if offsets:
-                results["iqama"][found_prayer] = f"+{offsets[0]}"
+            rel_match = RELATIVE_IQAMA_RE.search(search_text)
+            if rel_match:
+                results["iqama"][found_prayer] = f"+{rel_match.group(1)}"
+            else:
+                offsets = OFFSET_RE.findall(search_text)
+                if offsets:
+                    results["iqama"][found_prayer] = f"+{offsets[0]}"
+        elif len(times) == 0:
+            # No clock time found — check for "iqamah" line with just a relative time
+            rel_match = RELATIVE_IQAMA_RE.search(line)
+            if rel_match and found_prayer in results.get("adhan", {}):
+                results["iqama"][found_prayer] = f"+{rel_match.group(1)}"
 
     # Strategy 2: Look for a grid/table pattern (all times in a block)
     if len(results["adhan"]) < 3:
@@ -339,6 +362,8 @@ FALLBACK_PATHS = [
     "/prayer-times-iqama", "/services/prayer-times",
     "/prayers-mosques", "/masjid-services", "/salah",
     "/prayer-times-and-iqama", "/iqamah-times",
+    "/prayer-timings", "/salah-schedule", "/namaz-times",
+    "/iqamah", "/adhan-times", "/daily-schedule",
 ]
 
 
@@ -578,6 +603,7 @@ JINA_PATHS = [
     "/iqama", "/salah-times", "/prayer-schedule",
     "/services/prayer-times", "/schedule",
     "/prayers-mosques", "/iqamah-times", "/salah",
+    "/prayer-timings", "/iqamah", "/daily-schedule",
 ]
 
 
