@@ -110,6 +110,25 @@ async def get_stats(db: AsyncSession = Depends(get_db)):
     row = r.mappings().first()
     stats["freshness"] = dict(row) if row else {}
 
+    # === Request metrics (in-memory, since last restart) ===
+    try:
+        from app.main import request_metrics as rm
+        avg_latency = round(rm["latency_sum_ms"] / max(rm["latency_count"], 1), 1)
+        stats["api_usage"] = {
+            "total_requests": rm["total_requests"],
+            "errors_5xx": rm["errors_5xx"],
+            "avg_latency_ms": avg_latency,
+            "unique_locations": len(rm["unique_locations"]),
+            "routes_planned": rm["routes_planned"],
+            "spots_submitted": rm["spots_submitted"],
+            "top_endpoints": dict(sorted(rm["requests_by_endpoint"].items(),
+                                         key=lambda x: -x[1])[:10]),
+            "requests_by_hour": dict(sorted(rm["requests_by_hour"].items())[-24:]),
+            "tracking_since": rm["started_at"],
+        }
+    except Exception:
+        stats["api_usage"] = {"error": "metrics not available"}
+
     # === Server info ===
     stats["server"] = {
         "timestamp": datetime.utcnow().isoformat(),
@@ -189,8 +208,20 @@ h2 {{ color: #2e3d44; font-size: 16px; margin-bottom: 10px; }}
 </table>
 </div>
 
+<div class="section">
+<h2>API Usage (since last restart)</h2>
+<div class="grid">
+  <div class="card"><div class="number">{stats.get('api_usage',{}).get('total_requests',0):,}</div><div class="label">Total Requests</div></div>
+  <div class="card"><div class="number">{stats.get('api_usage',{}).get('unique_locations',0)}</div><div class="label">Unique Locations</div></div>
+  <div class="card"><div class="number">{stats.get('api_usage',{}).get('routes_planned',0)}</div><div class="label">Routes Planned</div></div>
+  <div class="card"><div class="number">{stats.get('api_usage',{}).get('avg_latency_ms',0)}ms</div><div class="label">Avg Latency</div></div>
+  <div class="card"><div class="number">{stats.get('api_usage',{}).get('errors_5xx',0)}</div><div class="label">5xx Errors</div></div>
+  <div class="card"><div class="number">{stats.get('api_usage',{}).get('spots_submitted',0)}</div><div class="label">Spots Submitted</div></div>
+</div>
+</div>
+
 <div class="section" style="margin-top:20px;color:#999;font-size:12px;text-align:center;">
-Updated: {stats['server']['timestamp'][:19]} UTC
+Updated: {stats['server']['timestamp'][:19]} UTC | Tracking since: {stats.get('api_usage',{}).get('tracking_since','N/A')[:19]}
 </div>
 </body></html>"""
 
