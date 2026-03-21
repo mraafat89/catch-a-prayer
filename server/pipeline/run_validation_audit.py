@@ -18,8 +18,9 @@ with engine.connect() as conn:
         SELECT ps.mosque_id::text, ps.fajr_adhan, ps.fajr_iqama, ps.sunrise,
             ps.dhuhr_adhan, ps.dhuhr_iqama, ps.asr_adhan, ps.asr_iqama,
             ps.maghrib_adhan, ps.maghrib_iqama, ps.isha_adhan, ps.isha_iqama,
-            ps.fajr_adhan_source
+            ps.fajr_adhan_source, m.lat
         FROM prayer_schedules ps
+        JOIN mosques m ON m.id = ps.mosque_id
         WHERE ps.date = :today
     """), {"today": today}).fetchall()
 
@@ -27,6 +28,7 @@ with engine.connect() as conn:
     for r in rows:
         stats["total"] += 1
         source = r[12] or "unknown"
+        mosque_lat = float(r[13]) if r[13] else None
         scraped = {
             "fajr_adhan": r[1], "fajr_iqama": r[2], "sunrise": r[3],
             "dhuhr_adhan": r[4], "dhuhr_iqama": r[5],
@@ -34,7 +36,7 @@ with engine.connect() as conn:
             "maghrib_adhan": r[8], "maghrib_iqama": r[9],
             "isha_adhan": r[10], "isha_iqama": r[11],
         }
-        vr = validate_prayer_schedule(scraped)
+        vr = validate_prayer_schedule(scraped, lat=mosque_lat)
         if not vr.issues:
             stats["valid"] += 1
         else:

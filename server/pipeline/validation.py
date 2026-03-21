@@ -63,25 +63,52 @@ def normalize_time_format(val: str) -> Optional[str]:
 # Validation ranges from the spec
 # ---------------------------------------------------------------------------
 
-# Adhan ranges (minutes since midnight)
-# Wide enough for all US/Canada latitudes including Arctic (Inuvik 68°N)
-ADHAN_RANGES = {
-    "fajr_adhan":    (120, 450),   # 02:00 - 07:30 (Arctic: fajr can be very early in summer)
-    "sunrise":       (270, 540),   # 04:30 - 09:00 (Arctic: late sunrise in winter)
-    "dhuhr_adhan":   (660, 920),   # 11:00 - 15:20 (Arctic: solar noon shifts)
-    "asr_adhan":     (780, 1140),  # 13:00 - 19:00
-    "maghrib_adhan": (900, 1350),  # 15:00 - 22:30 (Arctic: very late sunset in summer)
-    "isha_adhan":    (1020, 1439), # 17:00 - 23:59 (Arctic: isha near midnight)
-}
+# Adhan ranges by latitude band
+# Normal (< 50°N): tight ranges for US lower 48 + southern Canada
+# High latitude (50-60°N): wider for northern Canada
+# Arctic (> 60°N): very wide for Inuvik, Yellowknife, etc.
+def _get_adhan_ranges(lat: float | None = None) -> dict:
+    if lat and abs(lat) > 60:
+        # Arctic
+        return {
+            "fajr_adhan":    (120, 480),   # 02:00 - 08:00
+            "sunrise":       (240, 600),   # 04:00 - 10:00
+            "dhuhr_adhan":   (660, 960),   # 11:00 - 16:00
+            "asr_adhan":     (780, 1200),  # 13:00 - 20:00
+            "maghrib_adhan": (840, 1410),  # 14:00 - 23:30
+            "isha_adhan":    (960, 1439),  # 16:00 - 23:59
+        }
+    elif lat and abs(lat) > 50:
+        # High latitude (northern Canada)
+        return {
+            "fajr_adhan":    (150, 465),   # 02:30 - 07:45
+            "sunrise":       (270, 540),   # 04:30 - 09:00
+            "dhuhr_adhan":   (660, 870),   # 11:00 - 14:30
+            "asr_adhan":     (780, 1140),  # 13:00 - 19:00
+            "maghrib_adhan": (900, 1350),  # 15:00 - 22:30
+            "isha_adhan":    (1020, 1439), # 17:00 - 23:59
+        }
+    else:
+        # Normal (US lower 48 + southern Canada)
+        return {
+            "fajr_adhan":    (180, 450),   # 03:00 - 07:30
+            "sunrise":       (300, 500),   # 05:00 - 08:20
+            "dhuhr_adhan":   (660, 840),   # 11:00 - 14:00
+            "asr_adhan":     (810, 1110),  # 13:30 - 18:30
+            "maghrib_adhan": (960, 1290),  # 16:00 - 21:30
+            "isha_adhan":    (1050, 1380), # 17:30 - 23:00
+        }
 
-# Iqama absolute ranges (same start as adhan — iqama can equal adhan time)
-IQAMA_RANGES = {
-    "fajr_iqama":    (120, 540),   # 02:00 - 09:00
-    "dhuhr_iqama":   (660, 960),   # 11:00 - 16:00
-    "asr_iqama":     (780, 1170),  # 13:00 - 19:30
-    "maghrib_iqama": (900, 1365),  # 15:00 - 22:45
-    "isha_iqama":    (1020, 1439), # 17:00 - 23:59
-}
+
+def _get_iqama_ranges(lat: float | None = None) -> dict:
+    adhan = _get_adhan_ranges(lat)
+    return {
+        "fajr_iqama":    (adhan["fajr_adhan"][0], adhan["fajr_adhan"][1] + 60),
+        "dhuhr_iqama":   (adhan["dhuhr_adhan"][0], adhan["dhuhr_adhan"][1] + 60),
+        "asr_iqama":     (adhan["asr_adhan"][0], adhan["asr_adhan"][1] + 30),
+        "maghrib_iqama": (adhan["maghrib_adhan"][0], adhan["maghrib_adhan"][1] + 20),
+        "isha_iqama":    (adhan["isha_adhan"][0], min(adhan["isha_adhan"][1] + 60, 1439)),
+    }
 
 # Iqama: min gap, max gap (minutes after adhan), and "must be before" field
 # Min gap is 0 for all — some mosques pray immediately at adhan (common for Maghrib)
@@ -133,6 +160,7 @@ def validate_prayer_schedule(
     scraped: dict,
     calculated_times: Optional[dict] = None,
     mosque_name: str = "",
+    lat: Optional[float] = None,
 ) -> ValidationResult:
     """
     Validate scraped prayer times against Islamic logic.
@@ -180,8 +208,11 @@ def validate_prayer_schedule(
             result.log_issue(key, val, "HH:MM format", f"Malformed time", "nulled")
             cleaned[key] = None
 
-    # --- Step 2: Range validation (adhan + iqama) ---
-    for field, (min_m, max_m) in ADHAN_RANGES.items():
+    # --- Step 2: Range validation (adhan + iqama) — latitude-aware ---
+    adhan_ranges = _get_adhan_ranges(lat)
+    iqama_ranges = _get_iqama_ranges(lat)
+
+    for field, (min_m, max_m) in adhan_ranges.items():
         val = cleaned.get(field)
         mins = hhmm_to_minutes(val)
         if mins is not None and not (min_m <= mins <= max_m):
@@ -192,7 +223,7 @@ def validate_prayer_schedule(
             )
             cleaned[field] = None
 
-    for field, (min_m, max_m) in IQAMA_RANGES.items():
+    for field, (min_m, max_m) in iqama_ranges.items():
         val = cleaned.get(field)
         if val and val.startswith("+"):
             continue  # Offsets validated separately

@@ -656,7 +656,7 @@ async def scrape_with_jina(websites: list[dict], engine, save: bool = True) -> d
     return stats
 
 
-def _save_to_db(engine, mosque_id: str, data: dict, today: date, source: str = "playwright_scrape"):
+def _save_to_db(engine, mosque_id: str, data: dict, today: date, source: str = "playwright_scrape", lat: float = None):
     """Validate and save extracted prayer schedule to DB.
     Runs full Islamic logic validation before writing anything."""
     from pipeline.validation import validate_prayer_schedule, validate_jumuah
@@ -675,7 +675,7 @@ def _save_to_db(engine, mosque_id: str, data: dict, today: date, source: str = "
             flat[col] = t
 
     # Run validation
-    vr = validate_prayer_schedule(flat)
+    vr = validate_prayer_schedule(flat, lat=lat)
 
     # Log validation issues to DB
     if vr.issues:

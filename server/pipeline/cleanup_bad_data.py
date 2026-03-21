@@ -35,8 +35,9 @@ def main():
                 ps.asr_adhan, ps.asr_iqama,
                 ps.maghrib_adhan, ps.maghrib_iqama,
                 ps.isha_adhan, ps.isha_iqama,
-                ps.fajr_adhan_source
+                ps.fajr_adhan_source, m.lat
             FROM prayer_schedules ps
+            JOIN mosques m ON m.id = ps.mosque_id
             WHERE ps.date >= CURRENT_DATE - 7
         """)).fetchall()
 
@@ -44,6 +45,7 @@ def main():
             total_checked += 1
             row_id = r[0]
             source = r[13] or "unknown"
+            mosque_lat = float(r[14]) if r[14] else None
             scraped = {
                 "fajr_adhan": r[2], "fajr_iqama": r[3], "sunrise": r[4],
                 "dhuhr_adhan": r[5], "dhuhr_iqama": r[6],
@@ -52,7 +54,7 @@ def main():
                 "isha_adhan": r[11], "isha_iqama": r[12],
             }
 
-            vr = validate_prayer_schedule(scraped)
+            vr = validate_prayer_schedule(scraped, lat=mosque_lat)
 
             if not vr.issues:
                 continue
