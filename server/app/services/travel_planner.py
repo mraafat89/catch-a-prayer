@@ -1694,7 +1694,11 @@ def build_itineraries(prayer_pairs: list[dict], allow_combining: bool = True) ->
         if any(c is None for c in choices):
             continue
 
-        combo_key = tuple(opt["option_type"] for _, opt in choices)  # type: ignore[index]
+        # Include mosque ID in key so different mosques for the same option type produce different itineraries
+        combo_key = tuple(
+            f"{opt['option_type']}:{opt['stops'][0]['mosque_id'] if opt.get('stops') else 'none'}"
+            for _, opt in choices
+        )  # type: ignore[index]
         if combo_key in seen:
             continue
         seen.add(combo_key)
@@ -1721,6 +1725,55 @@ def build_itineraries(prayer_pairs: list[dict], allow_combining: bool = True) ->
             "stop_count": sum(len(opt.get("stops", [])) for _, opt in choices),  # type: ignore[misc]
             "feasible": all_feasible,
         })
+
+    # ── Additional pass: generate mosque-variety itineraries ────────────
+    # For each pair, iterate over ALL options (not just first-per-type) to
+    # create additional itineraries with different mosque stops.
+    from itertools import product as itertools_product
+
+    per_pair_all_opts = []
+    for pair in prayer_pairs:
+        opts = pair.get("options", [])
+        if not opts:
+            opts = [{"option_type": "no_option", "label": "No option", "description": "",
+                     "prayers": [], "combination_label": None, "stops": [],
+                     "feasible": False, "note": None}]
+        per_pair_all_opts.append([(pair, opt) for opt in opts[:4]])  # cap at 4 per pair
+
+    if per_pair_all_opts:
+        for combo in itertools_product(*per_pair_all_opts):
+            if len(itineraries) >= 8:  # cap total itineraries
+                break
+            combo_key = tuple(
+                f"{opt['option_type']}:{opt['stops'][0]['mosque_id'] if opt.get('stops') else 'none'}"
+                for _, opt in combo
+            )
+            if combo_key in seen:
+                continue
+            seen.add(combo_key)
+
+            pair_choices_out = []
+            total_detour = 0
+            all_feasible = True
+            for pair_data, opt in combo:
+                pair_choices_out.append({
+                    "pair": pair_data["pair"],
+                    "label": pair_data["label"],
+                    "emoji": pair_data["emoji"],
+                    "option": opt,
+                })
+                total_detour += sum(s["detour_minutes"] for s in opt.get("stops", []))
+                if not opt.get("feasible", True):
+                    all_feasible = False
+
+            itineraries.append({
+                "label": _itinerary_label(pair_choices_out),
+                "summary": _itinerary_summary(pair_choices_out),
+                "pair_choices": pair_choices_out,
+                "total_detour_minutes": total_detour,
+                "stop_count": sum(len(opt.get("stops", [])) for _, opt in combo),
+                "feasible": all_feasible,
+            })
 
     return itineraries
 
