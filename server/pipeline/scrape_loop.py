@@ -77,7 +77,7 @@ def sample_failures(engine, limit: int = 5) -> list[dict]:
 
 async def run_playwright_batch(batch_size: int, engine):
     """Run one Playwright scraper batch."""
-    from pipeline.smart_bulk_scraper import scrape_with_playwright, _get_websites
+    from pipeline.smart_bulk_scraper import scrape_with_playwright
     websites = _get_websites(engine, batch_size)
     if not websites:
         return {"attempted": 0, "success": 0, "no_data": 0, "error": 0}
@@ -86,7 +86,7 @@ async def run_playwright_batch(batch_size: int, engine):
 
 async def run_jina_batch(batch_size: int, engine):
     """Run one Jina Reader scraper batch."""
-    from pipeline.smart_bulk_scraper import scrape_with_jina, _get_websites
+    from pipeline.smart_bulk_scraper import scrape_with_jina
     websites = _get_websites(engine, batch_size)
     if not websites:
         return {"attempted": 0, "success": 0, "no_data": 0, "error": 0}
