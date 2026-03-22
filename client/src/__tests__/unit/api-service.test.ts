@@ -24,6 +24,21 @@ beforeEach(() => {
   jest.clearAllMocks();
 });
 
+describe('axios instance config', () => {
+  test('x-session-id header is set on axios instance', () => {
+    // Re-import to capture the create() call after mock is in place
+    jest.isolateModules(() => {
+      const axiosMod = require('axios');
+      require('../../services/api');
+      const calls = axiosMod.create.mock.calls;
+      expect(calls.length).toBeGreaterThan(0);
+      const config = calls[calls.length - 1][0];
+      expect(config.headers['x-session-id']).toBeTruthy();
+      expect(config.headers['x-session-id']).toMatch(/^cap-/);
+    });
+  });
+});
+
 describe('findNearbyMosques', () => {
   test('sends correct payload', async () => {
     mockApi.post.mockResolvedValueOnce({ data: { mosques: [], user_location: {}, request_time: '' } });

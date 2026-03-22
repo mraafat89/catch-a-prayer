@@ -387,6 +387,48 @@ class MosqueSuggestionVote(Base):
     )
 
 
+class RequestLog(Base):
+    __tablename__ = "request_logs"
+
+    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=new_uuid)
+    endpoint: Mapped[str] = mapped_column(String(500), nullable=False)
+    method: Mapped[str] = mapped_column(String(10), nullable=False)
+    lat: Mapped[Optional[float]] = mapped_column(Float)
+    lng: Mapped[Optional[float]] = mapped_column(Float)
+    radius_km: Mapped[Optional[float]] = mapped_column(Float)
+    travel_mode: Mapped[Optional[str]] = mapped_column(String(50))
+    response_code: Mapped[int] = mapped_column(Integer, nullable=False)
+    latency_ms: Mapped[float] = mapped_column(Float, nullable=False)
+    session_id: Mapped[Optional[str]] = mapped_column(String(200))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    __table_args__ = (
+        Index("request_logs_created_at_idx", "created_at"),
+        Index("request_logs_session_id_idx", "session_id"),
+        Index("request_logs_endpoint_idx", "endpoint"),
+    )
+
+
+class CoverageGap(Base):
+    __tablename__ = "coverage_gaps"
+
+    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=new_uuid)
+    lat: Mapped[float] = mapped_column(Float, nullable=False)
+    lng: Mapped[float] = mapped_column(Float, nullable=False)
+    gap_type: Mapped[str] = mapped_column(String(30), nullable=False)
+    # "no_nearby_mosque" — user searched max radius, found nothing
+    # "route_no_mosque"  — route planner couldn't find a mosque for a prayer
+    radius_km: Mapped[Optional[float]] = mapped_column(Float)
+    prayer: Mapped[Optional[str]] = mapped_column(String(20))
+    session_id: Mapped[Optional[str]] = mapped_column(String(200))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    __table_args__ = (
+        Index("coverage_gaps_created_at_idx", "created_at"),
+        Index("coverage_gaps_type_idx", "gap_type"),
+    )
+
+
 class PushSubscription(Base):
     __tablename__ = "push_subscriptions"
 

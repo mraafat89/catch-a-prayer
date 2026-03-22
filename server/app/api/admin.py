@@ -239,22 +239,21 @@ async def get_stats(db: AsyncSession = Depends(get_db)):
     stats["route_origins"] = [[float(row["lat"]), float(row["lng"]), int(row["routes"])]
                                for row in r.mappings()]
 
-    # === Coverage gaps (user searched but few mosques nearby) ===
+    # === Coverage gaps (real user-experienced gaps) ===
     r = await db.execute(text("""
-        SELECT rl.lat, rl.lng, count(distinct rl.id) as searches,
-            (SELECT count(*) FROM mosques m
-             WHERE m.is_active AND m.lat BETWEEN rl.lat-0.1 AND rl.lat+0.1
-             AND m.lng BETWEEN rl.lng-0.1 AND rl.lng+0.1) as nearby_mosques
-        FROM request_logs rl
-        WHERE rl.lat IS NOT NULL AND rl.lng IS NOT NULL
-          AND rl.created_at > now() - interval '30 days'
-        GROUP BY rl.lat, rl.lng
-        HAVING (SELECT count(*) FROM mosques m
-                WHERE m.is_active AND m.lat BETWEEN rl.lat-0.1 AND rl.lat+0.1
-                AND m.lng BETWEEN rl.lng-0.1 AND rl.lng+0.1) < 3
+        SELECT round(lat::numeric, 2) as lat, round(lng::numeric, 2) as lng,
+               count(*) as hits, gap_type,
+               array_agg(distinct prayer) filter (where prayer is not null) as prayers
+        FROM coverage_gaps
+        WHERE created_at > now() - interval '90 days'
+        GROUP BY round(lat::numeric, 2), round(lng::numeric, 2), gap_type
+        ORDER BY hits DESC
+        LIMIT 200
     """))
-    stats["coverage_gaps"] = [[float(row["lat"]), float(row["lng"]), int(row["searches"])]
-                               for row in r.mappings()]
+    stats["coverage_gaps"] = [
+        [float(row["lat"]), float(row["lng"]), int(row["hits"])]
+        for row in r.mappings()
+    ]
 
     # === Request volume by day (last 30 days) ===
     r = await db.execute(text("""

@@ -4,10 +4,11 @@ Travel API
 Endpoints for route-based travel prayer planning and geocoding.
 """
 from __future__ import annotations
+import asyncio
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
@@ -37,7 +38,11 @@ async def geocode_reverse(lat: float = Query(...), lng: float = Query(...)):
 
 
 @router.post("/travel/plan", response_model=TravelPlanResponse)
-async def travel_plan(req: TravelPlanRequest, db: AsyncSession = Depends(get_db)):
+async def travel_plan(
+    req: TravelPlanRequest,
+    db: AsyncSession = Depends(get_db),
+    x_session_id: str | None = Header(None),
+):
     """Build a route-based travel prayer plan."""
     import logging
     _log = logging.getLogger("travel_debug")
@@ -74,4 +79,30 @@ async def travel_plan(req: TravelPlanRequest, db: AsyncSession = Depends(get_db)
     _log.info(f"TRAVEL RESPONSE: pairs={[pp['pair'] for pp in result.get('prayer_pairs',[])]} "
               f"itineraries={len(result.get('itineraries',[]))} "
               f"pair_details={[(pp['pair'], len(pp['options'])) for pp in result.get('prayer_pairs',[])]}")
+
+    # Log coverage gaps — route prayers where no mosque was found
+    try:
+        from app.database import engine as _engine
+        from sqlalchemy import text as _text
+        gap_prayers = []
+        for pp in result.get("prayer_pairs", []):
+            # If ALL options for a prayer pair are no_option, it's a real gap
+            if pp.get("options") and all(o["option_type"] == "no_option" for o in pp["options"]):
+                for prayer in pp.get("options", [{}])[0].get("prayers", []):
+                    gap_prayers.append(prayer)
+        if gap_prayers:
+            # Use route midpoint as the gap location
+            mid_lat = (req.origin_lat + req.destination_lat) / 2
+            mid_lng = (req.origin_lng + req.destination_lng) / 2
+            async def _log_gaps():
+                async with _engine.begin() as conn:
+                    for prayer in gap_prayers:
+                        await conn.execute(_text("""
+                            INSERT INTO coverage_gaps (id, lat, lng, gap_type, prayer, session_id)
+                            VALUES (gen_random_uuid(), :lat, :lng, 'route_no_mosque', :prayer, :sid)
+                        """), {"lat": mid_lat, "lng": mid_lng, "prayer": prayer, "sid": x_session_id})
+            asyncio.create_task(_log_gaps())
+    except Exception:
+        pass
+
     return TravelPlanResponse(**result)

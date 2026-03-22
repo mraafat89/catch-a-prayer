@@ -167,6 +167,30 @@ x.0.0  — major releases (breaking changes)
 
 ---
 
+## Database Migrations
+
+Schema changes are managed by **Alembic** (`server/alembic/versions/`). Production deploys run `alembic upgrade head` automatically.
+
+**When to create a migration:**
+- Adding a new table
+- Adding/removing/renaming columns
+- Adding/removing indexes or constraints
+
+**How:**
+1. Update or add the model in `server/app/models.py`
+2. Create a new migration file in `server/alembic/versions/` following the naming pattern: `00X_description.py` (increment the number from the latest migration)
+3. Include both `upgrade()` and `downgrade()` functions
+4. Set `revision` and `down_revision` to chain correctly
+
+**Rules:**
+- Migrations must be **additive** — never drop columns/tables that live server code uses
+- **WARNING: DESTRUCTIVE MIGRATIONS (dropping tables, dropping columns, deleting data, renaming columns) are NEVER allowed without explicit human approval. Always stop and ask the owner first, even in autonomous/skip-permissions mode. No exceptions.**
+- For destructive changes, use two-phase: add new → deploy → remove old later
+- Never edit the database schema directly in production
+- Test migrations locally before merging: `cd server && alembic upgrade head`
+
+---
+
 ## Environment
 
 - **Docker**: `docker-compose.yml` for local dev (api + db), `docker-compose.prod.yml` for production
