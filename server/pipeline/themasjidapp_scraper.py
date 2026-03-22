@@ -183,8 +183,8 @@ async def match_and_fetch(engine, limit: int = None):
                     if slug and slug not in tma_mosques:
                         tma_mosques[slug] = {
                             "name": m.get("name", ""),
-                            "lat": m.get("lat", 0),
-                            "lng": m.get("lng", 0),
+                            "lat": float(m.get("lat", 0) or 0),
+                            "lng": float(m.get("lng", 0) or 0),
                             "slug": slug,
                             "id": m.get("id"),
                         }
