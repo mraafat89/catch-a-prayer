@@ -59,13 +59,15 @@ main             production — protected, PR required, tests must pass
 4. Run tests locally: cd server && python -m pytest tests/ -v
 5. Run frontend tests: cd client && CI=true npm test -- --watchAll=false
 6. Push to feature branch
-7. Merge to dev
-8. Test on phone (local server): cd client && npm run sync:ios:dev
-9. When ready for production: create PR from dev → main
-10. Tests run automatically on PR
-11. Owner reviews and merges
-12. Owner manually triggers Deploy workflow on GitHub Actions
+7. Merge to dev (only when tests pass)
+8. When ready for production: create PR from dev → main
+9. Tests run automatically on PR
+10. Merge PR
+11. Deploy: gh workflow run "Deploy to Production" -f confirm=deploy
+12. VERIFY the deploy succeeded: gh run watch <run-id>
 ```
+
+**CRITICAL: Code on `main` is NOT live until deployed. Every merge to `main` MUST be followed by triggering the deploy workflow and verifying it succeeded. No exceptions.**
 
 ---
 
