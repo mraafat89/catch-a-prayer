@@ -340,37 +340,37 @@ class TestMultiDayEnumeration:
         assert "isha" not in names
 
     def test_overnight_trip(self):
-        """10 PM - 8 AM next day: Fajr on day 2."""
+        """10 PM - 8 AM next day: Fajr on day 1."""
         dep = datetime(2026, 3, 21, 22, 0, tzinfo=PT)
         arr = datetime(2026, 3, 22, 8, 0, tzinfo=PT)
         scheds = self._schedules([date(2026, 3, 21), date(2026, 3, 22)])
         prayers = enumerate_trip_prayers(dep, arr, scheds)
         fajrs = [p for p in prayers if p["prayer"] == "fajr"]
         assert len(fajrs) == 1
-        assert fajrs[0]["day_number"] == 2
+        assert fajrs[0]["day_number"] == 1
 
     def test_two_day_trip(self):
-        """8 AM day 1 - 6 PM day 2: multiple prayers on both days."""
+        """8 AM day 0 - 6 PM day 1: multiple prayers on both days."""
         dep = datetime(2026, 3, 21, 8, 0, tzinfo=PT)
         arr = datetime(2026, 3, 22, 18, 0, tzinfo=PT)
         scheds = self._schedules([date(2026, 3, 21), date(2026, 3, 22)])
         prayers = enumerate_trip_prayers(dep, arr, scheds)
 
+        day0 = {p["prayer"] for p in prayers if p["day_number"] == 0}
         day1 = {p["prayer"] for p in prayers if p["day_number"] == 1}
-        day2 = {p["prayer"] for p in prayers if p["day_number"] == 2}
 
+        assert "dhuhr" in day0
+        assert "asr" in day0
+        assert "maghrib" in day0
+        assert "isha" in day0
+        assert "fajr" not in day0  # Fajr at 5:30 < departure 8:00
+
+        assert "fajr" in day1
         assert "dhuhr" in day1
         assert "asr" in day1
-        assert "maghrib" in day1
-        assert "isha" in day1
-        assert "fajr" not in day1  # Fajr at 5:30 < departure 8:00
-
-        assert "fajr" in day2
-        assert "dhuhr" in day2
-        assert "asr" in day2
 
     def test_three_day_trip(self):
-        """8 AM day 1 - 6 PM day 3: Fajr on day 2 and 3."""
+        """8 AM day 0 - 6 PM day 2: Fajr on day 1 and 2."""
         dep = datetime(2026, 3, 21, 8, 0, tzinfo=PT)
         arr = datetime(2026, 3, 23, 18, 0, tzinfo=PT)
         scheds = self._schedules([date(2026, 3, 21), date(2026, 3, 22), date(2026, 3, 23)])
@@ -378,8 +378,8 @@ class TestMultiDayEnumeration:
 
         fajrs = [p for p in prayers if p["prayer"] == "fajr"]
         assert len(fajrs) == 2
-        assert fajrs[0]["day_number"] == 2
-        assert fajrs[1]["day_number"] == 3
+        assert fajrs[0]["day_number"] == 1
+        assert fajrs[1]["day_number"] == 2
 
         # Total prayers across 3 days
         assert len(prayers) >= 10  # At least 2 full days worth
@@ -529,10 +529,10 @@ class TestScenarioTwoDayMusafirNothingPrayed:
             date(2026, 3, 22): visalia_schedule(date(2026, 3, 22)),
         }
         prayers = enumerate_trip_prayers(dep, arr, scheds)
+        day0 = [p for p in prayers if p["day_number"] == 0]
         day1 = [p for p in prayers if p["day_number"] == 1]
-        day2 = [p for p in prayers if p["day_number"] == 2]
-        assert len(day1) >= 3  # At least Dhuhr, Asr, Maghrib, Isha
-        assert len(day2) >= 3  # At least Fajr, Dhuhr, Asr
+        assert len(day0) >= 3  # At least Dhuhr, Asr, Maghrib, Isha
+        assert len(day1) >= 3  # At least Fajr, Dhuhr, Asr
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

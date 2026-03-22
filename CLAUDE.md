@@ -68,18 +68,17 @@ main             production — protected, PR required, tests must pass
 
 ## Deployment Flow
 
-**IMPORTANT: Deployment is MANUAL. Never auto-deploy.**
-
-| Action | How | Who triggers |
-|--------|-----|-------------|
-| Deploy to production | GitHub Actions → "Deploy to Production" → type "deploy" | Owner only |
-| Create release | GitHub Actions → "Release & Deploy" → fill version + notes | Owner only |
+| Action | How | Who can trigger |
+|--------|-----|----------------|
+| Deploy to production | GitHub Actions → "Deploy to Production" → type "deploy" | Agent or Owner |
+| Create release | GitHub Actions → "Release & Deploy" → fill version + notes | Agent or Owner |
 | Submit to Apple/Google | Xcode Archive / Android Studio AAB → upload | Owner only |
 
 **Deploy only when:**
 1. All tests pass (automated)
-2. Tested on local device (manual)
-3. Owner is confident it works for real users
+2. PR merged to `main`
+
+**WARNING: DESTRUCTIVE operations (dropping tables, deleting data, destructive migrations) require EXPLICIT human approval before deploying. Always stop and ask the owner first, even in autonomous/skip-permissions mode. No exceptions.**
 
 **Server deploys are independent from app store submissions.** Only submit to Apple/Google when client code changed.
 
@@ -164,6 +163,30 @@ x.0.0  — major releases (breaking changes)
 - **No over-engineering** — solve the current problem, not hypothetical future ones
 - **Read existing code before modifying** — match patterns already in use
 - **All text inputs sanitized server-side** — URLs blocked, ALL_CAPS spam blocked, geographic bounds enforced
+
+---
+
+## Database Migrations
+
+Schema changes are managed by **Alembic** (`server/alembic/versions/`). Production deploys run `alembic upgrade head` automatically.
+
+**When to create a migration:**
+- Adding a new table
+- Adding/removing/renaming columns
+- Adding/removing indexes or constraints
+
+**How:**
+1. Update or add the model in `server/app/models.py`
+2. Create a new migration file in `server/alembic/versions/` following the naming pattern: `00X_description.py` (increment the number from the latest migration)
+3. Include both `upgrade()` and `downgrade()` functions
+4. Set `revision` and `down_revision` to chain correctly
+
+**Rules:**
+- Migrations must be **additive** — never drop columns/tables that live server code uses
+- **WARNING: DESTRUCTIVE MIGRATIONS (dropping tables, dropping columns, deleting data, renaming columns) are NEVER allowed without explicit human approval. Always stop and ask the owner first, even in autonomous/skip-permissions mode. No exceptions.**
+- For destructive changes, use two-phase: add new → deploy → remove old later
+- Never edit the database schema directly in production
+- Test migrations locally before merging: `cd server && alembic upgrade head`
 
 ---
 

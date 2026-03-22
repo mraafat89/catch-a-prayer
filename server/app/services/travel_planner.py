@@ -69,14 +69,29 @@ def enumerate_trip_prayers(
     schedules_by_date: dict,
 ) -> list[dict]:
     """
-    Enumerate all prayers that fall within a multi-day trip window.
-    Returns list of {prayer, date, adhan_time, iqama_time, day_number}.
-    Each calendar day uses its own prayer schedule.
+    Enumerate all prayers whose active window overlaps the trip window.
+
+    A prayer is included when [adhan_dt, period_end_dt] intersects
+    [departure_dt, arrival_dt].  This prevents stale prayers (whose period
+    ended before departure) from appearing in the plan.
+
+    Returns list of dicts sorted by adhan_dt ascending:
+        {prayer, date, adhan_time, iqama_time, day_number, adhan_dt,
+         period_end_dt, schedule}
     """
+    # Map each prayer to the schedule key that marks the end of its period
+    _PERIOD_END_MAP = {
+        "fajr": "sunrise",
+        "dhuhr": "asr_adhan",
+        "asr": "maghrib_adhan",
+        "maghrib": "isha_adhan",
+        "isha": "fajr_adhan",
+    }
+
     results = []
     current_date = departure_dt.date()
     end_date = arrival_dt.date()
-    day_number = 1
+    day_number = 0
 
     while current_date <= end_date:
         schedule = schedules_by_date.get(current_date, {})
@@ -85,23 +100,121 @@ def enumerate_trip_prayers(
             if not adhan:
                 continue
             adhan_min = hhmm_to_minutes(adhan)
-            prayer_dt = datetime(
+            adhan_dt = datetime(
                 current_date.year, current_date.month, current_date.day,
                 adhan_min // 60, adhan_min % 60,
                 tzinfo=departure_dt.tzinfo,
             )
-            if departure_dt <= prayer_dt <= arrival_dt:
+
+            # Compute period_end_dt
+            period_end_key = _PERIOD_END_MAP.get(prayer)
+            period_end_raw = schedule.get(period_end_key) if period_end_key else None
+            if period_end_raw:
+                pe_min = hhmm_to_minutes(period_end_raw)
+                if pe_min <= adhan_min:
+                    # Midnight wrap (e.g. Isha → next Fajr): period ends next day
+                    pe_date = current_date + timedelta(days=1)
+                else:
+                    pe_date = current_date
+                period_end_dt = datetime(
+                    pe_date.year, pe_date.month, pe_date.day,
+                    pe_min // 60, pe_min % 60,
+                    tzinfo=departure_dt.tzinfo,
+                )
+            else:
+                # Fallback: 6 hours after adhan
+                period_end_dt = adhan_dt + timedelta(hours=6)
+
+            # Overlap check: [adhan_dt, period_end_dt] ∩ [departure_dt, arrival_dt]
+            # Two intervals overlap iff start1 < end2 AND start2 < end1
+            if adhan_dt < arrival_dt and departure_dt < period_end_dt:
                 results.append({
                     "prayer": prayer,
                     "date": current_date,
                     "adhan_time": adhan,
                     "iqama_time": schedule.get(f"{prayer}_iqama"),
                     "day_number": day_number,
+                    "adhan_dt": adhan_dt,
+                    "period_end_dt": period_end_dt,
+                    "schedule": schedule,
                 })
         current_date += timedelta(days=1)
         day_number += 1
 
+    # Sort by absolute datetime — the canonical ordering for multi-day trips
+    results.sort(key=lambda p: p["adhan_dt"])
     return results
+
+
+def build_pairs_from_prayers(
+    prayers: list[dict],
+    travel_mode: bool = True,
+) -> list[tuple[str, list[dict]]]:
+    """
+    Group enumerated prayers into combinable pairs for the route planner.
+
+    Rules:
+    - In travel_mode (Musafir): Dhuhr+Asr and Maghrib+Isha on the SAME
+      calendar day form a pair.
+    - In non-travel_mode (Muqeem): each prayer is standalone (no combining).
+    - Fajr is always standalone.
+    - Day 0 Dhuhr + Day 1 Asr is NEVER a valid pair (different days).
+
+    Returns a list of (pair_key, prayer_list) tuples in chronological order
+    (sorted by the earliest adhan_dt in each group).
+
+    pair_key examples: "fajr_day0", "dhuhr_asr_day1", "maghrib_isha_day0"
+    """
+    COMBINABLE = {
+        ("dhuhr", "asr"),
+        ("maghrib", "isha"),
+    }
+
+    # Index prayers by (date, prayer_name)
+    by_date_name: dict[tuple, dict] = {}
+    for p in prayers:
+        by_date_name[(p["date"], p["prayer"])] = p
+
+    used: set[tuple] = set()
+    groups: list[tuple[str, list[dict]]] = []
+
+    for p in prayers:
+        key = (p["date"], p["prayer"])
+        if key in used:
+            continue
+
+        paired = False
+        if travel_mode:
+            for p1_name, p2_name in COMBINABLE:
+                if p["prayer"] == p1_name:
+                    partner_key = (p["date"], p2_name)
+                    partner = by_date_name.get(partner_key)
+                    if partner and partner_key not in used:
+                        pair_key = f"{p1_name}_{p2_name}_day{p['day_number']}"
+                        groups.append((pair_key, [p, partner]))
+                        used.add(key)
+                        used.add(partner_key)
+                        paired = True
+                        break
+                elif p["prayer"] == p2_name:
+                    partner_key = (p["date"], p1_name)
+                    partner = by_date_name.get(partner_key)
+                    if partner and partner_key not in used:
+                        pair_key = f"{p1_name}_{p2_name}_day{p['day_number']}"
+                        groups.append((pair_key, [partner, p]))
+                        used.add(key)
+                        used.add(partner_key)
+                        paired = True
+                        break
+
+        if not paired:
+            solo_key = f"{p['prayer']}_day{p['day_number']}"
+            groups.append((solo_key, [p]))
+            used.add(key)
+
+    # Sort groups by earliest adhan_dt
+    groups.sort(key=lambda g: min(pp["adhan_dt"] for pp in g[1]))
+    return groups
 
 
 def fmt_duration(minutes: int) -> str:

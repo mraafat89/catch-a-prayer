@@ -101,7 +101,8 @@ async def track_requests(request: Request, call_next):
         request_metrics["errors_5xx"] += 1
 
     # Persist search/route requests to DB for heatmaps
-    lat = lng = radius = travel_mode = session_id = None
+    lat = lng = radius = travel_mode = None
+    session_id = request.headers.get("x-session-id")
     try:
         if body_bytes and "nearby" in path:
             import json as _json
@@ -110,7 +111,6 @@ async def track_requests(request: Request, call_next):
             lng = data.get("longitude")
             radius = data.get("radius_km")
             travel_mode = data.get("travel_mode")
-            session_id = request.headers.get("x-session-id")
 
             if lat and lng:
                 request_metrics["unique_locations"].add(f"{round(lat,1)},{round(lng,1)}")
