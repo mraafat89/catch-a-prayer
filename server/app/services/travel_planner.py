@@ -1797,6 +1797,29 @@ async def build_travel_plan(
                         pa_min // 60, pa_min % 60,
                         tzinfo=dep_local.tzinfo,
                     )
+                    # Compute the partner's period end to check if it's still valid
+                    _PERIOD_END_KEYS_LOCAL = {
+                        "dhuhr": "asr_adhan", "asr": "maghrib_adhan",
+                        "maghrib": "isha_adhan", "isha": "fajr_adhan", "fajr": "sunrise",
+                    }
+                    pe_key = _PERIOD_END_KEYS_LOCAL.get(partner_name)
+                    pe_raw = schedule.get(pe_key) if pe_key else None
+                    if pe_raw:
+                        pe_min = hhmm_to_minutes(pe_raw)
+                        partner_period_end_dt = datetime(
+                            p["date"].year, p["date"].month, p["date"].day,
+                            pe_min // 60, pe_min % 60,
+                            tzinfo=dep_local.tzinfo,
+                        )
+                        if pe_min <= pa_min:  # midnight wrap (Isha → Fajr)
+                            partner_period_end_dt += timedelta(days=1)
+                    else:
+                        partner_period_end_dt = partner_adhan_dt + timedelta(hours=6)
+
+                    # Only inject partner if its period hasn't ended before departure
+                    if partner_period_end_dt <= dep_local:
+                        continue  # Partner's period ended before trip — don't inject
+
                     partners_to_add.append({
                         "prayer": partner_name,
                         "date": p["date"],
@@ -1804,7 +1827,7 @@ async def build_travel_plan(
                         "iqama_time": schedule.get(f"{partner_name}_iqama"),
                         "day_number": p["day_number"],
                         "adhan_dt": partner_adhan_dt,
-                        "period_end_dt": partner_adhan_dt + timedelta(hours=6),
+                        "period_end_dt": partner_period_end_dt,
                         "schedule": schedule,
                     })
                     existing_keys.add((p["date"], partner_name))
