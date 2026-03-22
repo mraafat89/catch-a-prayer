@@ -80,8 +80,9 @@ jobs:
             git pull --no-edit origin main || (git stash && git pull --no-edit origin main)
             # Verify .env exists (critical for DB connection)
             test -f server/.env || (echo "ERROR: server/.env missing!" && exit 1)
-            docker exec cap-api alembic upgrade head || true
             docker compose -f docker-compose.prod.yml up -d --build api
+            sleep 5  # wait for container to be ready
+            docker exec cap-api alembic upgrade head || true
             cd client && REACT_APP_API_URL=https://catchaprayer.com npm run build
             cd ..
             docker restart cap-caddy
