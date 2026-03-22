@@ -582,7 +582,7 @@ th{{background:#f8f9fa;font-weight:600;color:#666}}
   <div class="tab on" id="btn-mosques" onclick="showLayer('mosques')">Mosques</div>
   <div class="tab" id="btn-searches" onclick="showLayer('searches')">Searches</div>
   <div class="tab" id="btn-routes" onclick="showLayer('routes')">Routes</div>
-  <div class="tab" id="btn-gaps" onclick="showLayer('gaps')" title="Areas where users searched but fewer than 3 mosques nearby">Gaps</div>
+  <div class="tab" id="btn-gaps" onclick="showLayer('gaps')" title="Locations where users couldn't find a mosque (max radius search or route with no mosque)">Gaps</div>
 </div>
 <div id="heatmap"></div>
 <p id="heatmap-label" style="font-size:10px;color:#888;margin:4px 0 0;"></p>
@@ -767,7 +767,7 @@ var labels = {
     mosques: mosqueData.length + ' mosques in database',
     searches: searchData.length + ' unique search locations (last 30 days)',
     routes: routeData.length + ' route planning origins (last 30 days)',
-    gaps: gapData.length + ' areas where users searched but fewer than 3 mosques exist nearby'
+    gaps: gapData.length + ' locations where users couldn\\'t find a mosque (last 90 days)'
 };
 
 var activeLayer = 'mosques';
