@@ -89,6 +89,74 @@ RELATIVE_IQAMA_RE = re.compile(
 )
 
 
+# Date patterns for monthly tables
+DATE_RE = re.compile(r'\b(\d{1,2})[/\-.](\d{1,2})[/\-.](\d{2,4})\b')
+MONTH_NAMES_RE = re.compile(
+    r'\b(january|february|march|april|may|june|july|august|september|october|november|december'
+    r'|muharram|safar|rabi.?ul.?awwal|rabi.?ul.?thani|jumada.?ul.?ula|jumada.?ul.?thani'
+    r'|rajab|sha.?ban|ramadan|shawwal|dhul.?qa.?dah|dhul.?hijjah)\b',
+    re.IGNORECASE
+)
+
+
+def extract_monthly_schedule(text_content: str) -> list[dict]:
+    """
+    Detect monthly prayer schedule tables.
+    Returns list of {date: "YYYY-MM-DD", adhan: {...}} for each day found.
+    """
+    text_content = text_content.replace('\t', '  ')
+    text_content = re.sub(r'\*{1,6}', '', text_content)
+    text_content = re.sub(r'\b(\d{1,2})\.(\d{2})\s*(am|pm|AM|PM)', r'\1:\2 \3', text_content)
+    lines = text_content.split('\n')
+    monthly = []
+
+    for line in lines:
+        date_match = DATE_RE.search(line)
+        if not date_match:
+            continue
+
+        times = TIME_RE.findall(line)
+        if len(times) < 3:
+            continue
+
+        try:
+            d1, d2, d3 = date_match.groups()
+            if len(d3) == 4:
+                year = int(d3)
+                if int(d1) > 12:
+                    day, month = int(d1), int(d2)
+                else:
+                    month, day = int(d1), int(d2)
+            elif len(d3) == 2:
+                year = 2000 + int(d3)
+                month, day = int(d1), int(d2)
+            else:
+                continue
+
+            from datetime import date as date_cls
+            try:
+                schedule_date = date_cls(year, month, day)
+            except ValueError:
+                continue
+
+            prayer_order = ["fajr", "sunrise", "dhuhr", "asr", "maghrib", "isha"]
+            row = {"date": schedule_date.isoformat(), "adhan": {}}
+
+            for j, (h, m, ampm) in enumerate(times[:6]):
+                if j < len(prayer_order):
+                    t = _normalize_time(h, m, ampm, prayer=prayer_order[j])
+                    if t:
+                        row["adhan"][prayer_order[j]] = t
+
+            if len(row["adhan"]) >= 3:
+                monthly.append(row)
+
+        except (ValueError, IndexError):
+            continue
+
+    return monthly
+
+
 def extract_times_from_text(text_content: str) -> dict:
     """
     Extract prayer times from rendered page text.
@@ -650,7 +718,25 @@ async def scrape_with_playwright(websites: list[dict], engine, save: bool = True
                     stats["success"] += 1
                     continue
 
-                # Extract prayer times
+                # Try monthly schedule first (saves multiple days at once)
+                monthly = extract_monthly_schedule(text_content)
+                if len(monthly) >= 5:
+                    stats["success"] += 1
+                    log.info(f"  ✓ Monthly schedule: {len(monthly)} days found")
+                    if save:
+                        for day_data in monthly:
+                            from datetime import date as date_cls
+                            day_date = date_cls.fromisoformat(day_data["date"])
+                            day_full = {"adhan": day_data["adhan"], "iqama": day_data.get("iqama", {}), "jumuah": []}
+                            _save_to_db(engine, mosque_id, day_full, day_date, source="playwright_scrape")
+                        # Tag mosque as monthly publisher
+                        with engine.begin() as conn:
+                            conn.execute(text(
+                                "UPDATE scraping_jobs SET scrape_method = 'monthly_schedule' WHERE mosque_id = :mid"
+                            ), {"mid": mosque_id})
+                    continue
+
+                # Extract today's prayer times
                 data = extract_times_from_text(text_content)
 
                 # Sanitize: remove any times outside valid ranges
