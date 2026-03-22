@@ -1,10 +1,16 @@
 """
 Geographic Utilities
 =====================
-Auto-assign state, timezone, and country from lat/lng coordinates.
-Used by discovery pipeline and community submissions.
+Auto-assign state, timezone, and country from address or coordinates.
+
+Priority:
+1. Parse from Google formatted_address (most accurate)
+2. Parse from OSM addr:state tag
+3. Fall back to lat/lng bounding box lookup (least accurate, border issues)
 """
 from __future__ import annotations
+
+import re
 
 
 # US state boundaries (simplified bounding boxes)
@@ -121,30 +127,59 @@ STATE_TIMEZONES = {
 
 def get_state_from_coords(lat: float, lng: float) -> str | None:
     """Determine US state or Canadian province from lat/lng."""
-    best = None
-    best_dist = float("inf")
+    candidates = []
 
     # Check US states
     for code, (min_lat, max_lat, min_lng, max_lng) in US_STATES.items():
         if min_lat <= lat <= max_lat and min_lng <= lng <= max_lng:
-            # Calculate distance to center of bounding box (tiebreaker)
+            # Score by how well the point fits inside the box (smaller box = better match)
+            box_area = (max_lat - min_lat) * (max_lng - min_lng)
             center_lat = (min_lat + max_lat) / 2
             center_lng = (min_lng + max_lng) / 2
             dist = (lat - center_lat) ** 2 + (lng - center_lng) ** 2
-            if dist < best_dist:
-                best_dist = dist
-                best = code
+            candidates.append((code, box_area, dist, "US"))
 
     # Check Canadian provinces
     for code, (min_lat, max_lat, min_lng, max_lng) in CA_PROVINCES.items():
         if min_lat <= lat <= max_lat and min_lng <= lng <= max_lng:
+            box_area = (max_lat - min_lat) * (max_lng - min_lng)
             center_lat = (min_lat + max_lat) / 2
             center_lng = (min_lng + max_lng) / 2
             dist = (lat - center_lat) ** 2 + (lng - center_lng) ** 2
-            if dist < best_dist:
-                best_dist = dist
-                best = code
+            candidates.append((code, box_area, dist, "CA"))
 
+    if not candidates:
+        return None
+
+    if len(candidates) == 1:
+        return candidates[0][0]
+
+    # Multiple candidates (border overlap) — use reference points for tiebreaking
+    # These are approximate population centers, not just capitals
+    REFERENCE_POINTS = {
+        "NY": (42.65, -73.75), "NJ": (40.22, -74.76), "CT": (41.60, -72.70),
+        "PA": (40.27, -76.88), "DC": (38.91, -77.04), "MA": (42.36, -71.06),
+        "ON": (43.65, -79.38), "QC": (46.81, -71.21), "BC": (49.28, -123.12),
+        "MI": (42.73, -84.56), "OH": (39.96, -82.99), "VA": (37.54, -77.44),
+        "MD": (39.29, -76.61), "WV": (38.35, -81.63), "VT": (44.26, -72.58),
+        "NH": (43.21, -71.54), "ME": (44.31, -69.78), "RI": (41.82, -71.41),
+        "DE": (39.16, -75.52), "NC": (35.78, -78.64), "SC": (34.00, -81.03),
+        "GA": (33.75, -84.39), "FL": (30.33, -81.66), "AL": (32.38, -86.30),
+        "TN": (36.16, -86.78), "KY": (38.19, -84.87), "IN": (39.77, -86.16),
+        "IL": (41.88, -87.63), "WI": (43.07, -89.40), "MN": (44.98, -93.27),
+        "AB": (53.55, -113.49), "SK": (52.13, -106.67), "MB": (49.90, -97.14),
+    }
+    best = None
+    best_dist = float("inf")
+    for code, box_area, center_dist, region in candidates:
+        ref = REFERENCE_POINTS.get(code)
+        if ref:
+            dist = (lat - ref[0]) ** 2 + (lng - ref[1]) ** 2
+        else:
+            dist = center_dist
+        if dist < best_dist:
+            best_dist = dist
+            best = code
     return best
 
 
@@ -169,15 +204,78 @@ def get_timezone_from_state(state: str | None) -> str | None:
     return None
 
 
-def enrich_mosque_geo(lat: float, lng: float) -> dict:
+def parse_state_from_address(address: str | None) -> tuple[str | None, str | None]:
     """
-    Get state, timezone, and country for a mosque from its coordinates.
+    Extract state/province and country from a formatted address string.
+    Returns (state_code, country_code) or (None, None).
+
+    Handles formats like:
+    - "123 Main St, Brooklyn, NY 11201, USA"
+    - "456 Elm Ave, Toronto, ON M5V 1A1, Canada"
+    """
+    if not address:
+        return None, None
+
+    # US: look for 2-letter state code before ZIP
+    us_match = re.search(r',\s*([A-Z]{2})\s+\d{5}', address)
+    if us_match:
+        state = us_match.group(1)
+        if state in STATE_TIMEZONES:
+            country = "CA" if state in CA_PROVINCES else "US"
+            return state, country
+
+    # Canada: look for 2-letter province before postal code (A1A 1A1)
+    ca_match = re.search(r',\s*([A-Z]{2})\s+[A-Z]\d[A-Z]', address)
+    if ca_match:
+        state = ca_match.group(1)
+        if state in CA_PROVINCES:
+            return state, "CA"
+
+    # Check for country at end
+    if "Canada" in address:
+        return None, "CA"
+    if "USA" in address or "United States" in address:
+        return None, "US"
+
+    return None, None
+
+
+def enrich_mosque_geo(lat: float, lng: float, address: str | None = None) -> dict:
+    """
+    Get state, timezone, and country for a mosque.
+    Uses address first (most accurate), falls back to lat/lng bounding boxes.
     Returns dict with keys: state, timezone, country.
-    Call this on every mosque insert.
     """
-    state = get_state_from_coords(lat, lng)
+    # Try address parsing first (most accurate)
+    state, country = parse_state_from_address(address)
+
+    # Fall back to coordinate lookup only if address parsing failed
+    if not state:
+        state = get_state_from_coords(lat, lng)
+
+    if not country:
+        country = get_country_from_coords(lat, lng)
+
     return {
         "state": state,
         "timezone": get_timezone_from_state(state),
-        "country": get_country_from_coords(lat, lng),
+        "country": country,
     }
+
+
+def is_valid_mosque_data(name: str | None, lat: float | None, lng: float | None,
+                          address: str | None = None) -> bool:
+    """
+    Check if a mosque record has enough data to be useful.
+    A mosque without a name or coordinates is useless.
+    """
+    if not name or not name.strip():
+        return False
+    if lat is None or lng is None:
+        return False
+    if lat == 0 and lng == 0:
+        return False
+    # Must be within US/Canada bounds
+    if not (18.0 <= lat <= 83.0 and -180.0 <= lng <= -50.0):
+        return False
+    return True

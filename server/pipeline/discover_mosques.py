@@ -552,7 +552,7 @@ async def run(args):
         with engine.begin() as conn:
             for m in new_mosques:
                 try:
-                    geo = enrich_mosque_geo(m["lat"], m["lng"])
+                    geo = enrich_mosque_geo(m["lat"], m["lng"], address=m.get("address"))
                     conn.execute(text("""
                         INSERT INTO mosques (id, name, lat, lng, address, phone,
                             google_place_id, state, timezone, country,
