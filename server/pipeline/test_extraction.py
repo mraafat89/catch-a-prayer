@@ -56,8 +56,17 @@ async def test_url(url: str) -> dict:
                         continue
                     has_prayer = any(p in ll for p in PRAYER_NAMES)
                     has_time = bool(TIME_RE.search(line))
-                    if has_prayer or (has_time and any(w in ll for w in ["iqama", "athan", "adhan", "prayer", "salah"])):
+                    # Only count as prayer line if it has BOTH a prayer name AND a time,
+                    # or a time with iqama/adhan keyword. Avoids false positives from nav links.
+                    if (has_prayer and has_time) or (has_time and any(w in ll for w in ["iqama", "athan", "adhan"])):
                         prayer_lines.append(line.strip()[:150])
+                    elif has_prayer and not has_time:
+                        # Check next line for time (split layout)
+                        if i + 1 < len(text_content.split("\n")):
+                            next_l = text_content.split("\n")[i + 1] if "\n" in text_content[text_content.index(line):] else ""
+                            if TIME_RE.search(next_l):
+                                prayer_lines.append(line.strip()[:150])
+                                prayer_lines.append(next_l.strip()[:150])
 
                 if prayer_lines:
                     result["lines"] = prayer_lines[:15]
