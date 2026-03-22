@@ -105,17 +105,39 @@ Every mosque has accurate metadata: denomination, facilities, contact info.
 ### Data Fields
 | Field | Changes | Scrape Frequency |
 |-------|---------|-----------------|
-| Adhan times (5 prayers) | Daily (astronomical) | **Calculate, don't scrape** |
+| Adhan times (5 prayers) | Daily (astronomical) | Scrape when available, calculate as fallback |
 | Iqama times (5 prayers) | Weekly to seasonal | Based on mosque classification |
-| Jumuah (khutba + prayer time) | Rarely | Monthly |
+| Jumuah khutba time | Rarely | Monthly |
+| Jumuah prayer time | Rarely | Monthly |
+| Jumuah imam name | Per week | Weekly (if available) |
+| Jumuah khutba topic | Per week | Weekly (if available) |
+| Jumuah language | Rarely | Monthly |
+| Jumuah sessions (1st, 2nd, 3rd) | Rarely | Monthly |
 | Taraweeh time | During Ramadan only | Daily during Ramadan |
-| Eid prayer sessions | 2x per year | Before each Eid |
+| Eid prayer sessions + takbeer | 2x per year | Before each Eid |
+| Calculation method (ISNA/MWL/etc) | Rarely | Detect once, store |
 
-### Key Insight: Separate Adhan from Iqama
+### Key Insight: Calculated as Fallback, Scraped as Ground Truth
 
-**Adhan times** are astronomical — determined by the sun's position. We calculate these with the praytimes library using the mosque's coordinates + calculation method. **Never scrape adhan times** — they're always available, always accurate, and free to compute.
+**Calculated adhan times** (from praytimes library) are a good estimate but mosques use different calculation methods (ISNA, MWL, Egyptian, Umm al-Qura) and different Asr calculations (Hanafi vs Shafi'i). The scraped adhan times from a mosque's own website reflect THEIR chosen method — this is the ground truth.
 
-**Iqama times** are set by the mosque imam. These are the valuable data we scrape. They change at different frequencies per mosque.
+**Strategy:**
+- **Scrape BOTH adhan and iqama** when available
+- **Fall back to calculated** only when we can't scrape
+- **Label the source** so users know: "From mosque website" vs "Estimated"
+- When we detect a mosque's calculation method from their website, store it and use it for the calculated fallback
+
+**Iqama times** are set by the mosque imam — the core value we provide that no other app has.
+
+**Jumuah details** go beyond just prayer time:
+- Khutba start time
+- Prayer start time
+- Imam name (if available)
+- Khutba topic/series (if available)
+- Language (English, Arabic, Urdu, etc.)
+- Multiple sessions (1st Jumuah, 2nd Jumuah)
+
+These details make our app uniquely useful for Friday prayers.
 
 ### Mosque Classification by Update Frequency
 
