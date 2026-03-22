@@ -68,18 +68,17 @@ main             production — protected, PR required, tests must pass
 
 ## Deployment Flow
 
-**IMPORTANT: Deployment is MANUAL. Never auto-deploy.**
-
-| Action | How | Who triggers |
-|--------|-----|-------------|
-| Deploy to production | GitHub Actions → "Deploy to Production" → type "deploy" | Owner only |
-| Create release | GitHub Actions → "Release & Deploy" → fill version + notes | Owner only |
+| Action | How | Who can trigger |
+|--------|-----|----------------|
+| Deploy to production | GitHub Actions → "Deploy to Production" → type "deploy" | Agent or Owner |
+| Create release | GitHub Actions → "Release & Deploy" → fill version + notes | Agent or Owner |
 | Submit to Apple/Google | Xcode Archive / Android Studio AAB → upload | Owner only |
 
 **Deploy only when:**
 1. All tests pass (automated)
-2. Tested on local device (manual)
-3. Owner is confident it works for real users
+2. PR merged to `main`
+
+**WARNING: DESTRUCTIVE operations (dropping tables, deleting data, destructive migrations) require EXPLICIT human approval before deploying. Always stop and ask the owner first, even in autonomous/skip-permissions mode. No exceptions.**
 
 **Server deploys are independent from app store submissions.** Only submit to Apple/Google when client code changed.
 
@@ -167,6 +166,30 @@ x.0.0  — major releases (breaking changes)
 
 ---
 
+## Database Migrations
+
+Schema changes are managed by **Alembic** (`server/alembic/versions/`). Production deploys run `alembic upgrade head` automatically.
+
+**When to create a migration:**
+- Adding a new table
+- Adding/removing/renaming columns
+- Adding/removing indexes or constraints
+
+**How:**
+1. Update or add the model in `server/app/models.py`
+2. Create a new migration file in `server/alembic/versions/` following the naming pattern: `00X_description.py` (increment the number from the latest migration)
+3. Include both `upgrade()` and `downgrade()` functions
+4. Set `revision` and `down_revision` to chain correctly
+
+**Rules:**
+- Migrations must be **additive** — never drop columns/tables that live server code uses
+- **WARNING: DESTRUCTIVE MIGRATIONS (dropping tables, dropping columns, deleting data, renaming columns) are NEVER allowed without explicit human approval. Always stop and ask the owner first, even in autonomous/skip-permissions mode. No exceptions.**
+- For destructive changes, use two-phase: add new → deploy → remove old later
+- Never edit the database schema directly in production
+- Test migrations locally before merging: `cd server && alembic upgrade head`
+
+---
+
 ## Environment
 
 - **Docker**: `docker-compose.yml` for local dev (api + db), `docker-compose.prod.yml` for production
@@ -186,3 +209,22 @@ x.0.0  — major releases (breaking changes)
 - `docker-compose.prod.yml` — production infrastructure
 - `.env` files — contain secrets, never commit
 - Branch protection rules on `main`
+
+---
+
+## CRITICAL: Production Server Rules
+
+**NEVER run `git reset --hard` on the production server.** It breaks Docker bind mounts by recreating files with new inodes. Caddy and other containers lose access to mounted directories (like `client/build/`) and the site goes down.
+
+**NEVER switch branches on the production server.** The server must ALWAYS be on `main`. If you need to test something, test locally or on a staging environment.
+
+**NEVER push directly to `main` from the server.** All changes go through PRs.
+
+**NO manual deploys via SSH.** All production deploys MUST go through GitHub Actions:
+- Use the "Deploy to Production" workflow for quick deploys
+- Use the "Release & Deploy" workflow for versioned releases
+- These workflows handle git pull, builds, Caddy restart correctly
+
+**If something is broken on production**, the ONLY allowed manual SSH action is `docker restart cap-caddy` to fix mount issues. Everything else goes through workflows.
+
+**After ANY client build on the server, Caddy must be restarted** to refresh bind mounts. The workflows handle this automatically.
