@@ -39,9 +39,31 @@ main             production — protected, PR required, tests must pass
 ```
 
 **Rules:**
-- NEVER push directly to `main` — always via PR from `dev`
+- NEVER push directly to `main` — always via PR
+- NEVER push directly to `dev` — always create a feature/fix branch first, then merge to dev
 - Create feature branches from `dev`: `git checkout dev && git checkout -b feature/my-feature`
-- Merge feature → `dev` (direct push OK)
+- Merge feature → `dev` (via local merge or PR)
+- Merge `dev` → `main` (via PR only, CI must pass)
+
+## STRICT Multi-Agent Rules
+
+**These rules are NON-NEGOTIABLE for ALL agents working on this codebase:**
+
+1. **NEVER revert another agent's work.** If you disagree with a change, discuss it — don't revert. Reverts destroy tested, working code and create chaos.
+
+2. **NEVER push directly to `main` or `dev`.** Always create YOUR OWN feature/fix branch, push that, then merge via PR.
+
+3. **NEVER SSH to the production server.** All deploys go through GitHub Actions workflows. No exceptions.
+
+4. **NEVER run `git reset --hard` on any shared branch.** It destroys work.
+
+5. **NEVER modify files another agent is actively working on** without coordinating. If you see uncommitted changes or recent commits from another agent on the same file, STOP and coordinate.
+
+6. **Each agent works on their own branch.** Branch naming: `feature/agent-name-topic` or `fix/agent-name-topic`. Never work directly on `dev` or `main`.
+
+7. **Before merging to dev, pull latest dev first** to avoid conflicts.
+
+8. **If you find a bug in another agent's code, fix it on a NEW branch** — don't revert their entire commit. Cherry-pick the fix.
 - Merge `dev` → `main` (PR required, tests must pass)
 - Delete feature branches after merge
 
