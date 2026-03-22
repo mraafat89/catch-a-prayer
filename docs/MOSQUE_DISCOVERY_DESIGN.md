@@ -178,9 +178,11 @@ Between the 6-month full discovery runs:
 
 | Item | Per Run | Frequency | Annual Cost |
 |------|---------|-----------|------------|
-| Google Places Nearby Search | ~$50 | 2x/year | $100 |
-| Google Place Details | ~$15 | 2x/year | $30 |
+| Google Places Nearby Search | ~$3-20 | 2x/year | ~$40 |
+| Google Place Details enrichment | ~$15 | 2x/year | ~$30 |
 | OpenStreetMap | Free | 2x/year | $0 |
 | TheMasjidApp | Free | 12x/year | $0 |
 | Mawaqit | Free | 12x/year | $0 |
-| **Total** | | | **~$130/year** |
+| **Total** | | | **~$70/year** |
+
+Note: Google gives $200/month free credit, so all Google API costs are effectively **$0** as long as we stay under that monthly cap. Our full discovery run uses ~$20-35 total — well within the free tier.
