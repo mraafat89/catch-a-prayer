@@ -634,6 +634,20 @@ async def scrape_with_playwright(websites: list[dict], engine, save: bool = True
                 page = await context.new_page()
                 log.info(f"[{i+1}/{len(websites)}] {name}: {url}")
 
+                # Intercept network responses for AJAX prayer data
+                ajax_texts = []
+                async def capture_response(response):
+                    try:
+                        ct = response.headers.get("content-type", "")
+                        if ("json" in ct or "text" in ct) and response.status == 200:
+                            body = await response.text()
+                            # Only capture responses that mention prayer keywords
+                            if len(body) < 10000 and any(w in body.lower() for w in ["fajr", "dhuhr", "zuhr", "maghrib", "isha", "iqama"]):
+                                ajax_texts.append(body)
+                    except Exception:
+                        pass
+                page.on("response", capture_response)
+
                 # Navigate with timeout
                 resp = await page.goto(url, wait_until="networkidle", timeout=20000)
 
@@ -651,10 +665,15 @@ async def scrape_with_playwright(websites: list[dict], engine, save: bool = True
                         continue
 
                 # Wait for JS frameworks (Wix, React, etc.) to render
-                await page.wait_for_timeout(3000)
+                await page.wait_for_timeout(5000)
 
                 # Get all visible text from homepage
                 text_content = await page.inner_text("body")
+
+                # Append any AJAX responses that contained prayer data
+                if ajax_texts:
+                    log.info(f"  -> Captured {len(ajax_texts)} AJAX responses with prayer data")
+                    text_content += "\n" + "\n".join(ajax_texts)
 
                 # Spam/hijack detection — skip compromised domains
                 spam_keywords = ["slot deposit", "casino", "gambling", "poker online",
