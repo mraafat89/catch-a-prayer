@@ -83,5 +83,7 @@ jobs:
             docker exec cap-api alembic upgrade head || true
             docker compose -f docker-compose.prod.yml up -d --build api
             cd client && REACT_APP_API_URL=https://catchaprayer.com npm run build
-            echo "✅ Client rebuilt"
+            cd ..
+            docker restart cap-caddy
+            echo "✅ Client rebuilt + Caddy restarted"
             echo "✅ Deployed $(git rev-parse --short HEAD) at $(date)"

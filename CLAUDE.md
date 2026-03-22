@@ -186,3 +186,27 @@ x.0.0  — major releases (breaking changes)
 - `docker-compose.prod.yml` — production infrastructure
 - `.env` files — contain secrets, never commit
 - Branch protection rules on `main`
+
+---
+
+## CRITICAL: Production Server Rules
+
+**NEVER run `git reset --hard` on the production server.** It breaks Docker bind mounts by recreating files with new inodes. Caddy and other containers lose access to mounted directories (like `client/build/`) and the site goes down.
+
+**NEVER switch branches on the production server.** The server must ALWAYS be on `main`. If you need to test something, test locally or on a staging environment.
+
+**NEVER push directly to `main` from the server.** All changes go through PRs.
+
+**For manual deploys, ONLY use:**
+```bash
+cd /opt/cap
+git pull --no-edit origin main
+docker compose -f docker-compose.prod.yml up -d --build api
+cd client && REACT_APP_API_URL=https://catchaprayer.com npm run build
+docker restart cap-caddy  # refresh bind mounts after build
+```
+
+**After ANY client build on the server, restart Caddy** to refresh bind mounts:
+```bash
+docker restart cap-caddy
+```
