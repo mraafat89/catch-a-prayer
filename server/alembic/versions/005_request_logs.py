@@ -16,39 +16,40 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    op.create_table(
-        "request_logs",
-        sa.Column("id", UUID(as_uuid=False), primary_key=True, server_default=sa.text("gen_random_uuid()")),
-        sa.Column("endpoint", sa.String(500), nullable=False),
-        sa.Column("method", sa.String(10), nullable=False),
-        sa.Column("lat", sa.Float, nullable=True),
-        sa.Column("lng", sa.Float, nullable=True),
-        sa.Column("radius_km", sa.Float, nullable=True),
-        sa.Column("travel_mode", sa.String(50), nullable=True),
-        sa.Column("response_code", sa.Integer, nullable=False),
-        sa.Column("latency_ms", sa.Float, nullable=False),
-        sa.Column("session_id", sa.String(200), nullable=True),
-        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now()),
-    )
+    # Use raw SQL with IF NOT EXISTS to handle partially-applied state
+    op.execute("""
+        CREATE TABLE IF NOT EXISTS request_logs (
+            id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+            endpoint VARCHAR(500) NOT NULL,
+            method VARCHAR(10) NOT NULL,
+            lat FLOAT,
+            lng FLOAT,
+            radius_km FLOAT,
+            travel_mode VARCHAR(50),
+            response_code INTEGER NOT NULL,
+            latency_ms FLOAT NOT NULL,
+            session_id VARCHAR(200),
+            created_at TIMESTAMP WITH TIME ZONE DEFAULT now()
+        )
+    """)
+    op.execute("CREATE INDEX IF NOT EXISTS request_logs_created_at_idx ON request_logs (created_at)")
+    op.execute("CREATE INDEX IF NOT EXISTS request_logs_session_id_idx ON request_logs (session_id)")
+    op.execute("CREATE INDEX IF NOT EXISTS request_logs_endpoint_idx ON request_logs (endpoint)")
 
-    op.create_index("request_logs_created_at_idx", "request_logs", ["created_at"])
-    op.create_index("request_logs_session_id_idx", "request_logs", ["session_id"])
-    op.create_index("request_logs_endpoint_idx", "request_logs", ["endpoint"])
-
-    op.create_table(
-        "coverage_gaps",
-        sa.Column("id", UUID(as_uuid=False), primary_key=True, server_default=sa.text("gen_random_uuid()")),
-        sa.Column("lat", sa.Float, nullable=False),
-        sa.Column("lng", sa.Float, nullable=False),
-        sa.Column("gap_type", sa.String(30), nullable=False),
-        sa.Column("radius_km", sa.Float, nullable=True),
-        sa.Column("prayer", sa.String(20), nullable=True),
-        sa.Column("session_id", sa.String(200), nullable=True),
-        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now()),
-    )
-
-    op.create_index("coverage_gaps_created_at_idx", "coverage_gaps", ["created_at"])
-    op.create_index("coverage_gaps_type_idx", "coverage_gaps", ["gap_type"])
+    op.execute("""
+        CREATE TABLE IF NOT EXISTS coverage_gaps (
+            id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+            lat FLOAT NOT NULL,
+            lng FLOAT NOT NULL,
+            gap_type VARCHAR(30) NOT NULL,
+            radius_km FLOAT,
+            prayer VARCHAR(20),
+            session_id VARCHAR(200),
+            created_at TIMESTAMP WITH TIME ZONE DEFAULT now()
+        )
+    """)
+    op.execute("CREATE INDEX IF NOT EXISTS coverage_gaps_created_at_idx ON coverage_gaps (created_at)")
+    op.execute("CREATE INDEX IF NOT EXISTS coverage_gaps_type_idx ON coverage_gaps (gap_type)")
 
 
 def downgrade() -> None:
