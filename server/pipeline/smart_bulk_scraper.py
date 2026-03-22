@@ -162,13 +162,13 @@ def extract_times_from_text(text_content: str) -> dict:
 
         if len(times) >= 2 and not effective_iqama:
             # Two times = adhan + iqama
-            results["adhan"][found_prayer] = _normalize_time(*times[0])
-            results["iqama"][found_prayer] = _normalize_time(*times[1])
+            results["adhan"][found_prayer] = _normalize_time(*times[0], prayer=found_prayer)
+            results["iqama"][found_prayer] = _normalize_time(*times[1], prayer=found_prayer)
         elif len(times) >= 1 and effective_iqama:
             # Time on an iqama-labeled line → store as iqama
-            results["iqama"][found_prayer] = _normalize_time(*times[0])
+            results["iqama"][found_prayer] = _normalize_time(*times[0], prayer=found_prayer)
         elif len(times) == 1 and not effective_iqama:
-            results["adhan"][found_prayer] = _normalize_time(*times[0])
+            results["adhan"][found_prayer] = _normalize_time(*times[0], prayer=found_prayer)
             # Check for iqama offset
             search_text = line + " " + next_line
             rel_match = RELATIVE_IQAMA_RE.search(search_text)
@@ -203,7 +203,7 @@ def _extract_from_grid(lines: list[str], results: dict):
             prayer_order = ["fajr", "sunrise", "dhuhr", "asr", "maghrib", "isha"]
             for j, (h, m, ampm) in enumerate(times[:6]):
                 if j < len(prayer_order):
-                    t = _normalize_time(h, m, ampm)
+                    t = _normalize_time(h, m, ampm, prayer=prayer_order[j])
                     if t and prayer_order[j] not in results["adhan"]:
                         results["adhan"][prayer_order[j]] = t
             # Check next line for iqama times
@@ -213,7 +213,7 @@ def _extract_from_grid(lines: list[str], results: dict):
                     iqama_order = ["fajr", "dhuhr", "asr", "maghrib", "isha"]
                     for j, (h, m, ampm) in enumerate(iqama_times[:5]):
                         if j < len(iqama_order):
-                            t = _normalize_time(h, m, ampm)
+                            t = _normalize_time(h, m, ampm, prayer=iqama_order[j])
                             if t:
                                 results["iqama"][iqama_order[j]] = t
             return
@@ -248,8 +248,8 @@ def _extract_from_grid(lines: list[str], results: dict):
                     results["adhan"][prayer_order[j]] = t
 
 
-def _normalize_time(h: str, m: str, ampm: str | None) -> str | None:
-    """Normalize to 24h HH:MM format."""
+def _normalize_time(h: str, m: str, ampm: str | None, prayer: str | None = None) -> str | None:
+    """Normalize to 24h HH:MM format. Uses prayer context to infer AM/PM when missing."""
     hour = int(h)
     minute = int(m)
     if minute > 59:
@@ -261,9 +261,15 @@ def _normalize_time(h: str, m: str, ampm: str | None) -> str | None:
             hour += 12
         elif ampm == "am" and hour == 12:
             hour = 0
-    else:
-        # No AM/PM — infer from prayer context (handled by caller)
-        pass
+    elif hour <= 12 and prayer:
+        # No AM/PM — infer from prayer type
+        # Fajr/sunrise: always AM (hour 3-8 stays as-is)
+        # Dhuhr/Asr: PM if hour <= 7 (1:30 → 13:30, 5:00 → 17:00)
+        # Maghrib/Isha: PM if hour <= 10 (7:30 → 19:30, 9:00 → 21:00)
+        if prayer in ("dhuhr", "asr") and hour <= 7:
+            hour += 12
+        elif prayer in ("maghrib", "isha") and hour <= 10:
+            hour += 12
 
     if hour > 23:
         return None
