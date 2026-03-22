@@ -5,6 +5,7 @@ import {
   GeocodeSuggestion, TravelPlan,
   MosqueSuggestionsResponse,
 } from '../types';
+import { SESSION_ID } from '../store';
 
 const API_BASE_URL = process.env.REACT_APP_API_URL || '';
 
@@ -14,6 +15,7 @@ const api = axios.create({
   headers: {
     'Content-Type': 'application/json',
     'ngrok-skip-browser-warning': 'true',
+    'x-session-id': SESSION_ID,
   },
 });
 

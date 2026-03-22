@@ -25,6 +25,7 @@ from app.main import app
 from app.models import new_uuid
 
 TABLES_TO_TRUNCATE = [
+    "coverage_gaps", "request_logs",
     "mosque_suggestion_votes", "mosque_suggestions",
     "prayer_spot_verifications", "prayer_spots",
     "prayer_schedules", "jumuah_sessions", "scraping_jobs",

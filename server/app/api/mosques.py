@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import traceback
 from datetime import datetime, timezone
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Header, Query, Request
 from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, text
@@ -42,6 +42,7 @@ async def get_mosque_stats(db: AsyncSession = Depends(get_db)):
 async def get_nearby_mosques(
     request: NearbyRequest,
     db: AsyncSession = Depends(get_db),
+    x_session_id: str | None = Header(None),
 ):
     """Find mosques near a location and return prayer catching status for each."""
     try:
@@ -76,6 +77,25 @@ async def get_nearby_mosques(
 
     logger.info("nearby result: found %d mosques", len(mosques) if mosques else 0)
     if not mosques:
+        # Log coverage gap when user searched at max radius and found nothing
+        if request.radius_km >= 50:
+            try:
+                from app.database import engine as _engine
+                from sqlalchemy import text as _text
+                import asyncio
+                async def _log_gap():
+                    async with _engine.begin() as conn:
+                        await conn.execute(_text("""
+                            INSERT INTO coverage_gaps (id, lat, lng, gap_type, radius_km, session_id)
+                            VALUES (gen_random_uuid(), :lat, :lng, 'no_nearby_mosque', :radius, :sid)
+                        """), {
+                            "lat": request.latitude, "lng": request.longitude,
+                            "radius": request.radius_km,
+                            "sid": x_session_id,
+                        })
+                asyncio.create_task(_log_gap())
+            except Exception:
+                pass
         raise HTTPException(
             status_code=404,
             detail={
