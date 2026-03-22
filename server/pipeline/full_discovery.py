@@ -57,7 +57,7 @@ async def run(args):
     logger.info(f"Current mosque count: {before_count}")
     logger.info(f"Sources: {args.source or 'all'}")
 
-    sources = args.source.split(",") if args.source else ["google", "osm", "mawaqit"]
+    sources = args.source.split(",") if args.source else ["google", "osm", "mawaqit", "themasjidapp"]
     total_new = 0
 
     # === Source 1: Google Places ===
@@ -90,6 +90,18 @@ async def run(args):
         logger.info("SOURCE 3: Mawaqit mosque database")
         await _discover_from_mawaqit(engine, args)
 
+    # === Source 4: TheMasjidApp ===
+    if "themasjidapp" in sources:
+        logger.info("\n" + "=" * 60)
+        logger.info("SOURCE 4: TheMasjidApp (120k+ mosques)")
+        await _discover_from_themasjidapp(engine, args)
+
+    # === Closed Mosque Detection ===
+    if args.save and not args.dry_run:
+        logger.info("\n" + "=" * 60)
+        logger.info("CLOSED MOSQUE DETECTION")
+        await _detect_closed_mosques(engine)
+
     # === Summary ===
     with engine.connect() as conn:
         after_count = conn.execute(text(
@@ -107,7 +119,7 @@ async def run(args):
     logger.info(f"  Time:   {elapsed/60:.1f} minutes")
 
     # Create scraping jobs for new mosques that have websites
-    if args.save and not args.dry_run and total_new > 0:
+    if args.save and not args.dry_run:
         with engine.begin() as conn:
             result = conn.execute(text("""
                 INSERT INTO scraping_jobs (id, mosque_id, status, priority)
@@ -118,6 +130,22 @@ async def run(args):
                 ON CONFLICT (mosque_id) DO NOTHING
             """))
             logger.info(f"  Created {result.rowcount} new scraping jobs")
+
+    # Backfill geo data for mosques missing state/timezone
+    if args.save and not args.dry_run:
+        from pipeline.geo_utils import enrich_mosque_geo
+        with engine.begin() as conn:
+            rows = conn.execute(text(
+                "SELECT id::text, lat, lng FROM mosques WHERE is_active AND (state IS NULL OR timezone IS NULL) AND lat IS NOT NULL"
+            )).fetchall()
+            for r in rows:
+                geo = enrich_mosque_geo(float(r[1]), float(r[2]))
+                if geo["state"]:
+                    conn.execute(text(
+                        "UPDATE mosques SET state = :s, timezone = :tz, country = :c WHERE id = CAST(:id AS uuid)"
+                    ), {"id": r[0], "s": geo["state"], "tz": geo["timezone"], "c": geo["country"]})
+            if rows:
+                logger.info(f"  Backfilled geo data for {len(rows)} mosques")
 
 
 async def _discover_from_osm(engine, args):
@@ -181,11 +209,17 @@ async def _discover_from_osm(engine, args):
 
                 if args.save:
                     try:
+                        from pipeline.geo_utils import enrich_mosque_geo
+                        geo = enrich_mosque_geo(lat, lng)
                         conn.execute(text("""
                             INSERT INTO mosques (id, name, lat, lng, osm_id, osm_type,
-                                address, phone, website, denomination, is_active, created_at, updated_at)
+                                address, phone, website, denomination,
+                                state, timezone, country, source, discovered_at,
+                                is_active, created_at, updated_at)
                             VALUES (gen_random_uuid(), :name, :lat, :lng, :osm_id, :osm_type,
-                                :addr, :phone, :website, :denom, true, now(), now())
+                                :addr, :phone, :website, :denom,
+                                :state, :tz, :country, 'osm', now(),
+                                true, now(), now())
                             ON CONFLICT DO NOTHING
                         """), {
                             "name": name, "lat": lat, "lng": lng,
@@ -194,6 +228,8 @@ async def _discover_from_osm(engine, args):
                             "phone": tags.get("phone") or tags.get("contact:phone"),
                             "website": tags.get("website") or tags.get("contact:website"),
                             "denom": tags.get("denomination"),
+                            "state": geo["state"], "tz": geo["timezone"],
+                            "country": geo["country"],
                         })
                         new_count += 1
                     except Exception:
@@ -264,17 +300,24 @@ async def _discover_from_mawaqit(engine, args):
                 if args.save:
                     with engine.begin() as conn:
                         try:
+                            from pipeline.geo_utils import enrich_mosque_geo
+                            geo = enrich_mosque_geo(lat, lng)
                             conn.execute(text("""
                                 INSERT INTO mosques (id, name, lat, lng, phone, email,
                                     has_womens_section, wheelchair_accessible,
+                                    state, timezone, country, source, discovered_at,
                                     is_active, created_at, updated_at)
                                 VALUES (gen_random_uuid(), :name, :lat, :lng, :phone, :email,
-                                    :women, :wheelchair, true, now(), now())
+                                    :women, :wheelchair,
+                                    :state, :tz, :country, 'mawaqit', now(),
+                                    true, now(), now())
                             """), {
                                 "name": name, "lat": lat, "lng": lng,
                                 "phone": m.get("phone"), "email": m.get("email"),
                                 "women": m.get("womenSpace"),
                                 "wheelchair": m.get("handicapAccessibility"),
+                                "state": geo["state"], "tz": geo["timezone"],
+                                "country": geo["country"],
                             })
                             new_count += 1
                         except Exception:
@@ -285,6 +328,145 @@ async def _discover_from_mawaqit(engine, args):
             logger.debug(f"  Mawaqit search '{term}' failed: {e}")
 
     logger.info(f"  New from Mawaqit: {new_count}")
+
+
+async def _discover_from_themasjidapp(engine, args):
+    """Search TheMasjidApp for mosques near our existing mosque locations."""
+    TMA_SEARCH = "https://themasjidapp.org/api/v1/search-node"
+
+    if args.dry_run:
+        logger.info("  DRY RUN — would search TheMasjidApp by location grid")
+        return
+
+    from pipeline.geo_utils import enrich_mosque_geo
+
+    # Get unique location clusters from our DB
+    with engine.connect() as conn:
+        clusters = conn.execute(text("""
+            SELECT DISTINCT round(lat::numeric, 1) as rlat, round(lng::numeric, 1) as rlng
+            FROM mosques WHERE is_active AND lat IS NOT NULL
+        """)).fetchall()
+
+    logger.info(f"  Searching {len(clusters)} location clusters on TheMasjidApp")
+
+    new_count = 0
+    seen_slugs = set()
+
+    async with httpx.AsyncClient(timeout=15) as client:
+        for i, (rlat, rlng) in enumerate(clusters):
+            try:
+                resp = await client.get(TMA_SEARCH, params={
+                    "lat": float(rlat), "lng": float(rlng), "radius": 15
+                })
+                if resp.status_code != 200:
+                    continue
+
+                results = resp.json().get("results", [])
+                for r in results:
+                    m = r.get("masjid", {})
+                    slug = m.get("slug")
+                    if not slug or slug in seen_slugs:
+                        continue
+                    seen_slugs.add(slug)
+
+                    lat = float(m.get("lat", 0) or 0)
+                    lng = float(m.get("lng", 0) or 0)
+                    name = m.get("name", "")
+                    if not name or not lat:
+                        continue
+
+                    # Check duplicate
+                    existing = conn.execute(text("""
+                        SELECT id FROM mosques
+                        WHERE ABS(lat - :lat) < 0.003 AND ABS(lng - :lng) < 0.003
+                        LIMIT 1
+                    """), {"lat": lat, "lng": lng}).fetchone()
+
+                    if existing:
+                        # Update verification count
+                        if args.save:
+                            with engine.begin() as wconn:
+                                wconn.execute(text("""
+                                    UPDATE mosques SET last_verified_at = now(),
+                                        verification_count = COALESCE(verification_count, 0) + 1
+                                    WHERE id = :id
+                                """), {"id": existing[0]})
+                        continue
+
+                    if args.save:
+                        geo = enrich_mosque_geo(lat, lng)
+                        with engine.begin() as wconn:
+                            try:
+                                wconn.execute(text("""
+                                    INSERT INTO mosques (id, name, lat, lng,
+                                        state, timezone, country, source, discovered_at,
+                                        is_active, created_at, updated_at)
+                                    VALUES (gen_random_uuid(), :name, :lat, :lng,
+                                        :state, :tz, :country, 'themasjidapp', now(),
+                                        true, now(), now())
+                                """), {
+                                    "name": name, "lat": lat, "lng": lng,
+                                    "state": geo["state"], "tz": geo["timezone"],
+                                    "country": geo["country"],
+                                })
+                                new_count += 1
+                            except Exception:
+                                pass
+
+                await asyncio.sleep(0.3)
+            except Exception as e:
+                logger.debug(f"  TMA search failed at ({rlat},{rlng}): {e}")
+
+            if (i + 1) % 100 == 0:
+                logger.info(f"  Progress: {i + 1}/{len(clusters)} clusters, {new_count} new")
+
+    logger.info(f"  New from TheMasjidApp: {new_count} (searched {len(seen_slugs)} unique)")
+
+
+async def _detect_closed_mosques(engine):
+    """Detect mosques that may have closed permanently."""
+    closed_count = 0
+
+    # 1. Check websites that have been dead for 2+ consecutive alive checks
+    with engine.begin() as conn:
+        result = conn.execute(text("""
+            UPDATE mosques SET is_active = false
+            WHERE id IN (
+                SELECT mosque_id FROM scraping_jobs
+                WHERE website_alive = false
+                  AND website_checked_at < now() - interval '30 days'
+                  AND consecutive_failures >= 3
+            )
+            AND is_active = true
+            RETURNING id
+        """))
+        dead_website_count = result.rowcount
+        if dead_website_count > 0:
+            logger.info(f"  Deactivated {dead_website_count} mosques with persistently dead websites")
+        closed_count += dead_website_count
+
+    # 2. Flag mosques with gambling/spam on their website (hijacked domains)
+    with engine.begin() as conn:
+        result = conn.execute(text("""
+            UPDATE mosques SET is_active = false
+            WHERE id IN (
+                SELECT mosque_id FROM scraping_jobs
+                WHERE status = 'failed' AND website_alive = false
+            )
+            AND website IS NOT NULL
+            AND is_active = true
+            AND id NOT IN (
+                SELECT mosque_id FROM prayer_schedules
+                WHERE date >= CURRENT_DATE - 30 AND fajr_adhan_source != 'calculated'
+            )
+            RETURNING id
+        """))
+        hijacked_count = result.rowcount
+        if hijacked_count > 0:
+            logger.info(f"  Deactivated {hijacked_count} mosques with hijacked/dead websites and no recent data")
+        closed_count += hijacked_count
+
+    logger.info(f"  Total deactivated: {closed_count}")
 
 
 def main():

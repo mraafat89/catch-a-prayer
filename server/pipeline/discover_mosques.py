@@ -547,20 +547,26 @@ async def run(args):
     logger.info(f"  NEW mosques: {len(new_mosques)}")
 
     if args.save:
-        # Save new mosques to DB
+        # Save new mosques to DB with auto geo assignment
+        from pipeline.geo_utils import enrich_mosque_geo
         with engine.begin() as conn:
             for m in new_mosques:
                 try:
+                    geo = enrich_mosque_geo(m["lat"], m["lng"])
                     conn.execute(text("""
                         INSERT INTO mosques (id, name, lat, lng, address, phone,
-                            google_place_id, is_active, created_at, updated_at)
+                            google_place_id, state, timezone, country,
+                            source, discovered_at, is_active, created_at, updated_at)
                         VALUES (gen_random_uuid(), :name, :lat, :lng, :addr, :phone,
-                            :gpid, true, now(), now())
+                            :gpid, :state, :tz, :country,
+                            'google_places', now(), true, now(), now())
                         ON CONFLICT (google_place_id) DO NOTHING
                     """), {
                         "name": m["name"], "lat": m["lat"], "lng": m["lng"],
                         "addr": m["address"], "phone": m["phone"],
                         "gpid": m["google_place_id"],
+                        "state": geo["state"], "tz": geo["timezone"],
+                        "country": geo["country"],
                     })
                 except Exception as e:
                     logger.debug(f"  Insert failed for {m['name']}: {e}")
