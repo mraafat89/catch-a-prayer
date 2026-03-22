@@ -174,6 +174,7 @@ class TestLongTripMosqueDiscovery:
             its = r.json().get("itineraries", [])
             assert len(its) >= 2, f"Only {len(its)} itineraries for 20h trip with route mosques"
 
+    @pytest.mark.xfail(reason="Requires enumerate_trip_prayers — reverted, pending re-merge via feature branch")
     @pytest.mark.asyncio
     async def test_no_stale_isha_midnight_departure(self, async_client, db_session):
         """1 AM departure, isha prayed → no Maghrib+Isha in results."""
