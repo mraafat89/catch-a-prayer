@@ -188,10 +188,9 @@ class TestMidnightShort:
         })
         if r.status_code == 200:
             pairs = {pp["pair"] for pp in r.json().get("prayer_pairs", [])}
-            # Day-aware logic: at 12:15 AM, Isha period extends to Fajr.
-            # maghrib_isha is a valid prayer pair (not stale) even post-midnight.
-            # Fajr at 5:42 AM is after ~3:48 AM arrival → no Fajr (correct).
-            assert "fajr" not in pairs, f"Fajr should not appear (arrives before Fajr). Got: {pairs}"
+            # Trip: 12:15 AM → ~3:48 AM. Fajr at 5:42 AM is after arrival.
+            # No prayers during this trip window.
+            assert "maghrib_isha" not in pairs, f"Stale maghrib_isha in {pairs}"
 
     @pytest.mark.asyncio
     async def test_no_stale_isha(self, async_client, db_session):
@@ -205,10 +204,7 @@ class TestMidnightShort:
         })
         if r.status_code == 200:
             pairs = {pp["pair"] for pp in r.json().get("prayer_pairs", [])}
-            # Day-aware logic: at 12:15 AM, Isha period extends to Fajr.
-            # maghrib_isha is a valid pair (not stale) in the post-midnight window.
-            # Fajr at 5:42 AM is after arrival → no Fajr.
-            assert "fajr" not in pairs, f"Fajr should not appear (arrives before Fajr). Got: {pairs}"
+            assert "maghrib_isha" not in pairs, f"Stale maghrib_isha in {pairs}"
 
 
 class TestFullDay22h:
