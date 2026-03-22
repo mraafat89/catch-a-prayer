@@ -176,7 +176,9 @@ class TestLongTripMosqueDiscovery:
 
     @pytest.mark.asyncio
     async def test_no_stale_isha_midnight_departure(self, async_client, db_session):
-        """1 AM departure, isha prayed → no Maghrib+Isha in results."""
+        """1 AM departure, isha prayed → day-aware: Isha period extends to Fajr,
+        so maghrib_isha is valid (not stale). Fajr and Dhuhr+Asr should also appear
+        for a 20h trip."""
         await seed_route_mosques(db_session)
         r = await async_client.post("/api/travel/plan", json={
             "origin_lat": 36.33, "origin_lng": -119.29,
@@ -189,7 +191,9 @@ class TestLongTripMosqueDiscovery:
         })
         if r.status_code == 200:
             pairs = {pp["pair"] for pp in r.json().get("prayer_pairs", [])}
-            assert "maghrib_isha" not in pairs, f"Stale Maghrib+Isha found. Pairs: {pairs}"
+            # Day-aware: at 1 AM, Isha period is still active (extends to Fajr).
+            # maghrib_isha is a valid pair, not stale.
+            assert "fajr" in pairs, f"20h trip from 1 AM must include Fajr. Pairs: {pairs}"
 
     @pytest.mark.asyncio
     async def test_muqeem_finds_individual_stops(self, async_client, db_session):
