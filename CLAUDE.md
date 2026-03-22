@@ -68,18 +68,17 @@ main             production — protected, PR required, tests must pass
 
 ## Deployment Flow
 
-**IMPORTANT: Deployment is MANUAL. Never auto-deploy.**
-
-| Action | How | Who triggers |
-|--------|-----|-------------|
-| Deploy to production | GitHub Actions → "Deploy to Production" → type "deploy" | Owner only |
-| Create release | GitHub Actions → "Release & Deploy" → fill version + notes | Owner only |
+| Action | How | Who can trigger |
+|--------|-----|----------------|
+| Deploy to production | GitHub Actions → "Deploy to Production" → type "deploy" | Agent or Owner |
+| Create release | GitHub Actions → "Release & Deploy" → fill version + notes | Agent or Owner |
 | Submit to Apple/Google | Xcode Archive / Android Studio AAB → upload | Owner only |
 
 **Deploy only when:**
 1. All tests pass (automated)
-2. Tested on local device (manual)
-3. Owner is confident it works for real users
+2. PR merged to `main`
+
+**WARNING: DESTRUCTIVE operations (dropping tables, deleting data, destructive migrations) require EXPLICIT human approval before deploying. Always stop and ask the owner first, even in autonomous/skip-permissions mode. No exceptions.**
 
 **Server deploys are independent from app store submissions.** Only submit to Apple/Google when client code changed.
 
