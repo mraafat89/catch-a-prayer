@@ -92,8 +92,12 @@ def extract_times_from_text(text_content: str) -> dict:
     Extract prayer times from rendered page text.
     Returns dict with prayer names as keys and time strings as values.
     """
-    # Normalize: tabs to spaces, collapse whitespace, split by newlines
+    # Normalize: tabs to spaces, strip markdown, split by newlines
     text_content = text_content.replace('\t', '  ')
+    # Strip markdown bold/italic markers
+    text_content = re.sub(r'\*{1,6}', '', text_content)
+    # Normalize period-separated times to colon (6.15 AM → 6:15 AM)
+    text_content = re.sub(r'\b(\d{1,2})\.(\d{2})\s*(am|pm|AM|PM)', r'\1:\2 \3', text_content)
     lines = text_content.split('\n')
     results = {"adhan": {}, "iqama": {}, "jumuah": []}
 
