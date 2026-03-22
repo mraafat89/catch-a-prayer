@@ -34,14 +34,17 @@ docs/            Design docs (source of truth for all logic)
 
 ```
 main             production — protected, PR required, tests must pass
- └── dev         integration — open for direct pushes
-      └── feature/xyz   your working branch
+ └── dev         integration — merge only when feature is complete + tests pass
+      ├── feature/xyz       agent A's working branch
+      └── feature/abc       agent B's working branch
 ```
 
 **Rules:**
 - NEVER push directly to `main` — always via PR from `dev`
+- NEVER push directly to `dev` — each agent/task gets its own feature branch
 - Create feature branches from `dev`: `git checkout dev && git checkout -b feature/my-feature`
-- Merge feature → `dev` (direct push OK)
+- Each agent works on a **separate feature branch** to avoid conflicts with other agents
+- Merge feature → `dev` only when the feature is complete and all tests pass
 - Merge `dev` → `main` (PR required, tests must pass)
 - Delete feature branches after merge
 
