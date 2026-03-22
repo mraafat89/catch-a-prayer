@@ -227,12 +227,11 @@ class TestTripPlannerPrayedIntegration:
         schedules[date(2026, 3, 22)] = {**day2_calc, **estimate_iqama_times(day2_calc)}
         prayers = enumerate_trip_prayers(dep, arr, schedules)
         prayer_names = [p["prayer"] for p in prayers]
-        # Isha at ~20:30 is before 23:00 departure — should NOT be included
-        # (enumerate checks adhan_time >= departure)
-        # But Fajr on day 2 should be included
-        day2_prayers = [p for p in prayers if p["day_number"] == 2]
-        day2_names = [p["prayer"] for p in day2_prayers]
-        assert "fajr" in day2_names
+        # Isha at ~20:30 is before 23:00 departure — BUT its period extends to
+        # Fajr, so Isha IS still active at 23:00. Fajr on day 1 should be included.
+        day1_prayers = [p for p in prayers if p["day_number"] == 1]
+        day1_names = [p["prayer"] for p in day1_prayers]
+        assert "fajr" in day1_names
 
     def test_enumerate_prayers_full_day(self):
         """8 AM to 8 PM — all daytime prayers."""

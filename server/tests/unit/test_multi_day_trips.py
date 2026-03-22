@@ -81,7 +81,7 @@ class TestEnumerateTripPrayers:
         assert "dhuhr" in prayer_names
         assert "asr" in prayer_names
         assert "fajr" not in prayer_names  # 5:30 AM < 10 AM departure
-        assert all(p["day_number"] == 1 for p in prayers)
+        assert all(p["day_number"] == 0 for p in prayers)
 
     def test_overnight_trip(self):
         """10 PM - 8 AM next day → catches Isha (day 1) + Fajr (day 2)."""
@@ -95,11 +95,11 @@ class TestEnumerateTripPrayers:
         prayer_names = [(p["prayer"], p["day_number"]) for p in prayers]
         # Isha on day 1 (if adhan ~20:30 >= 22:00 dep? depends on schedule)
         # Fajr on day 2
-        fajr_day2 = [p for p in prayers if p["prayer"] == "fajr" and p["day_number"] == 2]
-        assert len(fajr_day2) == 1
+        fajr_day1 = [p for p in prayers if p["prayer"] == "fajr" and p["day_number"] == 1]
+        assert len(fajr_day1) == 1
 
     def test_two_day_trip(self):
-        """10 AM day 1 - 6 PM day 2 → Fajr appears on day 2 only."""
+        """10 AM day 0 - 6 PM day 1 → Fajr appears on day 1 only."""
         dep = datetime(2026, 3, 20, 10, 0, tzinfo=ET)
         arr = datetime(2026, 3, 21, 18, 0, tzinfo=ET)
         schedules = {
@@ -107,20 +107,20 @@ class TestEnumerateTripPrayers:
             date(2026, 3, 21): self._schedule_for_date(date(2026, 3, 21)),
         }
         prayers = enumerate_trip_prayers(dep, arr, schedules)
-        # Day 1: Dhuhr, Asr, Maghrib, Isha
+        # Day 0: Dhuhr, Asr, Maghrib, Isha
+        day0 = [p for p in prayers if p["day_number"] == 0]
+        day0_names = {p["prayer"] for p in day0}
+        assert "dhuhr" in day0_names
+        assert "fajr" not in day0_names  # Fajr at 5:30 < departure 10:00
+
+        # Day 1: Fajr, Dhuhr, Asr (Maghrib at ~19:00 > arrival 18:00)
         day1 = [p for p in prayers if p["day_number"] == 1]
         day1_names = {p["prayer"] for p in day1}
+        assert "fajr" in day1_names
         assert "dhuhr" in day1_names
-        assert "fajr" not in day1_names  # Fajr at 5:30 < departure 10:00
-
-        # Day 2: Fajr, Dhuhr, Asr (Maghrib at ~19:00 > arrival 18:00)
-        day2 = [p for p in prayers if p["day_number"] == 2]
-        day2_names = {p["prayer"] for p in day2}
-        assert "fajr" in day2_names
-        assert "dhuhr" in day2_names
 
     def test_three_day_trip(self):
-        """Fajr appears on day 2 and day 3."""
+        """Fajr appears on day 1 and day 2."""
         dep = datetime(2026, 3, 20, 10, 0, tzinfo=ET)
         arr = datetime(2026, 3, 22, 18, 0, tzinfo=ET)
         schedules = {
@@ -130,9 +130,9 @@ class TestEnumerateTripPrayers:
         }
         prayers = enumerate_trip_prayers(dep, arr, schedules)
         fajrs = [p for p in prayers if p["prayer"] == "fajr"]
-        assert len(fajrs) == 2  # day 2 + day 3 (day 1 Fajr before departure)
-        assert fajrs[0]["day_number"] == 2
-        assert fajrs[1]["day_number"] == 3
+        assert len(fajrs) == 2  # day 1 + day 2 (day 0 Fajr before departure)
+        assert fajrs[0]["day_number"] == 1
+        assert fajrs[1]["day_number"] == 2
 
     def test_empty_schedule(self):
         dep = datetime(2026, 3, 20, 10, 0, tzinfo=ET)
@@ -150,9 +150,9 @@ class TestEnumerateTripPrayers:
         }
         prayers = enumerate_trip_prayers(dep, arr, schedules)
         for p in prayers:
-            if p["day_number"] == 1:
+            if p["day_number"] == 0:
                 assert p["date"] == date(2026, 3, 20)
-            elif p["day_number"] == 2:
+            elif p["day_number"] == 1:
                 assert p["date"] == date(2026, 3, 21)
 
 
