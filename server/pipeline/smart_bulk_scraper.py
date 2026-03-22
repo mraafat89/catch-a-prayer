@@ -59,10 +59,12 @@ PRAYER_NAMES = {
     "dhuhr": "dhuhr", "zuhr": "dhuhr", "dhuhur": "dhuhr", "noon": "dhuhr",
     "duhr": "dhuhr", "zohr": "dhuhr", "thuhr": "dhuhr",
     "zohrain": "dhuhr",  # Shia: combined Dhuhr+Asr name
+    "zohr/asr": "dhuhr", "zuhr/asr": "dhuhr", "dhuhr/asr": "dhuhr",  # Shia combined
     "asr": "asr", "asar": "asr", "'asr": "asr",
     "maghrib": "maghrib", "magrib": "maghrib", "sunset": "maghrib", "iftar": "maghrib",
     "maghreb": "maghrib", "magreb": "maghrib",
     "maghriban": "maghrib",  # Shia: combined Maghrib+Isha name
+    "magrib/isha": "maghrib", "maghrib/isha": "maghrib",  # Shia combined
     "isha": "isha", "ishaa": "isha", "esha": "isha", "'isha": "isha", "isha'a": "isha",
 }
 
