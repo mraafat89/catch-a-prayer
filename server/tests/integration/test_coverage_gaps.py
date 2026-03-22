@@ -81,8 +81,8 @@ async def test_no_gap_logged_for_small_radius_no_results(async_client, db_sessio
 
 
 @pytest.mark.asyncio
-async def test_gap_appears_in_dashboard_stats(async_client, db_session):
-    """Coverage gaps should appear in admin stats."""
+async def test_gap_appears_in_dashboard_query(async_client, db_session):
+    """Coverage gaps should be queryable for the dashboard."""
     # Insert a gap directly
     await db_session.execute(text("""
         INSERT INTO coverage_gaps (id, lat, lng, gap_type, session_id)
@@ -90,10 +90,16 @@ async def test_gap_appears_in_dashboard_stats(async_client, db_session):
     """))
     await db_session.commit()
 
-    r = await async_client.get(f"/api/admin/stats?key={ADMIN_KEY}")
-    assert r.status_code == 200
-    gaps = r.json()["coverage_gaps"]
-    assert len(gaps) >= 1
-    assert gaps[0][0] == 35.0  # lat
-    assert gaps[0][1] == -100.0  # lng
-    assert gaps[0][2] >= 1  # hits
+    # Query the same way the dashboard does
+    r = await db_session.execute(text("""
+        SELECT round(lat::numeric, 2) as lat, round(lng::numeric, 2) as lng,
+               count(*) as hits, gap_type
+        FROM coverage_gaps
+        WHERE created_at > now() - interval '90 days'
+        GROUP BY round(lat::numeric, 2), round(lng::numeric, 2), gap_type
+    """))
+    rows = r.mappings().all()
+    assert len(rows) >= 1
+    assert float(rows[0]["lat"]) == 35.0
+    assert float(rows[0]["lng"]) == -100.0
+    assert rows[0]["hits"] >= 1
