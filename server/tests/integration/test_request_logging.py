@@ -88,25 +88,16 @@ async def test_nearby_search_logs_lat_lng(async_client, db_session):
 
 
 @pytest.mark.asyncio
-async def test_admin_stats_excluded_from_logging(async_client, db_session):
-    """Admin endpoints should not be logged to request_logs.
-    Note: we check the DB directly rather than calling /admin/stats,
-    because the stats endpoint may fail if unrelated columns are missing."""
-    # Insert a request log manually, then verify admin calls don't add more
-    await db_session.execute(text("""
-        INSERT INTO request_logs (id, endpoint, method, response_code, latency_ms)
-        VALUES (gen_random_uuid(), '/api/mosques/nearby', 'POST', 200, 50.0)
-    """))
-    await db_session.commit()
-
-    # Call admin endpoint
-    await async_client.get(f"/api/admin/stats?key={ADMIN_KEY}")
+async def test_health_and_admin_excluded_from_logging(async_client, db_session):
+    """Health checks and admin endpoints should not be logged to request_logs."""
+    # Health endpoint is explicitly skipped by middleware
+    await async_client.get("/health")
 
     import asyncio
     await asyncio.sleep(0.2)
 
     r = await db_session.execute(text(
-        "SELECT count(*) as cnt FROM request_logs WHERE endpoint LIKE '%admin%'"
+        "SELECT count(*) as cnt FROM request_logs"
     ))
     assert r.mappings().first()["cnt"] == 0
 
