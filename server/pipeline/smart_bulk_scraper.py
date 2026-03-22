@@ -122,27 +122,49 @@ def extract_times_from_text(text_content: str) -> dict:
 
         # Found a prayer name — look for times on THIS LINE first
         times = TIME_RE.findall(line)
-        if not times and i + 1 < len(lines):
-            # If no times on this line, check next line only
-            times = TIME_RE.findall(lines[i + 1])
+        times_from_next = False
+        next_line = lines[i + 1] if i + 1 < len(lines) else ""
+        next_lower = next_line.lower().strip()
 
-        # Determine if line mentions "iqama" — if so, the time is iqama not adhan
-        is_iqama_line = any(w in line_lower for w in ["iqama", "iqamah", "iqamaat", "congregation"])
+        if not times and next_line:
+            times = TIME_RE.findall(next_line)
+            times_from_next = True
 
-        if len(times) >= 2 and not is_iqama_line:
-            # First time = adhan, second = iqama (common pattern)
+        # Check iqama context on both this line and the line where times were found
+        iqama_words = ["iqama", "iqamah", "iqamaat", "congregation"]
+        is_iqama_line = any(w in line_lower for w in iqama_words)
+        is_next_iqama = any(w in next_lower for w in iqama_words) if times_from_next else False
+
+        # Also scan the next 2-3 lines for iqama times when prayer name is alone
+        # Pattern: "fajr\nIqamah: 6:18 am\nsunrise\nzuhr\nIqamah: 1:30 pm"
+        if not times and not is_iqama_line:
+            # Look ahead up to 3 lines for a time
+            for look in range(1, min(4, len(lines) - i)):
+                ahead = lines[i + look]
+                ahead_lower = ahead.lower().strip()
+                ahead_times = TIME_RE.findall(ahead)
+                if ahead_times:
+                    times = ahead_times
+                    is_next_iqama = any(w in ahead_lower for w in iqama_words)
+                    times_from_next = True
+                    break
+                # Stop lookahead if we hit another prayer name
+                if any(p in ahead_lower for p in PRAYER_NAMES):
+                    break
+
+        effective_iqama = is_iqama_line or is_next_iqama
+
+        if len(times) >= 2 and not effective_iqama:
+            # Two times = adhan + iqama
             results["adhan"][found_prayer] = _normalize_time(*times[0])
             results["iqama"][found_prayer] = _normalize_time(*times[1])
-        elif len(times) >= 1 and is_iqama_line:
-            # "Fajr: Iqamah 06:15 AM" — this is an iqama time
+        elif len(times) >= 1 and effective_iqama:
+            # Time on an iqama-labeled line → store as iqama
             results["iqama"][found_prayer] = _normalize_time(*times[0])
-        elif len(times) >= 2 and is_iqama_line:
-            # Two times on an iqama line — unlikely but take first
-            results["iqama"][found_prayer] = _normalize_time(*times[0])
-        elif len(times) == 1:
+        elif len(times) == 1 and not effective_iqama:
             results["adhan"][found_prayer] = _normalize_time(*times[0])
-            # Check for iqama offset: "+15", "20 min after athan"
-            search_text = line + (" " + lines[i + 1] if i + 1 < len(lines) else "")
+            # Check for iqama offset
+            search_text = line + " " + next_line
             rel_match = RELATIVE_IQAMA_RE.search(search_text)
             if rel_match:
                 results["iqama"][found_prayer] = f"+{rel_match.group(1)}"
@@ -151,8 +173,8 @@ def extract_times_from_text(text_content: str) -> dict:
                 if offsets:
                     results["iqama"][found_prayer] = f"+{offsets[0]}"
         elif len(times) == 0:
-            # No clock time found — check for "iqamah" line with just a relative time
-            rel_match = RELATIVE_IQAMA_RE.search(line)
+            # No time found at all — check for relative iqama
+            rel_match = RELATIVE_IQAMA_RE.search(line + " " + next_line)
             if rel_match and found_prayer in results.get("adhan", {}):
                 results["iqama"][found_prayer] = f"+{rel_match.group(1)}"
 
