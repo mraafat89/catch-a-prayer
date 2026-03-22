@@ -235,21 +235,31 @@ The scraper should NOT run inside the API container:
 
 For now, Option B is simplest — run in the API container but with concurrency and resource awareness.
 
-### Daily Schedule
+### Cron Schedule
 
 ```
-12:30 AM  Calculate adhan times for all mosques (praytimes library)
- 1:00 AM  Scrape MAWAQIT class mosques (API, fast, ~2 min)
- 1:05 AM  Scrape MONTHLY class if 1st of Islamic month (~5 min)
- 1:15 AM  Scrape WEEKLY class if Monday (~10 min)
- 1:30 AM  Scrape DAILY class mosques (~10 min)
- 2:00 AM  Scrape NEW/unclassified mosques (~15 min)
- 2:30 AM  Re-scrape any failed from above (~10 min)
- 3:00 AM  Validation audit + cleanup
- 4:00 AM  Database backup
+MONTHLY (1st of each month):
+  12:00 AM  Calculate adhan times for ALL mosques for the entire month ahead
+            (praytimes library, ~3,900 mosques × 30 days = ~117k rows, takes ~2 min)
+  12:30 AM  Scrape MONTHLY class mosques (sites with monthly tables)
+   1:00 AM  Run static info enrichment (Google Places, 6-monthly but check here)
+
+WEEKLY (every Monday):
+   1:00 AM  Scrape WEEKLY class mosques (~200 sites, ~10 min concurrent)
+
+DAILY:
+   1:00 AM  Scrape MAWAQIT class mosques (API calls, fast, ~2 min)
+   1:05 AM  Scrape NEW/unclassified mosques (~15 min concurrent)
+   1:30 AM  Re-scrape any failed from above (~10 min)
+   2:00 AM  Validation audit + cleanup
+   4:00 AM  Database backup
+
+EVERY 2 WEEKS:
+   1:00 AM  Scrape SEASONAL class mosques (check for iqama changes)
 ```
 
-Total scraping window: ~2.5 hours, all concurrent.
+Key: calculated adhan times are pre-generated for the full month in one batch.
+No daily calculation needed — astronomical times are predictable.
 
 ### Accuracy Guarantee
 
