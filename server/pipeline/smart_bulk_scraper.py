@@ -670,6 +670,20 @@ async def scrape_with_playwright(websites: list[dict], engine, save: bool = True
                 # Get all visible text from homepage
                 text_content = await page.inner_text("body")
 
+                # Also get full HTML — some React/Firebase apps render to DOM
+                # but innerText misses content in dynamic containers
+                try:
+                    html_content = await page.content()
+                    # Extract text from HTML tags that might contain times
+                    # (td, span, div with time-like content)
+                    import re as _re
+                    html_times = _re.findall(r'>(\d{1,2}:\d{2}\s*(?:am|pm|AM|PM)?)<', html_content)
+                    if html_times and len(html_times) >= 3:
+                        # Found times in HTML that innerText might have missed
+                        text_content += "\n" + " ".join(html_times)
+                except Exception:
+                    pass
+
                 # Append any AJAX responses that contained prayer data
                 if ajax_texts:
                     log.info(f"  -> Captured {len(ajax_texts)} AJAX responses with prayer data")
