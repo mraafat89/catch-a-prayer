@@ -571,9 +571,10 @@ async def run(args):
                 except Exception as e:
                     logger.debug(f"  Insert failed for {m['name']}: {e}")
 
-            # Update existing mosques with Google data
+            # Update existing mosques with Google data (fill gaps, don't overwrite)
             for m in updated_mosques:
-                updates = []
+                updates = ["last_verified_at = now()",
+                           "verification_count = COALESCE(verification_count, 0) + 1"]
                 vals = {"mid": m["existing_id"]}
                 if m.get("phone") and m["phone"]:
                     updates.append("phone = COALESCE(phone, :phone)")
@@ -581,10 +582,12 @@ async def run(args):
                 if m.get("google_place_id"):
                     updates.append("google_place_id = COALESCE(google_place_id, :gpid)")
                     vals["gpid"] = m["google_place_id"]
-                if updates:
-                    conn.execute(text(
-                        f"UPDATE mosques SET {', '.join(updates)}, updated_at = now() WHERE id = :mid"
-                    ), vals)
+                if m.get("address"):
+                    updates.append("address = COALESCE(address, :addr)")
+                    vals["addr"] = m["address"]
+                conn.execute(text(
+                    f"UPDATE mosques SET {', '.join(updates)}, updated_at = now() WHERE id = :mid"
+                ), vals)
 
         logger.info(f"  Saved {len(new_mosques)} new + updated {len(updated_mosques)} existing")
 
