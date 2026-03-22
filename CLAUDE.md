@@ -197,16 +197,11 @@ x.0.0  — major releases (breaking changes)
 
 **NEVER push directly to `main` from the server.** All changes go through PRs.
 
-**For manual deploys, ONLY use:**
-```bash
-cd /opt/cap
-git pull --no-edit origin main
-docker compose -f docker-compose.prod.yml up -d --build api
-cd client && REACT_APP_API_URL=https://catchaprayer.com npm run build
-docker restart cap-caddy  # refresh bind mounts after build
-```
+**NO manual deploys via SSH.** All production deploys MUST go through GitHub Actions:
+- Use the "Deploy to Production" workflow for quick deploys
+- Use the "Release & Deploy" workflow for versioned releases
+- These workflows handle git pull, builds, Caddy restart correctly
 
-**After ANY client build on the server, restart Caddy** to refresh bind mounts:
-```bash
-docker restart cap-caddy
-```
+**If something is broken on production**, the ONLY allowed manual SSH action is `docker restart cap-caddy` to fix mount issues. Everything else goes through workflows.
+
+**After ANY client build on the server, Caddy must be restarted** to refresh bind mounts. The workflows handle this automatically.
