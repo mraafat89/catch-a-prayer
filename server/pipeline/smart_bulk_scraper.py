@@ -741,7 +741,7 @@ async def scrape_with_playwright(websites: list[dict], engine, save: bool = True
                         log.info(f"  ✗ Redirected to unrelated domain: {final_domain}")
                         stats["error"] += 1
                         await page.close()
-                        continue
+                        return
 
                 # Wait for JS frameworks (Wix, React, etc.) to render
                 await page.wait_for_timeout(5000)
@@ -781,7 +781,7 @@ async def scrape_with_playwright(websites: list[dict], engine, save: bool = True
                         conn.execute(text(
                             "UPDATE scraping_jobs SET website_alive = false, status = 'failed' WHERE mosque_id = :mid"
                         ), {"mid": mosque_id})
-                    continue
+                    return
 
                 # Also check for iframes (prayer widgets often in iframes)
                 iframes = await page.query_selector_all("iframe")
@@ -828,7 +828,7 @@ async def scrape_with_playwright(websites: list[dict], engine, save: bool = True
                     if save:
                         _save_to_db(engine, mosque_id, pt_data, today, source="praytimes_js")
                     stats["success"] += 1
-                    continue
+                    return
 
                 # Try monthly schedule first (saves multiple days at once)
                 monthly = extract_monthly_schedule(text_content)
@@ -846,7 +846,7 @@ async def scrape_with_playwright(websites: list[dict], engine, save: bool = True
                             conn.execute(text(
                                 "UPDATE scraping_jobs SET scrape_method = 'monthly_schedule' WHERE mosque_id = :mid"
                             ), {"mid": mosque_id})
-                    continue
+                    return
 
                 # Extract today's prayer times
                 data = extract_times_from_text(text_content)
