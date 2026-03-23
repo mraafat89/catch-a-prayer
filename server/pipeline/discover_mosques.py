@@ -547,27 +547,34 @@ async def run(args):
     logger.info(f"  NEW mosques: {len(new_mosques)}")
 
     if args.save:
-        # Save new mosques to DB
+        # Save new mosques to DB with auto geo assignment
+        from pipeline.geo_utils import enrich_mosque_geo
         with engine.begin() as conn:
             for m in new_mosques:
                 try:
+                    geo = enrich_mosque_geo(m["lat"], m["lng"], address=m.get("address"))
                     conn.execute(text("""
                         INSERT INTO mosques (id, name, lat, lng, address, phone,
-                            google_place_id, is_active, created_at, updated_at)
+                            google_place_id, state, timezone, country,
+                            source, discovered_at, is_active, created_at, updated_at)
                         VALUES (gen_random_uuid(), :name, :lat, :lng, :addr, :phone,
-                            :gpid, true, now(), now())
+                            :gpid, :state, :tz, :country,
+                            'google_places', now(), true, now(), now())
                         ON CONFLICT (google_place_id) DO NOTHING
                     """), {
                         "name": m["name"], "lat": m["lat"], "lng": m["lng"],
                         "addr": m["address"], "phone": m["phone"],
                         "gpid": m["google_place_id"],
+                        "state": geo["state"], "tz": geo["timezone"],
+                        "country": geo["country"],
                     })
                 except Exception as e:
                     logger.debug(f"  Insert failed for {m['name']}: {e}")
 
-            # Update existing mosques with Google data
+            # Update existing mosques with Google data (fill gaps, don't overwrite)
             for m in updated_mosques:
-                updates = []
+                updates = ["last_verified_at = now()",
+                           "verification_count = COALESCE(verification_count, 0) + 1"]
                 vals = {"mid": m["existing_id"]}
                 if m.get("phone") and m["phone"]:
                     updates.append("phone = COALESCE(phone, :phone)")
@@ -575,10 +582,12 @@ async def run(args):
                 if m.get("google_place_id"):
                     updates.append("google_place_id = COALESCE(google_place_id, :gpid)")
                     vals["gpid"] = m["google_place_id"]
-                if updates:
-                    conn.execute(text(
-                        f"UPDATE mosques SET {', '.join(updates)}, updated_at = now() WHERE id = :mid"
-                    ), vals)
+                if m.get("address"):
+                    updates.append("address = COALESCE(address, :addr)")
+                    vals["addr"] = m["address"]
+                conn.execute(text(
+                    f"UPDATE mosques SET {', '.join(updates)}, updated_at = now() WHERE id = :mid"
+                ), vals)
 
         logger.info(f"  Saved {len(new_mosques)} new + updated {len(updated_mosques)} existing")
 
