@@ -137,12 +137,34 @@ verification_count  -- how many sources agree it exists (higher = more confident
 A mosque confirmed by Google Places + OSM + community = high confidence.
 A mosque only from one community submission = needs verification.
 
-### State & Timezone Assignment
+### State & Timezone Assignment — IMPLEMENTED
 
-Currently done ad-hoc with manual SQL. Should be automatic:
-- On insert: derive state from lat/lng using a state boundary lookup
-- On insert: derive timezone from state (or from lat/lng for border cases)
-- On insert: derive country from lat/lng (US vs Canada boundary at ~49°N, with exceptions)
+`pipeline/geo_utils.py` handles this automatically on every insert:
+1. **Parse from Google formatted_address** (most accurate): extracts state code before ZIP/postal code
+2. **Parse from OSM addr:state** tag
+3. **Coordinate bounding box fallback** with reference-point tiebreaker for border overlaps
+4. **Timezone derived from state** via mapping table
+
+Called via `enrich_mosque_geo(lat, lng, address=...)`.
+Backfill runs during full discovery for mosques missing state/timezone.
+
+### Deduplication — IMPLEMENTED
+
+When a discovery source finds a mosque that already exists in our DB:
+- **DO NOT skip it** — update the existing record with any new data
+- `COALESCE(phone, :phone)` — fills gaps without overwriting
+- Increment `verification_count` (more sources = higher confidence)
+- Update `last_verified_at` timestamp
+- Fill missing address, phone, google_place_id
+
+### Closed Mosque Detection — IMPLEMENTED
+
+During full discovery runs:
+1. Mosques with `consecutive_failures >= 3` and dead websites → deactivated
+2. Mosques with hijacked/spam websites and no recent prayer data → deactivated
+3. Don't auto-delete — set `is_active = false` (can be reactivated)
+
+First run deactivated 34 hijacked/dead mosques.
 
 ### Incremental Updates Between Full Runs
 
@@ -154,13 +176,16 @@ Between the 6-month full discovery runs:
 
 ---
 
-## Implementation Plan
+## Implementation Status
 
-### Phase 1: Fix Current System (quick wins)
-- [ ] Auto-assign state + timezone on mosque insert (no more manual SQL)
-- [ ] Add `source` and `discovered_at` columns to mosques table
-- [ ] Integrate TheMasjidApp as a discovery source in full_discovery.py
-- [ ] Add closed mosque detection (Google business status check)
+### Phase 1: Fix Current System — DONE
+- [x] Auto-assign state + timezone on mosque insert (`geo_utils.py`)
+- [x] Add `source` and `discovered_at` columns to mosques table
+- [x] Integrate TheMasjidApp as a discovery source in `full_discovery.py`
+- [x] Add closed mosque detection (dead websites + hijacked domains)
+- [x] Dedup updates existing records instead of skipping
+- [x] Geo backfill for existing mosques missing state/timezone
+- [x] `is_valid_mosque_data()` rejects records without name/coordinates
 
 ### Phase 2: Community Discovery
 - [ ] "Add new mosque" API endpoint
