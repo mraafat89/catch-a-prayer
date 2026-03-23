@@ -708,10 +708,10 @@ async def scrape_with_playwright(websites: list[dict], engine, save: bool = True
             url = w["website"]
             name = w["name"]
             async with sem:
-
-            try:
+              try:
+                stats["attempted"] += 1
                 page = await context.new_page()
-                log.info(f"[{i+1}/{len(websites)}] {name}: {url}")
+                log.info(f"  {name}: {url}")
 
                 # Intercept network responses for AJAX prayer data
                 ajax_texts = []
@@ -868,7 +868,7 @@ async def scrape_with_playwright(websites: list[dict], engine, save: bool = True
                     else:
                         log.info(f"  ✗ No prayer times found")
 
-            except Exception as e:
+              except Exception as e:
                 stats["error"] += 1
                 log.info(f"  ✗ Error: {type(e).__name__}: {str(e)[:80]}")
                 try:
@@ -876,8 +876,8 @@ async def scrape_with_playwright(websites: list[dict], engine, save: bool = True
                 except Exception:
                     pass
 
-            completed[0] += 1
-            if completed[0] % 50 == 0:
+              completed[0] += 1
+              if completed[0] % 50 == 0:
                 rate = stats['success'] * 100 // max(stats['attempted'], 1)
                 log.info(f"  --- Progress: {completed[0]}/{len(websites)} | {stats['success']} success ({rate}%)")
 
