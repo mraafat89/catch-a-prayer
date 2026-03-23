@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 settings = get_settings()
 
 GOOGLE_KEY = os.environ.get("GOOGLE_PLACES_API_KEY") or "AIzaSyDRo0q7GrAfAu1hyUCzkhn5lJ1R06IY2u8"
-FIELDS = "name,website,formatted_phone_number,international_phone_number,formatted_address,wheelchair_accessible_entrance"
+FIELDS = "name,website,formatted_phone_number,international_phone_number,formatted_address,wheelchair_accessible_entrance,business_status"
 
 
 def get_db():
@@ -59,14 +59,21 @@ async def run(args):
 
     with engine.connect() as conn:
         limit = args.batch or 2000
-        rows = conn.execute(text("""
-            SELECT id::text, name, google_place_id, website, phone, address
-            FROM mosques
-            WHERE is_active AND google_place_id IS NOT NULL
-              AND (website IS NULL OR website = '')
-            ORDER BY created_at DESC
-            LIMIT :limit
-        """), {"limit": limit}).fetchall()
+        if getattr(args, 'refresh', False):
+            rows = conn.execute(text("""
+                SELECT id::text, name, google_place_id, website, phone, address
+                FROM mosques
+                WHERE is_active AND google_place_id IS NOT NULL
+                ORDER BY updated_at ASC LIMIT :limit
+            """), {"limit": limit}).fetchall()
+        else:
+            rows = conn.execute(text("""
+                SELECT id::text, name, google_place_id, website, phone, address
+                FROM mosques
+                WHERE is_active AND google_place_id IS NOT NULL
+                  AND (website IS NULL OR website = '' OR phone IS NULL OR phone = '')
+                ORDER BY created_at DESC LIMIT :limit
+            """), {"limit": limit}).fetchall()
 
     logger.info(f"Enriching {len(rows)} mosques from Google Place Details")
     logger.info(f"Estimated cost: ${len(rows) * 0.017:.2f}")
@@ -105,26 +112,37 @@ async def run(args):
                 phones_found += 1
 
             address = details.get("formatted_address")
-            if address and not existing_address:
-                # Parse city/state from formatted address
+            if address:
+                updates.append("address = COALESCE(address, :addr)")
+                vals["addr"] = address
+                from pipeline.geo_utils import parse_state_from_address, get_timezone_from_state
+                state_code, country_code = parse_state_from_address(address)
+                if state_code:
+                    updates.append("state = COALESCE(state, :state)")
+                    vals["state"] = state_code
+                    tz = get_timezone_from_state(state_code)
+                    if tz:
+                        updates.append("timezone = COALESCE(timezone, :tz)")
+                        vals["tz"] = tz
+                if country_code:
+                    updates.append("country = COALESCE(country, :country)")
+                    vals["country"] = country_code
                 parts = address.split(",")
                 if len(parts) >= 3:
                     city = parts[-3].strip()
-                    state_zip = parts[-2].strip()
-                    state = state_zip.split()[0] if state_zip else None
-                    updates.append("address = :addr")
-                    vals["addr"] = address
                     if city:
                         updates.append("city = COALESCE(city, :city)")
                         vals["city"] = city
-                    if state:
-                        updates.append("state = COALESCE(state, :state)")
-                        vals["state"] = state
 
             wheelchair = details.get("wheelchair_accessible_entrance")
             if wheelchair is not None:
                 updates.append("wheelchair_accessible = :wheelchair")
                 vals["wheelchair"] = wheelchair
+
+            biz_status = details.get("business_status")
+            if biz_status == "CLOSED_PERMANENTLY":
+                updates.append("is_active = false")
+                logger.info(f"  Marking {name} as closed (Google: CLOSED_PERMANENTLY)")
 
             if updates:
                 updates.append("updated_at = now()")
@@ -154,6 +172,7 @@ def main():
     parser = argparse.ArgumentParser(description="Enrich mosques from Google Place Details")
     parser.add_argument("--batch", type=int, metavar="N", help="Process N mosques")
     parser.add_argument("--all", action="store_true", help="Process all missing")
+    parser.add_argument("--refresh", action="store_true", help="Refresh ALL mosques (not just missing)")
     parser.add_argument("--dry-run", action="store_true", help="Just estimate cost")
     args = parser.parse_args()
 

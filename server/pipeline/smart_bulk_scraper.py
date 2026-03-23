@@ -157,18 +157,32 @@ def extract_monthly_schedule(text_content: str) -> list[dict]:
     return monthly
 
 
+# Additional label variations for iqama/adhan columns
+IQAMA_LABELS = {"iqama", "iqamah", "jamaat", "jammat", "jamat", "congregation", "2nd azan", "jama'at", "iqamaat"}
+ADHAN_LABELS = {"azan", "athan", "adhan", "begins", "beginning", "start", "prayer time", "salah", "prayer"}
+
+
 def extract_times_from_text(text_content: str) -> dict:
     """
     Extract prayer times from rendered page text.
+    Uses TWO strategies:
+    1. Prayer-name-based: find prayer names and associated times (original)
+    2. Cluster-based: find ascending time clusters and map by position (new)
     Returns dict with prayer names as keys and time strings as values.
     """
-    # Normalize: tabs to spaces, strip markdown, split by newlines
+    # Heavy normalization — strip all formatting
     text_content = text_content.replace('\t', '  ')
-    # Strip markdown bold/italic markers
-    text_content = re.sub(r'\*{1,6}', '', text_content)
-    # Normalize period-separated times to colon (6.15 AM → 6:15 AM)
-    text_content = re.sub(r'\b(\d{1,2})\.(\d{2})\s*(am|pm|AM|PM)', r'\1:\2 \3', text_content)
+    text_content = re.sub(r'\*{1,6}', '', text_content)                    # markdown bold/italic
+    text_content = re.sub(r'^#{1,6}\s*', '', text_content, flags=re.MULTILINE)  # markdown headers
+    text_content = re.sub(r'\|[\s\-]+\|', '', text_content)                # markdown table separators
+    text_content = re.sub(r'^\||\|$', '', text_content, flags=re.MULTILINE)  # table pipes at line edges
+    text_content = re.sub(r'_{1,3}([^_]+)_{1,3}', r'\1', text_content)    # markdown italic/underline
+    text_content = re.sub(r'\[([^\]]*)\]\([^\)]*\)', r'\1', text_content)  # markdown links
+    text_content = re.sub(r'!\[.*?\]\(.*?\)', '', text_content)            # markdown images
+    text_content = re.sub(r'\b(\d{1,2})\.(\d{2})\s*(am|pm|AM|PM)', r'\1:\2 \3', text_content)  # period times
     lines = text_content.split('\n')
+    # Remove empty lines and trim
+    lines = [l.strip() for l in lines if l.strip()]
     results = {"adhan": {}, "iqama": {}, "jumuah": []}
 
     # Strategy 1: Look for tabular data (prayer name followed by times on same/next line)
@@ -254,10 +268,72 @@ def extract_times_from_text(text_content: str) -> dict:
 
     # Strategy 2: Look for a grid/table pattern (all times in a block)
     if len(results["adhan"]) < 3:
-        # Try to find a dense block of times
         _extract_from_grid(lines, results)
 
+    # Strategy 3: Cluster-based — find ascending time sequences regardless of format
+    if len(results["adhan"]) < 3:
+        _extract_from_cluster(lines, results)
+
     return results
+
+
+def _extract_from_cluster(lines: list[str], results: dict):
+    """
+    Find clusters of ascending times that look like a prayer schedule.
+    Works regardless of formatting — tables, lists, headings, plain text.
+    """
+    from pipeline.validation import hhmm_to_minutes
+
+    # Collect ALL times with their line positions
+    all_times = []
+    for i, line in enumerate(lines):
+        for h, m, ampm in TIME_RE.findall(line):
+            t = _normalize_time(h, m, ampm)
+            if t:
+                mins = hhmm_to_minutes(t)
+                if mins and 120 <= mins <= 1439:  # 2AM to 11:59PM
+                    all_times.append({"line": i, "time": t, "mins": mins, "raw": f"{h}:{m} {ampm}".strip()})
+
+    if len(all_times) < 5:
+        return
+
+    # Find the best ascending sequence of 5-6 times (prayer schedule)
+    best_seq = []
+    for start in range(len(all_times)):
+        seq = [all_times[start]]
+        for j in range(start + 1, min(start + 30, len(all_times))):
+            candidate = all_times[j]
+            # Must be ascending and within reasonable line distance
+            if candidate["mins"] > seq[-1]["mins"] and candidate["line"] - seq[0]["line"] <= 30:
+                seq.append(candidate)
+            if len(seq) >= 6:
+                break
+        if len(seq) >= 5 and len(seq) > len(best_seq):
+            best_seq = seq
+
+    if len(best_seq) < 5:
+        return
+
+    # Map to prayers by time range (Islamic knowledge)
+    prayer_order = []
+    for t in best_seq:
+        mins = t["mins"]
+        if mins < 480 and "fajr" not in [p[0] for p in prayer_order]:          # before 8 AM
+            prayer_order.append(("fajr", t))
+        elif 480 <= mins < 660 and "sunrise" not in [p[0] for p in prayer_order]:  # 8-11 AM
+            prayer_order.append(("sunrise", t))
+        elif 660 <= mins < 960 and "dhuhr" not in [p[0] for p in prayer_order]:   # 11 AM - 4 PM
+            prayer_order.append(("dhuhr", t))
+        elif 780 <= mins < 1140 and "asr" not in [p[0] for p in prayer_order]:    # 1 - 7 PM
+            prayer_order.append(("asr", t))
+        elif 960 <= mins < 1320 and "maghrib" not in [p[0] for p in prayer_order]: # 4 - 10 PM
+            prayer_order.append(("maghrib", t))
+        elif mins >= 1020 and "isha" not in [p[0] for p in prayer_order]:          # after 5 PM
+            prayer_order.append(("isha", t))
+
+    for prayer, t in prayer_order:
+        if prayer not in results["adhan"] and prayer != "sunrise":
+            results["adhan"][prayer] = t["time"]
 
 
 def _extract_from_grid(lines: list[str], results: dict):
@@ -611,11 +687,14 @@ async def _discover_prayer_page(page, base_url: str) -> str | None:
 
 
 async def scrape_with_playwright(websites: list[dict], engine, save: bool = True) -> dict:
-    """Render websites with Playwright and extract prayer times."""
+    """Render websites with Playwright and extract prayer times.
+    Uses 5 concurrent browser tabs for speed."""
     from playwright.async_api import async_playwright
 
     stats = {"attempted": 0, "success": 0, "no_data": 0, "error": 0}
     today = date.today()
+    sem = asyncio.Semaphore(5)  # 5 concurrent tabs
+    completed = [0]  # mutable counter for progress
 
     async with async_playwright() as pw:
         browser = await pw.chromium.launch(headless=True, args=["--no-sandbox"])
@@ -624,11 +703,11 @@ async def scrape_with_playwright(websites: list[dict], engine, save: bool = True
             user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
         )
 
-        for i, w in enumerate(websites):
-            stats["attempted"] += 1
+        async def scrape_one(w: dict):
             mosque_id = w["id"]
             url = w["website"]
             name = w["name"]
+            async with sem:
 
             try:
                 page = await context.new_page()
@@ -797,9 +876,15 @@ async def scrape_with_playwright(websites: list[dict], engine, save: bool = True
                 except Exception:
                     pass
 
-            # Rate limit
-            if i % 10 == 9:
-                log.info(f"  --- Stats so far: {stats['success']}/{stats['attempted']} success ({stats['success']*100//max(stats['attempted'],1)}%)")
+            completed[0] += 1
+            if completed[0] % 50 == 0:
+                rate = stats['success'] * 100 // max(stats['attempted'], 1)
+                log.info(f"  --- Progress: {completed[0]}/{len(websites)} | {stats['success']} success ({rate}%)")
+
+        # Run all sites concurrently (limited by semaphore)
+        log.info(f"Scraping {len(websites)} websites with Playwright (5 concurrent tabs)")
+        tasks = [scrape_one(w) for w in websites]
+        await asyncio.gather(*tasks, return_exceptions=True)
 
         await browser.close()
 
