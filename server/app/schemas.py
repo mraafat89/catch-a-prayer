@@ -245,6 +245,10 @@ class TravelStop(BaseModel):
     iqama_time: Optional[str]
     adhan_time: Optional[str]
     google_place_id: Optional[str] = None
+    is_prayer_spot: bool = False
+    spot_type: Optional[str] = None
+    has_wudu: Optional[bool] = None
+    is_indoor: Optional[bool] = None
 
 class TravelOption(BaseModel):
     option_type: str  # combine_early / combine_late / separate / pray_before / at_destination

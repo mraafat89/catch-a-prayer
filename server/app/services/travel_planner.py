@@ -626,6 +626,76 @@ async def find_route_mosques(
         })
 
     logger.info(f"find_route_mosques: {len(route_mosques)}/{len(rows)} mosques pass detour filter")
+
+    # ── Prayer spots query ─────────────────────────────────────────────────
+    try:
+        spot_result = await db.execute(text(f"""
+            SELECT DISTINCT ON (id) id::text, name, lat, lng, address, city, state, timezone,
+                   spot_type, has_wudu_facilities, is_indoor, gender_access
+            FROM prayer_spots
+            WHERE status = 'active' AND ({or_clauses})
+            LIMIT 500
+        """))
+        spot_rows = spot_result.mappings().all()
+    except Exception:
+        spot_rows = []
+    logger.info(f"find_route_mosques: {len(spot_rows)} prayer spots in corridor")
+
+    for row in spot_rows:
+        cp, dist_km = nearest_checkpoint(row["lat"], row["lng"], checkpoints)
+        dist_km = haversine_km(cp["lat"], cp["lng"], row["lat"], row["lng"])
+        road_km = dist_km * 1.3
+        drive_one_way = max(1, round((road_km / HIGHWAY_SPEED_KMH) * 60 + 2))
+        detour_min = drive_one_way * 2 + DETOUR_OVERHEAD_MINUTES
+
+        if detour_min > MAX_DETOUR_MINUTES:
+            continue
+
+        estimated_pass_time = cp["time"]
+        estimated_arrival = estimated_pass_time + timedelta(minutes=drive_one_way)
+        minutes_into_trip = cp["cumulative_minutes"] + drive_one_way
+
+        tz_str = row["timezone"] or "UTC"
+        try:
+            tz = ZoneInfo(tz_str)
+            local_pass = estimated_arrival.astimezone(tz)
+        except Exception:
+            local_pass = estimated_arrival
+
+        local_date = local_pass.date()
+
+        # Prayer spots always use calculated times — no prayer_schedules lookup
+        try:
+            import pytz
+            ptz = pytz.timezone(tz_str)
+            offset = ptz.utcoffset(estimated_arrival.replace(tzinfo=None)).total_seconds() / 3600
+        except Exception:
+            offset = -5
+        calc = calculate_prayer_times(row["lat"], row["lng"], local_date, timezone_offset=offset)
+        schedule = calc if calc else {}
+
+        route_mosques.append({
+            "id": row["id"],
+            "name": row["name"],
+            "lat": row["lat"],
+            "lng": row["lng"],
+            "address": row["address"],
+            "city": row["city"],
+            "state": row["state"],
+            "google_place_id": None,
+            "detour_minutes": round(detour_min),
+            "estimated_arrival": estimated_arrival,
+            "minutes_into_trip": round(minutes_into_trip),
+            "local_arrival_minutes": local_pass.hour * 60 + local_pass.minute,
+            "local_arrival_time_fmt": f"{local_pass.hour:02d}:{local_pass.minute:02d}",
+            "schedule": schedule,
+            "is_prayer_spot": True,
+            "spot_type": row["spot_type"],
+            "has_wudu_facilities": row["has_wudu_facilities"],
+            "is_indoor": row["is_indoor"],
+        })
+
+    logger.info(f"find_route_mosques: {len(route_mosques)} total stops (mosques + prayer spots)")
     return route_mosques
 
 
@@ -712,6 +782,71 @@ async def fetch_anchor_mosques(
             "schedule": schedule,
         })
 
+    # ── Prayer spots near anchor ─────────────────────────────────────────
+    try:
+        spot_result = await db.execute(text("""
+            SELECT id::text, name, lat, lng, address, city, state, timezone,
+                   spot_type, has_wudu_facilities, is_indoor, gender_access
+            FROM prayer_spots
+            WHERE status = 'active'
+              AND lat BETWEEN :lat_min AND :lat_max
+              AND lng BETWEEN :lng_min AND :lng_max
+            LIMIT 50
+        """), {
+            "lat_min": lat - lat_buf, "lat_max": lat + lat_buf,
+            "lng_min": lng - lng_buf, "lng_max": lng + lng_buf,
+        })
+        spot_rows = spot_result.mappings().all()
+    except Exception:
+        spot_rows = []
+
+    for row in spot_rows:
+        dist = haversine_km(lat, lng, row["lat"], row["lng"])
+        if dist > radius_km:
+            continue
+
+        tz_str_s = row["timezone"] or tz_str
+        try:
+            tz = ZoneInfo(tz_str_s)
+            local_pass = anchor_dt.astimezone(tz)
+        except Exception:
+            local_pass = anchor_dt
+
+        local_date = local_pass.date()
+
+        # Prayer spots always use calculated times — no prayer_schedules lookup, no iqama
+        try:
+            import pytz
+            ptz = pytz.timezone(tz_str_s)
+            offset = ptz.utcoffset(anchor_dt.replace(tzinfo=None)).total_seconds() / 3600
+        except Exception:
+            offset = -5
+        calc = calculate_prayer_times(row["lat"], row["lng"], local_date, timezone_offset=offset)
+        schedule = calc if calc else {}
+
+        dist_km = haversine_km(lat, lng, row["lat"], row["lng"])
+        detour_est = max(1, round(dist_km * 2 * 1.3 / 60 * 60))
+
+        mosques.append({
+            "id": row["id"],
+            "name": row["name"],
+            "lat": row["lat"],
+            "lng": row["lng"],
+            "address": row["address"],
+            "city": row["city"],
+            "state": row["state"],
+            "google_place_id": None,
+            "detour_minutes": detour_est,
+            "minutes_into_trip": minutes_into_trip,
+            "local_arrival_minutes": local_pass.hour * 60 + local_pass.minute,
+            "local_arrival_time_fmt": f"{local_pass.hour:02d}:{local_pass.minute:02d}",
+            "schedule": schedule,
+            "is_prayer_spot": True,
+            "spot_type": row["spot_type"],
+            "has_wudu_facilities": row["has_wudu_facilities"],
+            "is_indoor": row["is_indoor"],
+        })
+
     return mosques
 
 
@@ -778,7 +913,18 @@ def prayer_status_at_arrival(prayer: str, schedule: dict, arrival_minutes: int) 
 # ---------------------------------------------------------------------------
 
 def _make_stop(m: dict, prayer: str, status_info: dict) -> dict:
-    return {
+    is_prayer_spot = m.get("is_prayer_spot", False)
+
+    # Prayer spots never have imam — override status to solo
+    if is_prayer_spot and status_info["status"] == "can_catch_with_imam":
+        status = "can_pray_solo_at_mosque"
+    else:
+        status = status_info["status"]
+
+    # Prayer spots have no iqama
+    iqama_time = None if is_prayer_spot else status_info.get("iqama_time")
+
+    stop = {
         "mosque_id": m["id"],
         "mosque_name": m["name"],
         "mosque_lat": m["lat"],
@@ -789,10 +935,15 @@ def _make_stop(m: dict, prayer: str, status_info: dict) -> dict:
         "estimated_arrival_time": m["local_arrival_time_fmt"],
         "minutes_into_trip": m["minutes_into_trip"],
         "detour_minutes": m["detour_minutes"],
-        "status": status_info["status"],
-        "iqama_time": status_info.get("iqama_time"),
+        "status": status,
+        "iqama_time": iqama_time,
         "adhan_time": status_info.get("adhan_time"),
+        "is_prayer_spot": is_prayer_spot,
+        "spot_type": m.get("spot_type") if is_prayer_spot else None,
+        "has_wudu": m.get("has_wudu_facilities") if is_prayer_spot else None,
+        "is_indoor": m.get("is_indoor") if is_prayer_spot else None,
     }
+    return stop
 
 
 def _find_nearby_mosque(

@@ -107,10 +107,10 @@ async def seed_mosque_and_spots(db_session):
         await db_session.execute(text("""
             INSERT INTO prayer_spots (id, name, lat, lng, geom, spot_type, city, state,
                                      timezone, country, status, has_wudu_facilities,
-                                     is_indoor, gender_access)
+                                     is_indoor, gender_access, verification_count, rejection_count)
             VALUES (:id, :name, :lat, :lng, ST_SetSRID(ST_MakePoint(:lng, :lat), 4326),
                     :spot_type, :city, :state, 'America/Los_Angeles', 'US', 'active',
-                    :has_wudu, :is_indoor, 'all')
+                    :has_wudu, :is_indoor, 'all', 0, 0)
         """), {
             "id": spot_id, "name": sp["name"], "lat": sp["lat"], "lng": sp["lng"],
             "spot_type": sp["spot_type"], "city": sp["city"], "state": sp["state"],
@@ -305,11 +305,11 @@ class TestPrayerSpotFiltering:
         await db_session.execute(text("""
             INSERT INTO prayer_spots (id, name, lat, lng, geom, spot_type, city, state,
                                      timezone, country, status, has_wudu_facilities,
-                                     is_indoor, gender_access)
+                                     is_indoor, gender_access, verification_count, rejection_count)
             VALUES (:id, 'Pending Rest Area', 35.0, -118.5,
                     ST_SetSRID(ST_MakePoint(-118.5, 35.0), 4326),
                     'rest_area', 'Test', 'CA', 'America/Los_Angeles', 'US',
-                    'pending', false, false, 'all')
+                    'pending', false, false, 'all', 0, 0)
         """), {"id": pending_id})
         await db_session.commit()
 
@@ -376,10 +376,10 @@ class TestPrayerSpotOnlyRoute:
             await db_session.execute(text("""
                 INSERT INTO prayer_spots (id, name, lat, lng, geom, spot_type, city, state,
                                          timezone, country, status, has_wudu_facilities,
-                                         is_indoor, gender_access)
+                                         is_indoor, gender_access, verification_count, rejection_count)
                 VALUES (:id, :name, :lat, :lng, ST_SetSRID(ST_MakePoint(:lng, :lat), 4326),
                         :spot_type, :city, :state, 'America/Los_Angeles', 'US', 'active',
-                        :has_wudu, :is_indoor, 'all')
+                        :has_wudu, :is_indoor, 'all', 0, 0)
             """), {
                 "id": spot_id, "name": sp["name"], "lat": sp["lat"], "lng": sp["lng"],
                 "spot_type": sp["spot_type"], "city": sp["city"], "state": sp["state"],
