@@ -71,7 +71,7 @@ async def screenshot_and_extract(url: str, browser) -> dict | None:
     """Screenshot a mosque website and extract prayer times via Gemini."""
     page = None
     try:
-        page = await browser.new_page()
+        page = await browser.new_page(viewport={"width": 1280, "height": 2000})
 
         # Try prayer-specific subpages first, then homepage
         base = url.rstrip("/")
