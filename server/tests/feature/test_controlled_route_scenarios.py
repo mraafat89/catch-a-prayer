@@ -336,3 +336,4 @@ class TestNoCrashWithBadData:
             "departure_time": "2026-03-22T15:00:00Z",
         })
         assert r.status_code in (200, 503), f"Crashed with bad data: {r.status_code} {r.text[:200]}"
+
