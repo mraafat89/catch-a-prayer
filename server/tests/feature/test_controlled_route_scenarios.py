@@ -255,10 +255,8 @@ class TestPrayedFiltering:
     """Prayed prayers must be excluded from results."""
 
     @pytest.mark.asyncio
-    async def test_isha_prayed_at_5pm_sanitized(self, async_client, db_session):
-        """At 5 PM, user claims isha prayed. But Isha adhan is 8:30 PM (after departure).
-        Per multi-day design: adhan > departure → prayer hasn't happened → include it.
-        So maghrib_isha WILL appear (tonight's Isha is a new obligation)."""
+    async def test_isha_prayed_no_maghrib_isha(self, async_client, db_session):
+        """At 5 PM, user says isha prayed. Trust them — Maghrib+Isha should be skipped."""
         await seed_controlled_mosques(db_session)
         r = await async_client.post("/api/travel/plan", json={
             "origin_lat": 36.33, "origin_lng": -119.29,
@@ -269,8 +267,7 @@ class TestPrayedFiltering:
         })
         if r.status_code == 200:
             pairs = {pp["pair"] for pp in r.json().get("prayer_pairs", [])}
-            # Isha adhan 20:30 > dep 17:00 → not truly prayed → included
-            assert "maghrib_isha" in pairs, f"Maghrib+Isha should appear (adhan after dep). Got: {pairs}"
+            assert "maghrib_isha" not in pairs, f"Isha prayed but pair shown: {pairs}"
 
     @pytest.mark.asyncio
     async def test_all_prayed_short_trip_no_overlap(self, async_client, db_session):
