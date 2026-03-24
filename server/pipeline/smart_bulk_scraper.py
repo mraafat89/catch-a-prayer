@@ -274,7 +274,48 @@ def extract_times_from_text(text_content: str) -> dict:
     if len(results["adhan"]) < 3:
         _extract_from_cluster(lines, results)
 
+    # Strategy 4: Extract iqama rules from text
+    # "Fajr is prayed 30 minutes after adhaan, all others 15 minutes after"
+    if results["adhan"] and not results["iqama"]:
+        _extract_iqama_rules(lines, results)
+
     return results
+
+
+def _extract_iqama_rules(lines: list[str], results: dict):
+    """
+    Extract iqama offsets from text rules like:
+    - "Fajr is prayed 30 minutes after the Adhaan"
+    - "All other prayers are prayed 15 minutes after"
+    - "Iqama 10 min after azan for all prayers"
+    """
+    full_text = " ".join(lines).lower()
+
+    # Pattern: "fajr ... X min ... after"
+    fajr_rule = re.search(r'fajr\b.*?(\d{1,2})\s*min(?:ute)?s?\s*(?:after|from)', full_text)
+    if fajr_rule:
+        results["iqama"]["fajr"] = f"+{fajr_rule.group(1)}"
+
+    # Pattern: "all other ... X min after" or "remaining ... X min"
+    other_rule = re.search(r'(?:all other|other|remaining|rest)\s*(?:prayer)?s?\s*.*?(\d{1,2})\s*min(?:ute)?s?\s*(?:after|from)', full_text)
+    if other_rule:
+        offset = f"+{other_rule.group(1)}"
+        for prayer in ["dhuhr", "asr", "maghrib", "isha"]:
+            if prayer not in results["iqama"]:
+                results["iqama"][prayer] = offset
+
+    # Pattern: "iqama X min after azan for all prayers"
+    all_rule = re.search(r'iqama\w?\s*(?:is\s*)?(\d{1,2})\s*min(?:ute)?s?\s*(?:after|from)', full_text)
+    if all_rule and not other_rule and not fajr_rule:
+        offset = f"+{all_rule.group(1)}"
+        for prayer in ["fajr", "dhuhr", "asr", "maghrib", "isha"]:
+            if prayer not in results["iqama"]:
+                results["iqama"][prayer] = offset
+
+    # Pattern: "maghrib iqama ... X min" or "maghrib ... sunset + X"
+    maghrib_rule = re.search(r'maghrib\b.*?(\d{1,2})\s*min(?:ute)?s?\s*(?:after|from)', full_text)
+    if maghrib_rule:
+        results["iqama"]["maghrib"] = f"+{maghrib_rule.group(1)}"
 
 
 def _extract_from_cluster(lines: list[str], results: dict):
