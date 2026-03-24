@@ -711,7 +711,6 @@ class TestDeparture6PM:
 class TestDeparture9PM:
     """9 PM departure: after Isha adhan."""
 
-    @pytest.mark.xfail(reason="Requires enumerate_trip_prayers — reverted, pending re-merge via feature branch")
     @pytest.mark.asyncio
     async def test_9pm_isha_active(self, db_session):
         d = date(2026, 3, 22)
@@ -732,8 +731,9 @@ class TestDeparture9PM:
             )
         assert result is not None
         pairs = _pair_names(result)
-        # 9 PM: Isha is active (adhan ~8:30 PM)
-        assert "maghrib_isha" in pairs, f"9 PM departure: Maghrib+Isha should be present. Got: {pairs}"
+        # 9 PM: Maghrib window ended (~7:15 PM), Isha active (adhan ~8:30 PM)
+        has_isha = "isha" in pairs or "maghrib_isha" in pairs
+        assert has_isha, f"9 PM departure: Isha should be present. Got: {pairs}"
         # 9 PM → 5 AM: Fajr adhan ~5:42 AM is AFTER 5 AM arrival.
         # Fajr correctly not in trip window (driver arrives before Fajr starts).
         # They can pray Fajr at destination.
@@ -996,7 +996,6 @@ class TestMusafirDhuhrPrayed:
 class TestMusafirAsrPrayed:
     """Musafir, Asr prayed: Dhuhr should be inferred as done (sequential inference)."""
 
-    @pytest.mark.xfail(reason="Requires enumerate_trip_prayers — reverted, pending re-merge via feature branch")
     @pytest.mark.asyncio
     async def test_musafir_asr_prayed_dhuhr_inferred(self, db_session):
         d = date(2026, 3, 22)
@@ -1109,7 +1108,6 @@ class TestMuqeemNothingPrayed:
 class TestMuqeemDhuhrAsrPrayed:
     """Muqeem, Dhuhr+Asr prayed: only Maghrib/Isha should appear."""
 
-    @pytest.mark.xfail(reason="Requires enumerate_trip_prayers — reverted, pending re-merge via feature branch")
     @pytest.mark.asyncio
     async def test_muqeem_dhuhr_asr_prayed(self, db_session):
         d = date(2026, 3, 22)

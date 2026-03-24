@@ -127,6 +127,8 @@ interface AppState {
   setTripPlannerOpen: (v: boolean) => void;
   selectedItineraryIndex: number | null;
   setSelectedItineraryIndex: (i: number | null) => void;
+  travelSortBy: 'recommended' | 'least_detour' | 'fewest_stops' | 'most_imam';
+  setTravelSortBy: (s: 'recommended' | 'least_detour' | 'fewest_stops' | 'most_imam') => void;
   selectedMosqueId: string | null;
   setSelectedMosqueId: (id: string | null) => void;
   // Focus arbitrary coords on the map (e.g., route stop mosque not in nearby list)
@@ -216,6 +218,8 @@ export const useStore = create<AppState>((set) => ({
   setTripPlannerOpen: (tripPlannerOpen) => set({ tripPlannerOpen }),
   selectedItineraryIndex: null,
   setSelectedItineraryIndex: (selectedItineraryIndex) => set({ selectedItineraryIndex }),
+  travelSortBy: 'recommended',
+  setTravelSortBy: (travelSortBy) => set({ travelSortBy, selectedItineraryIndex: 0 }),
   selectedMosqueId: null,
   setSelectedMosqueId: (selectedMosqueId) => set({ selectedMosqueId }),
   mapFocusCoords: null,
