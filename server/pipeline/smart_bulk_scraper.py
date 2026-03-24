@@ -274,7 +274,48 @@ def extract_times_from_text(text_content: str) -> dict:
     if len(results["adhan"]) < 3:
         _extract_from_cluster(lines, results)
 
+    # Strategy 4: Extract iqama rules from text
+    # "Fajr is prayed 30 minutes after adhaan, all others 15 minutes after"
+    if results["adhan"] and not results["iqama"]:
+        _extract_iqama_rules(lines, results)
+
     return results
+
+
+def _extract_iqama_rules(lines: list[str], results: dict):
+    """
+    Extract iqama offsets from text rules like:
+    - "Fajr is prayed 30 minutes after the Adhaan"
+    - "All other prayers are prayed 15 minutes after"
+    - "Iqama 10 min after azan for all prayers"
+    """
+    full_text = " ".join(lines).lower()
+
+    # Pattern: "fajr ... X min ... after"
+    fajr_rule = re.search(r'fajr\b.*?(\d{1,2})\s*min(?:ute)?s?\s*(?:after|from)', full_text)
+    if fajr_rule:
+        results["iqama"]["fajr"] = f"+{fajr_rule.group(1)}"
+
+    # Pattern: "all other ... X min after" or "remaining ... X min"
+    other_rule = re.search(r'(?:all other|other|remaining|rest)\s*(?:prayer)?s?\s*.*?(\d{1,2})\s*min(?:ute)?s?\s*(?:after|from)', full_text)
+    if other_rule:
+        offset = f"+{other_rule.group(1)}"
+        for prayer in ["dhuhr", "asr", "maghrib", "isha"]:
+            if prayer not in results["iqama"]:
+                results["iqama"][prayer] = offset
+
+    # Pattern: "iqama X min after azan for all prayers"
+    all_rule = re.search(r'iqama\w?\s*(?:is\s*)?(\d{1,2})\s*min(?:ute)?s?\s*(?:after|from)', full_text)
+    if all_rule and not other_rule and not fajr_rule:
+        offset = f"+{all_rule.group(1)}"
+        for prayer in ["fajr", "dhuhr", "asr", "maghrib", "isha"]:
+            if prayer not in results["iqama"]:
+                results["iqama"][prayer] = offset
+
+    # Pattern: "maghrib iqama ... X min" or "maghrib ... sunset + X"
+    maghrib_rule = re.search(r'maghrib\b.*?(\d{1,2})\s*min(?:ute)?s?\s*(?:after|from)', full_text)
+    if maghrib_rule:
+        results["iqama"]["maghrib"] = f"+{maghrib_rule.group(1)}"
 
 
 def _extract_from_cluster(lines: list[str], results: dict):
@@ -634,6 +675,44 @@ async def _extract_from_praytimes_js(page) -> dict | None:
     return None
 
 
+async def _click_prayer_links(page) -> bool:
+    """
+    Click buttons/links on the page that lead to prayer times.
+    Handles: nav buttons, tabs, modals, accordion toggles.
+    Returns True if any click revealed new content.
+    """
+    try:
+        # Find clickable elements with prayer-related text
+        clicked = await page.evaluate("""() => {
+            const keywords = /prayer|salah|salat|iqama|namaz|athan|adhan|times|schedule/i;
+            const clickable = document.querySelectorAll('a, button, [role="tab"], [role="button"], .nav-link, .menu-item a, [data-toggle]');
+            let clicked = false;
+            for (const el of clickable) {
+                const text = (el.textContent || '').trim();
+                const href = el.getAttribute('href') || '';
+                if (text.length < 50 && (keywords.test(text) || keywords.test(href))) {
+                    // Don't click external links or download links
+                    if (href.startsWith('http') && !href.includes(window.location.hostname)) continue;
+                    if (href.endsWith('.pdf') || href.endsWith('.xlsx')) continue;
+                    try {
+                        el.click();
+                        clicked = true;
+                        break;  // Click first match only
+                    } catch(e) {}
+                }
+            }
+            return clicked;
+        }""")
+
+        if clicked:
+            # Wait for content to load after click (modal, tab, AJAX)
+            await page.wait_for_timeout(3000)
+            return True
+    except Exception:
+        pass
+    return False
+
+
 async def _discover_prayer_page(page, base_url: str) -> str | None:
     """
     Find the prayer times page by:
@@ -794,8 +873,25 @@ async def scrape_with_playwright(websites: list[dict], engine, save: bool = True
                     except Exception:
                         pass
 
-                # If no prayer data on homepage, discover prayer page from nav links
+                # If no prayer data on homepage, try clicking prayer buttons/tabs
                 quick_check = extract_times_from_text(text_content)
+                if len(quick_check.get("adhan", {})) < 3:
+                    clicked = await _click_prayer_links(page)
+                    if clicked:
+                        # Re-read page content after click (modal/tab may have opened)
+                        new_text = await page.inner_text("body")
+                        # Also check iframes that may have appeared
+                        for iframe in (await page.query_selector_all("iframe"))[:3]:
+                            try:
+                                frame = await iframe.content_frame()
+                                if frame:
+                                    new_text += "\n" + await frame.inner_text("body")
+                            except Exception:
+                                pass
+                        text_content = new_text
+                        quick_check = extract_times_from_text(text_content)
+
+                # If still no data, try discovering prayer page URL
                 if len(quick_check.get("adhan", {})) < 3:
                     prayer_url = await _discover_prayer_page(page, url)
                     if prayer_url:
@@ -813,6 +909,18 @@ async def scrape_with_playwright(websites: list[dict], engine, save: bool = True
                                 except Exception:
                                     pass
                             sub_check = extract_times_from_text(sub_text)
+                            if len(sub_check.get("adhan", {})) < 3:
+                                # Try clicking on the subpage too
+                                await _click_prayer_links(page)
+                                sub_text = await page.inner_text("body")
+                                for iframe in (await page.query_selector_all("iframe"))[:3]:
+                                    try:
+                                        frame = await iframe.content_frame()
+                                        if frame:
+                                            sub_text += "\n" + await frame.inner_text("body")
+                                    except Exception:
+                                        pass
+                                sub_check = extract_times_from_text(sub_text)
                             if len(sub_check.get("adhan", {})) >= 3:
                                 text_content = sub_text
                                 log.info(f"  → Found data at {prayer_url}")
