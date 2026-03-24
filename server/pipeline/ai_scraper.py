@@ -72,11 +72,38 @@ async def screenshot_and_extract(url: str, browser) -> dict | None:
     page = None
     try:
         page = await browser.new_page()
-        await page.goto(url, wait_until="networkidle", timeout=20000)
-        await page.wait_for_timeout(5000)
 
-        # Take screenshot
-        screenshot_bytes = await page.screenshot(full_page=False)  # viewport only
+        # Try prayer-specific subpages first, then homepage
+        base = url.rstrip("/")
+        best_url = url
+        for path in ["", "/prayer-times", "/prayer-time", "/prayers", "/iqama",
+                      "/prayer-schedule", "/prayer-timings", "/prayer-timing"]:
+            test_url = base + path if path else url
+            try:
+                resp = await page.goto(test_url, wait_until="networkidle", timeout=12000)
+                if resp and resp.ok:
+                    await page.wait_for_timeout(2000)
+                    text_check = await page.inner_text("body")
+                    if any(w in text_check.lower() for w in ["fajr", "dhuhr", "zuhr", "iqama", "prayer time"]):
+                        best_url = test_url
+                        break
+            except Exception:
+                continue
+
+        # Navigate to best page
+        if best_url != page.url:
+            await page.goto(best_url, wait_until="networkidle", timeout=12000)
+            await page.wait_for_timeout(3000)
+
+        # Scroll down to find prayer section
+        await page.evaluate("window.scrollBy(0, 800)")
+        await page.wait_for_timeout(1500)
+
+        # Take full page screenshot
+        screenshot_bytes = await page.screenshot(full_page=True)
+        if len(screenshot_bytes) > 2_000_000:
+            screenshot_bytes = await page.screenshot(full_page=False)
+
         await page.close()
         page = None
 
