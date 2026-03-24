@@ -130,7 +130,6 @@ class TestPrayerCorrectness:
 
 class TestNoStalePrayers:
 
-    @pytest.mark.xfail(reason="Requires enumerate_trip_prayers — reverted, pending re-merge via feature branch")
     @pytest.mark.asyncio
     async def test_1am_no_stale_isha(self, async_client):
         """1 AM departure, isha prayed → no Maghrib+Isha pair."""

@@ -1,4 +1,4 @@
-import React, { useEffect, useLayoutEffect, useRef, useState, Suspense, lazy } from 'react';
+import React, { useEffect, useLayoutEffect, useMemo, useRef, useState, Suspense, lazy } from 'react';
 import ReactDOM from 'react-dom';
 // MapView is lazy-loaded to defer Leaflet initialization until after mount (fixes iOS/WKWebView startup crash)
 import { apiService } from './services/api';
@@ -2495,6 +2495,7 @@ function NavigateBar() {
   const userLocation      = useStore((s) => s.userLocation);
   const setNavShareOpen   = useStore((s) => s.setNavShareOpen);
   const tripPlannerOpen   = useStore((s) => s.tripPlannerOpen);
+  const sortBy            = useStore((s) => s.travelSortBy);
   const [sheetOpen, setSheetOpen] = useState(false);
 
   function openSheet() { setSheetOpen(true);  setNavShareOpen(true); }
@@ -2504,7 +2505,8 @@ function NavigateBar() {
 
   if (selectedItineraryIndex == null || !travelPlan || !travelDestination) return null;
 
-  const itinerary = travelPlan.itineraries?.[selectedItineraryIndex];
+  const sorted = sortItineraries(travelPlan.itineraries ?? [], sortBy);
+  const itinerary = sorted[selectedItineraryIndex];
   if (!itinerary) return null;
 
   const originLat = travelOrigin?.lat ?? userLocation?.latitude;
@@ -2634,7 +2636,13 @@ function TravelPlanView() {
   const travelPlanLoading = useStore((s) => s.travelPlanLoading);
   const travelPlanError   = useStore((s) => s.travelPlanError);
   const travelDestination = useStore((s) => s.travelDestination);
-  const [sortBy, setSortBy] = useState<SortOption>('recommended');
+  const sortBy            = useStore((s) => s.travelSortBy);
+  const setSortBy         = useStore((s) => s.setTravelSortBy);
+
+  const sortedItineraries = useMemo(
+    () => sortItineraries(travelPlan?.itineraries ?? [], sortBy),
+    [travelPlan?.itineraries, sortBy]
+  );
 
   if (!travelDestination) return null;
 
@@ -2715,7 +2723,7 @@ function TravelPlanView() {
       )}
 
       {/* Complete trip itineraries (sorted) */}
-      {sortItineraries(itineraries ?? [], sortBy).map((it: TripItinerary, i: number) => (
+      {sortedItineraries.map((it: TripItinerary, i: number) => (
         <TravelItineraryCard key={`${sortBy}-${i}`} itinerary={it} index={i} />
       ))}
 
@@ -2933,12 +2941,15 @@ function MapBottomSheet() {
   let peekLabel = '';
   if (singleMosqueNav && !travelDestination) {
     peekLabel = '';
-  } else if (selectedItineraryIndex !== null && travelPlan?.itineraries?.[selectedItineraryIndex]) {
-    const it = travelPlan.itineraries[selectedItineraryIndex];
-    const detour = it.total_detour_minutes > 0 ? ` · +${fmtDuration(it.total_detour_minutes)} detour` : '';
-    peekLabel = bottomSheetHeight === 'full'
-      ? `Option ${selectedItineraryIndex + 1}${detour} — tap to minimize`
-      : `Option ${selectedItineraryIndex + 1}${detour} — tap to see all`;
+  } else if (selectedItineraryIndex !== null && travelPlan?.itineraries?.length) {
+    const sorted = sortItineraries(travelPlan.itineraries ?? [], useStore.getState().travelSortBy);
+    const it = sorted[selectedItineraryIndex];
+    if (it) {
+      const detour = it.total_detour_minutes > 0 ? ` · +${fmtDuration(it.total_detour_minutes)} detour` : '';
+      peekLabel = bottomSheetHeight === 'full'
+        ? `Option ${selectedItineraryIndex + 1}${detour} — tap to minimize`
+        : `Option ${selectedItineraryIndex + 1}${detour} — tap to see all`;
+    }
   } else if (travelPlanLoading) {
     peekLabel = 'Finding prayer routes…';
   } else if (travelPlan?.itineraries?.length) {
