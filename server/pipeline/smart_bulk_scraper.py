@@ -175,7 +175,7 @@ def extract_times_from_text(text_content: str) -> dict:
     text_content = re.sub(r'\*{1,6}', '', text_content)                    # markdown bold/italic
     text_content = re.sub(r'^#{1,6}\s*', '', text_content, flags=re.MULTILINE)  # markdown headers
     text_content = re.sub(r'\|[\s\-]+\|', '', text_content)                # markdown table separators
-    text_content = re.sub(r'^\||\|$', '', text_content, flags=re.MULTILINE)  # table pipes at line edges
+    text_content = text_content.replace('|', '  ')                          # ALL remaining pipes → spaces
     text_content = re.sub(r'_{1,3}([^_]+)_{1,3}', r'\1', text_content)    # markdown italic/underline
     text_content = re.sub(r'\[([^\]]*)\]\([^\)]*\)', r'\1', text_content)  # markdown links
     text_content = re.sub(r'!\[.*?\]\(.*?\)', '', text_content)            # markdown images
